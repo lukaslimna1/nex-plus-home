@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Windows Development Preflight & Guardrail Script for NEX+ Home.
 .DESCRIPTION
@@ -6,8 +6,8 @@
     Detects running Next.js dev servers, node/npm versions, PostgreSQL services,
     port bindings, and administrative privileges before destructive or build tasks.
 .PARAMETER ForNpmCi
-    If specified, exits with code 1 if a running NEX+ dev server is detected,
-    preventing file-locking EPERM errors during npm ci.
+    If specified, exits with code 1 if a running NEX+ dev server is detected
+    or if process inspection fails, preventing file-locking EPERM errors during npm ci.
 #>
 param(
     [switch]$ForNpmCi
@@ -60,19 +60,42 @@ if ($LASTEXITCODE -ne 0) {
 
 # 3. Node.js and npm Runtime Check
 Write-Host "`n--- [2/6] Runtime Environment ---" -ForegroundColor Yellow
-$nodeVersion = (& node -v 2>$null)
-$npmVersion = (& npm -v 2>$null)
-
 $expectedNode = "v24.19.0"
 $expectedNpm = "12.0.2"
 
-if ($nodeVersion -eq $expectedNode) {
+$nodeVersion = $null
+try {
+    $nodeRaw = (& node -v 2>&1)
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($nodeRaw)) {
+        $nodeVersion = $nodeRaw.Trim()
+    }
+} catch {
+    $nodeVersion = $null
+}
+
+if (-not $nodeVersion) {
+    Write-Host "Node.js Version : [FAIL] Node.js is not installed or not found in PATH!" -ForegroundColor Red
+    $hasCriticalError = $true
+} elseif ($nodeVersion -eq $expectedNode) {
     Write-Host "Node.js Version : [PASS] $nodeVersion" -ForegroundColor Green
 } else {
     Write-Host "Node.js Version : [WARN] $nodeVersion (Expected: $expectedNode)" -ForegroundColor Yellow
 }
 
-if ($npmVersion -eq $expectedNpm) {
+$npmVersion = $null
+try {
+    $npmRaw = (& npm -v 2>&1)
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($npmRaw)) {
+        $npmVersion = $npmRaw.Trim()
+    }
+} catch {
+    $npmVersion = $null
+}
+
+if (-not $npmVersion) {
+    Write-Host "npm Version     : [FAIL] npm is not installed or not found in PATH!" -ForegroundColor Red
+    $hasCriticalError = $true
+} elseif ($npmVersion -eq $expectedNpm) {
     Write-Host "npm Version     : [PASS] $npmVersion" -ForegroundColor Green
 } else {
     Write-Host "npm Version     : [WARN] $npmVersion (Expected: $expectedNpm)" -ForegroundColor Yellow
@@ -124,15 +147,26 @@ function Test-IsNexHomeDevProcess($proc, $rootPath, $allNodeProcs) {
     return $false
 }
 
-$nodeProcesses = Get-CimInstance win32_process -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "^node" }
+$processQueryFailed = $false
+$nodeProcesses = @()
+try {
+    $nodeProcesses = Get-CimInstance win32_process -ErrorAction Stop | Where-Object { $_.Name -match "^node" }
+} catch {
+    Write-Host "Process Query   : [FAIL] Unable to inspect Windows processes: $($_.Exception.Message)" -ForegroundColor Red
+    $hasCriticalError = $true
+    $processQueryFailed = $true
+}
+
 $nexDevRunning = $false
 $nexDevPids = @()
 
-foreach ($proc in $nodeProcesses) {
-    if (Test-IsNexHomeDevProcess $proc $RepoRoot $nodeProcesses) {
-        $nexDevRunning = $true
-        if ($nexDevPids -notcontains $proc.ProcessId) {
-            $nexDevPids += $proc.ProcessId
+if (-not $processQueryFailed) {
+    foreach ($proc in $nodeProcesses) {
+        if (Test-IsNexHomeDevProcess $proc $RepoRoot $nodeProcesses) {
+            $nexDevRunning = $true
+            if ($nexDevPids -notcontains $proc.ProcessId) {
+                $nexDevPids += $proc.ProcessId
+            }
         }
     }
 }
@@ -156,7 +190,10 @@ if ($port3000Listeners) {
     }
 }
 
-if ($nexDevRunning) {
+if ($processQueryFailed) {
+    Write-Host "NEX+ DEV SERVER : [UNKNOWN] Could not inspect processes due to CIM/WMI failure." -ForegroundColor Red
+    Write-Host "Guardrail Alert : Cannot verify if dev server is running." -ForegroundColor Red
+} elseif ($nexDevRunning) {
     Write-Host "NEX+ DEV SERVER : [RUNNING] Active PID(s): $($nexDevPids -join ', ')" -ForegroundColor Red
     Write-Host "Guardrail Alert : npm ci is NOT SAFE while this process is running (SWC binary lock)." -ForegroundColor Red
 } else {
@@ -306,9 +343,13 @@ if ($odooListeners) {
 Write-Host "`n============================================================" -ForegroundColor Cyan
 
 # Determine Final Exit Code
-if ($ForNpmCi -and $nexDevRunning) {
-    Write-Host "[BLOCKED] Cannot run npm ci while NEX+ dev server is active (PID: $($nexDevPids -join ', '))." -ForegroundColor Red
-    Write-Host "Please stop the NEX+ dev server before running npm ci." -ForegroundColor Red
+if ($ForNpmCi -and ($nexDevRunning -or $processQueryFailed)) {
+    if ($processQueryFailed) {
+        Write-Host "[BLOCKED] Cannot verify dev server state due to process inspection failure." -ForegroundColor Red
+    } else {
+        Write-Host "[BLOCKED] Cannot run npm ci while NEX+ dev server is active (PID: $($nexDevPids -join ', '))." -ForegroundColor Red
+        Write-Host "Please stop the NEX+ dev server before running npm ci." -ForegroundColor Red
+    }
     Write-Host "============================================================" -ForegroundColor Cyan
     exit 1
 }
