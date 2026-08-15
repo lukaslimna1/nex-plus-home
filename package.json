@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "preflight:windows": "powershell.exe -NoLogo -NoProfile -File ./scripts/windows-preflight.ps1"
   },
   "dependencies": {
     "@payloadcms/db-postgres": "3.88.0",
