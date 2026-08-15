@@ -11,6 +11,7 @@ dist/
 .turbo/
 .payload/
 .cache/
+next-env.d.ts
 
 # Logs
 logs
