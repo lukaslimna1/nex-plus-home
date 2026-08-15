@@ -1,71 +1,71 @@
-# Diretrizes de Desenvolvimento e Guardrails no Windows — NEX+ Home
+# Diretrizes de Desenvolvimento e Guardrails no Windows â€” NEX+ Home
 
-Este documento estabelece as regras operacionais, guardrails e procedimentos de segurança para o ambiente de desenvolvimento local do **NEX+ Home** no Windows.
+Este documento estabelece as regras operacionais, guardrails e procedimentos de seguranÃ§a para o ambiente de desenvolvimento local do **NEX+ Home** no Windows.
 
 ---
 
-## 1. Por que `npm ci` não deve rodar com `next dev` ativo
+## 1. Por que `npm ci` nÃ£o deve rodar com `next dev` ativo
 
-No Windows, módulos nativos compilados (como `next-swc.win32-x64-msvc.node`) carregados ou mapeados em memória pelo processo Node durante a execução podem permanecer indisponíveis para exclusão enquanto o processo os utiliza.
+No Windows, mÃ³dulos nativos compilados (como `next-swc.win32-x64-msvc.node`) carregados ou mapeados em memÃ³ria pelo processo Node durante a execuÃ§Ã£o podem permanecer indisponÃ­veis para exclusÃ£o enquanto o processo os utiliza.
 
-- O comando `npm ci` remove integralmente a pasta `node_modules` antes de reconstruí-la a partir do `package-lock.json`.
-- Se o servidor de desenvolvimento (`next dev` / `npm run dev`) estiver ativo e mantiver o binário carregado, a exclusão falhará com o erro **`EPERM: operation not permitted (unlink)`**.
-- **Regra**: Sempre encerre o servidor de desenvolvimento do NEX+ Home antes de executar `npm ci` ou reconstruções de dependências.
+- O comando `npm ci` remove integralmente a pasta `node_modules` antes de reconstruÃ­-la a partir do `package-lock.json`.
+- Se o servidor de desenvolvimento (`next dev` / `npm run dev`) estiver ativo e mantiver o binÃ¡rio carregado, a exclusÃ£o falharÃ¡ com o erro **`EPERM: operation not permitted (unlink)`**.
+- **Regra**: Sempre encerre o servidor de desenvolvimento do NEX+ Home antes de executar `npm ci` ou reconstruÃ§Ãµes de dependÃªncias.
 
 ---
 
 ## 2. Como Executar o Script de Preflight
 
-O script de preflight audita o ambiente local de forma **100% somente-leitura** (sem alterar arquivos, serviços ou processos):
+O script de preflight audita o ambiente local de forma **100% somente-leitura** (sem alterar arquivos, serviÃ§os ou processos):
 
 ```powershell
-# Execução via npm script:
+# ExecuÃ§Ã£o via npm script:
 npm run preflight:windows
 
-# Execução direta com guardrail para npm ci:
+# ExecuÃ§Ã£o direta com guardrail para npm ci:
 powershell.exe -NoLogo -NoProfile -File ./scripts/windows-preflight.ps1 -ForNpmCi
 ```
 
-O modo `-ForNpmCi` retorna código de saída não-zero (`exit 1`) caso detecte um servidor `next dev` associado ao repositório NEX+ Home, bloqueando preventivamente operações sujeitas a `EPERM`.
+O modo `-ForNpmCi` retorna cÃ³digo de saÃ­da nÃ£o-zero (`exit 1`) caso detecte um servidor `next dev` associado ao repositÃ³rio NEX+ Home, bloqueando preventivamente operaÃ§Ãµes sujeitas a `EPERM`.
 
 ---
 
-## 3. Regra de Interação Humana (UAC e Segredos)
+## 3. Regra de InteraÃ§Ã£o Humana (UAC e Segredos)
 
-Processos iniciados pela automação ou ferramentas em segundo plano da IDE não são considerados um canal confiável para UAC, GUI interativa ou entrada de segredos.
+Processos iniciados pela automaÃ§Ã£o ou ferramentas em segundo plano da IDE nÃ£o sÃ£o considerados um canal confiÃ¡vel para UAC, GUI interativa ou entrada de segredos.
 
 - **Regra Operacional**:
-  - Toda operação que exigir **UAC / Elevação de Administrador** (como controle de serviços do Windows) ou **digitação de senhas seguras** (como o superusuário `postgres` ou a role `nex_home_app`) deve ser entregue para execução por Lucas em terminal/janela interativa visível.
-  - Senhas e credenciais nunca devem ser passadas via linha de comando, scripts gravados em disco ou reproduzidas em relatórios e logs.
+  - Toda operaÃ§Ã£o que exigir **UAC / ElevaÃ§Ã£o de Administrador** (como controle de serviÃ§os do Windows) ou **digitaÃ§Ã£o de senhas seguras** (como o superusuÃ¡rio `postgres` ou a role `nex_home_app`) deve ser entregue para execuÃ§Ã£o por Lucas em terminal/janela interativa visÃ­vel.
+  - Senhas e credenciais nunca devem ser passadas via linha de comando, scripts gravados em disco ou reproduzidas em relatÃ³rios e logs.
 
 ---
 
-## 4. Instância Dedicada do PostgreSQL (Porta 5433)
+## 4. InstÃ¢ncia Dedicada do PostgreSQL (Porta 5433)
 
-- O **NEX+ Home** utiliza exclusivamente a instância dedicada **PostgreSQL 18.6** no serviço `postgresql-x64-18`.
+- O **NEX+ Home** utiliza exclusivamente a instÃ¢ncia dedicada **PostgreSQL 18.6** no serviÃ§o `postgresql-x64-18`.
 - **Porta**: `5433` (estritamente isolada em `127.0.0.1` e `::1` via `listen_addresses = 'localhost'`).
-- **Autenticação**: `scram-sha-256`.
+- **AutenticaÃ§Ã£o**: `scram-sha-256`.
 - **Banco de Dados**: `nex_home` (Owner: `nex_home_app`, Locale: ICU `pt-BR`, Encoding: `UTF8`).
 
 ---
 
-## 5. Separação do PostgreSQL do Odoo (Porta 5432)
+## 5. SeparaÃ§Ã£o do PostgreSQL do Odoo (Porta 5432)
 
-- O serviço `PostgreSQL_For_Odoo` opera de forma independente na porta padrão `5432` em `C:\Program Files\Odoo 19.0.20260808\PostgreSQL\`.
-- As instâncias não compartilham portas, dados, serviços ou configurações.
+- O serviÃ§o `PostgreSQL_For_Odoo` opera de forma independente na porta padrÃ£o `5432` em `C:\Program Files\Odoo 19.0.20260808\PostgreSQL\`.
+- As instÃ¢ncias nÃ£o compartilham portas, dados, serviÃ§os ou configuraÃ§Ãµes.
 
 ---
 
-## 6. Sequência Segura para Reinício do PostgreSQL
+## 6. SequÃªncia Segura para ReinÃ­cio do PostgreSQL
 
-Caso seja necessário reiniciar o serviço `postgresql-x64-18`, execute a seguinte sequência manual em terminal visível:
+Caso seja necessÃ¡rio reiniciar o serviÃ§o `postgresql-x64-18`, execute a seguinte sequÃªncia manual em terminal visÃ­vel:
 
 1. Abra um terminal PowerShell como **Administrador**.
-2. Pare o serviço:
+2. Pare o serviÃ§o:
    ```powershell
    Stop-Service postgresql-x64-18
    ```
-3. Aguarde e confirme que o status está como `Stopped`:
+3. Aguarde e confirme que o status estÃ¡ como `Stopped`:
    ```powershell
    Get-Service postgresql-x64-18
    ```
@@ -73,7 +73,7 @@ Caso seja necessário reiniciar o serviço `postgresql-x64-18`, execute a seguin
    ```powershell
    Get-NetTCPConnection -LocalPort 5433 -State Listen -ErrorAction SilentlyContinue
    ```
-5. Somente após a confirmação de que nenhum listener está em `Listen`, inicie o serviço novamente:
+5. Somente apÃ³s a confirmaÃ§Ã£o de que nenhum listener estÃ¡ em `Listen`, inicie o serviÃ§o novamente:
    ```powershell
    Start-Service postgresql-x64-18
    ```
@@ -92,7 +92,14 @@ Caso seja necessário reiniciar o serviço `postgresql-x64-18`, execute a seguin
 
 ---
 
-## 7. Preservação das Políticas de Segurança do Windows
+## 7. PreservaÃ§Ã£o das PolÃ­ticas de SeguranÃ§a do Windows
 
-- O projeto **não** altera, desativa ou recomenda desabilitar UAC, Windows Defender, SmartScreen, Windows Firewall ou políticas de integridade do sistema operacional.
-- O desenvolvimento do NEX+ Home adere rigorosamente aos padrões de segurança e governança locais.
+- O projeto **nÃ£o** altera, desativa ou recomenda desabilitar UAC, Windows Defender, SmartScreen, Windows Firewall ou polÃ­ticas de integridade do sistema operacional.
+- O desenvolvimento do NEX+ Home adere rigorosamente aos padrÃµes de seguranÃ§a e governanÃ§a locais.
+
+---
+
+## 8. Isolamento de Rede do Servidor Next.js (Porta 3000)
+
+- Os scripts `dev` e `start` do NEX+ Home sÃ£o deliberadamente configurados com `-H 127.0.0.1` no `package.json`.
+- Isso garante que o servidor HTTP de desenvolvimento e execuÃ§Ã£o nunca escute em interfaces pÃºblicas (`0.0.0.0`), operando exclusivamente em loopback local (`127.0.0.1`).

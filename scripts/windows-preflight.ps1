@@ -171,6 +171,8 @@ if (-not $processQueryFailed) {
     }
 }
 
+$nexPort3000NonLoopback = $false
+
 # Inspect port 3000 listeners
 $port3000Listeners = Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue
 if ($port3000Listeners) {
@@ -184,6 +186,9 @@ if ($port3000Listeners) {
             if ($nexDevPids -notcontains $listener.OwningProcess) {
                 $nexDevPids += $listener.OwningProcess
             }
+            if ($listener.LocalAddress -ne "127.0.0.1" -and $listener.LocalAddress -ne "::1") {
+                $nexPort3000NonLoopback = $true
+            }
         } else {
             Write-Host "Port 3000 Note  : [INFO] Port 3000 occupied by unrelated process (PID: $($listener.OwningProcess))." -ForegroundColor DarkGray
         }
@@ -196,6 +201,12 @@ if ($processQueryFailed) {
 } elseif ($nexDevRunning) {
     Write-Host "NEX+ DEV SERVER : [RUNNING] Active PID(s): $($nexDevPids -join ', ')" -ForegroundColor Red
     Write-Host "Guardrail Alert : npm ci is NOT SAFE while this process is running (SWC binary lock)." -ForegroundColor Red
+    if ($nexPort3000NonLoopback) {
+        Write-Host "Network Binding : [FAIL] NEX+ dev server listening on non-loopback interface! Must be 127.0.0.1." -ForegroundColor Red
+        $hasCriticalError = $true
+    } else {
+        Write-Host "Network Binding : [PASS] NEX+ dev server strictly bound to loopback (127.0.0.1 / ::1)." -ForegroundColor Green
+    }
 } else {
     Write-Host "NEX+ DEV SERVER : [STOPPED] No active dev server for this project detected." -ForegroundColor Green
     Write-Host "Guardrail Check : [PASS] Safe to perform dependency and build operations." -ForegroundColor Green

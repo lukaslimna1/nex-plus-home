@@ -2,11 +2,15 @@
   "name": "nex-home",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -H 127.0.0.1",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -H 127.0.0.1",
     "lint": "eslint .",
+    "payload": "payload",
+    "generate:types": "payload generate:types",
+    "generate:importmap": "payload generate:importmap",
     "preflight:windows": "powershell.exe -NoLogo -NoProfile -File ./scripts/windows-preflight.ps1"
   },
   "dependencies": {
