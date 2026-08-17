@@ -2,8 +2,8 @@
   "version": "7",
   "dialect": "postgresql",
   "tables": {
-    "public.users_sessions": {
-      "name": "users_sessions",
+    "public.admins_sessions": {
+      "name": "admins_sessions",
       "schema": "",
       "columns": {
         "_order": {
@@ -38,8 +38,8 @@
         }
       },
       "indexes": {
-        "users_sessions_order_idx": {
-          "name": "users_sessions_order_idx",
+        "admins_sessions_order_idx": {
+          "name": "admins_sessions_order_idx",
           "columns": [
             {
               "expression": "_order",
@@ -53,8 +53,8 @@
           "method": "btree",
           "with": {}
         },
-        "users_sessions_parent_id_idx": {
-          "name": "users_sessions_parent_id_idx",
+        "admins_sessions_parent_id_idx": {
+          "name": "admins_sessions_parent_id_idx",
           "columns": [
             {
               "expression": "_parent_id",
@@ -70,10 +70,10 @@
         }
       },
       "foreignKeys": {
-        "users_sessions_parent_id_fk": {
-          "name": "users_sessions_parent_id_fk",
-          "tableFrom": "users_sessions",
-          "tableTo": "users",
+        "admins_sessions_parent_id_fk": {
+          "name": "admins_sessions_parent_id_fk",
+          "tableFrom": "admins_sessions",
+          "tableTo": "admins",
           "columnsFrom": [
             "_parent_id"
           ],
@@ -90,8 +90,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.users": {
-      "name": "users",
+    "public.admins": {
+      "name": "admins",
       "schema": "",
       "columns": {
         "id": {
@@ -160,8 +160,8 @@
         }
       },
       "indexes": {
-        "users_updated_at_idx": {
-          "name": "users_updated_at_idx",
+        "admins_updated_at_idx": {
+          "name": "admins_updated_at_idx",
           "columns": [
             {
               "expression": "updated_at",
@@ -175,8 +175,8 @@
           "method": "btree",
           "with": {}
         },
-        "users_created_at_idx": {
-          "name": "users_created_at_idx",
+        "admins_created_at_idx": {
+          "name": "admins_created_at_idx",
           "columns": [
             {
               "expression": "created_at",
@@ -190,8 +190,8 @@
           "method": "btree",
           "with": {}
         },
-        "users_email_idx": {
-          "name": "users_email_idx",
+        "admins_email_idx": {
+          "name": "admins_email_idx",
           "columns": [
             {
               "expression": "email",
@@ -375,8 +375,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "users_id": {
-          "name": "users_id",
+        "admins_id": {
+          "name": "admins_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
@@ -428,11 +428,11 @@
           "method": "btree",
           "with": {}
         },
-        "payload_locked_documents_rels_users_id_idx": {
-          "name": "payload_locked_documents_rels_users_id_idx",
+        "payload_locked_documents_rels_admins_id_idx": {
+          "name": "payload_locked_documents_rels_admins_id_idx",
           "columns": [
             {
-              "expression": "users_id",
+              "expression": "admins_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -458,12 +458,12 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "payload_locked_documents_rels_users_fk": {
-          "name": "payload_locked_documents_rels_users_fk",
+        "payload_locked_documents_rels_admins_fk": {
+          "name": "payload_locked_documents_rels_admins_fk",
           "tableFrom": "payload_locked_documents_rels",
-          "tableTo": "users",
+          "tableTo": "admins",
           "columnsFrom": [
-            "users_id"
+            "admins_id"
           ],
           "columnsTo": [
             "id"
@@ -598,8 +598,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "users_id": {
-          "name": "users_id",
+        "admins_id": {
+          "name": "admins_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
@@ -651,11 +651,11 @@
           "method": "btree",
           "with": {}
         },
-        "payload_preferences_rels_users_id_idx": {
-          "name": "payload_preferences_rels_users_id_idx",
+        "payload_preferences_rels_admins_id_idx": {
+          "name": "payload_preferences_rels_admins_id_idx",
           "columns": [
             {
-              "expression": "users_id",
+              "expression": "admins_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -681,12 +681,12 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "payload_preferences_rels_users_fk": {
-          "name": "payload_preferences_rels_users_fk",
+        "payload_preferences_rels_admins_fk": {
+          "name": "payload_preferences_rels_admins_fk",
           "tableFrom": "payload_preferences_rels",
-          "tableTo": "users",
+          "tableTo": "admins",
           "columnsFrom": [
-            "users_id"
+            "admins_id"
           ],
           "columnsTo": [
             "id"
@@ -790,6 +790,6 @@
     "tables": {},
     "columns": {}
   },
-  "id": "c8bb9946-6b0e-4ba9-8ad0-35d3df200bd6",
+  "id": "7e9895f7-8467-4b40-a95e-5ee55743807a",
   "prevId": "00000000-0000-0000-0000-000000000000"
 }
