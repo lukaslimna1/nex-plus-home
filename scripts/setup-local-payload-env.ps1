@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Secure local .env generator for NEX+ Home development.
 .DESCRIPTION
@@ -36,6 +36,9 @@ $plainPass = $null
 $escapedPass = $null
 $databaseUrl = $null
 $payloadSecret = $null
+$envContent = $null
+$rng = $null
+$bytes = $null
 
 try {
     # 1. Convert SecureString to unmanaged BSTR in memory
@@ -63,15 +66,29 @@ try {
     Write-Host "Secrets were not displayed." -ForegroundColor Green
 }
 finally {
-    # Zero and free unmanaged memory
+    # 1. Zero and free unmanaged memory
     if ($bstr -ne [System.IntPtr]::Zero) {
         [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
     }
-    # Clear managed sensitive variables in memory
+
+    # 2. Clear sensitive byte array if allocated
+    if ($null -ne $bytes) {
+        [System.Array]::Clear($bytes, 0, $bytes.Length)
+        $bytes = $null
+    }
+
+    # 3. Dispose RandomNumberGenerator instance
+    if ($null -ne $rng) {
+        $rng.Dispose()
+        $rng = $null
+    }
+
+    # 4. Release/null managed references (best effort; in .NET strings are immutable)
     $plainPass = $null
     $escapedPass = $null
     $databaseUrl = $null
     $payloadSecret = $null
+    $envContent = $null
     $securePass = $null
     [System.GC]::Collect()
 }
