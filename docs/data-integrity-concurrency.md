@@ -17,9 +17,12 @@ O NEX+ Home adota uma arquitetura logicamente **multiwriter**, com ponto único 
 ```
 
 - **Autoridade Canônica**: O PostgreSQL é o repositório de estado canônico e a autoridade final de integridade de dados do sistema.
-- **Canal de Escrita Obrigatório**: Todos os escritores normais (humanos, agentes de IA como o MAX, rotinas agendadas e integrações) devem submeter suas mutações exclusivamente através do backend/Payload.
-- **Acesso SQL Direto Proibido**: É expressamente proibido o acesso direto ao PostgreSQL a partir de interfaces de frontend, agentes de IA, scripts não auditados ou jobs externos. Conexões diretas via SQL são excepcionais e restritas a tarefas administrativas do operador via superuser `postgres`.
-- **Separação de Roles**: A credencial runtime `nex_home_app` pertence exclusivamente ao processo do backend. A role `postgres` permanece reservada para administração do cluster.
+- **Canal de Escrita Obrigatório de Produto**: Todos os writers normais de produto (usuários humanos, agentes de IA como o MAX, rotinas agendadas e integrações) devem submeter suas mutações exclusivamente através do backend/Payload.
+- **Isolamento de Credenciais**: Frontend, MAX, jobs e automações de produto não recebem `DATABASE_URL` nem escrevem SQL diretamente.
+- **Acesso Direto Excepcional e Auditado**: O acesso direto ao PostgreSQL é estritamente excepcional, reservado a operações administrativas, diagnóstico, manutenção, execução controlada de migrations ou procedimentos de backup/restore através de rotinas operacionais documentadas e auditadas.
+- **Princípio do Menor Privilégio na Conexão**:
+  - A role `nex_home_app` pode ser utilizada por ferramentas administrativas aprovadas quando necessário e seguro (ex.: utilitários `pg_dump` e `pg_restore` no banco da aplicação conforme o runbook oficial).
+  - A role `postgres` permanece restrita a operações que exigem estritamente privilégios de administração do cluster ou superuser (`CREATE DATABASE`, `DROP DATABASE`, gerenciamento global).
 
 ---
 
@@ -41,8 +44,17 @@ A integridade do sistema é estruturada sob o princípio de **defesa em profundi
 
 ## 3. Segurança da Local API do Payload
 
-- **Comportamento Padrão**: A Local API do Payload (`payload.create`, `payload.update`, etc.) opera por padrão com `overrideAccess: true`, ignorando as regras declaradas de Access Control.
-- **Diretriz Normativa**: Sempre que uma chamada via Local API for executada em nome de um usuário humano, agente ou identidade sujeita a restrições de permissão, o contexto de autorização deve ser explicitamente fornecido (`user`, `overrideAccess: false` ou verificação manual prévia).
+- **Comportamento Padrão de Bypass**: A Local API do Payload (`payload.create`, `payload.update`, etc.) opera por padrão com `overrideAccess: true`, ignorando as funções declaradas de Access Control.
+- **Obrigatoriedade de Contexto em Operações Delegadas**: Quando uma chamada via Local API estiver atuando com as permissões de uma identidade sujeita a Access Control (usuários humanos, membros ou identidades restritas), ela deve obrigatoriamente fornecer:
+  1. O objeto `user` correspondente à identidade; **E**
+  2. `overrideAccess: false` de forma explícita.
+  > [!WARNING]
+  > Passar o parâmetro `user` de forma isolada **NÃO** ativa a verificação de permissões da Local API; a declaração de `overrideAccess: false` é indispensável.
+- **Uso Legítimo do Bypass Privilegiado**: Chamadas deliberadamente privilegiadas podem utilizar o bypass padrão (`overrideAccess: true` ou ausência de flag) **apenas** quando:
+  - O fluxo for estritamente interno e explicitamente privilegiado pelo design da aplicação;
+  - Houver justificativa arquitetural documentada;
+  - As verificações de autorização necessárias tiverem sido completamente validadas pelo próprio fluxo orquestrador;
+  - A operação nunca for utilizada como atalho para contornar restrições aplicáveis a um usuário final.
 
 ---
 
