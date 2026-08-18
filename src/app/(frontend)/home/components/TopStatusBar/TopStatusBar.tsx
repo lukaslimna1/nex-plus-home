@@ -13,9 +13,9 @@ export function TopStatusBar() {
       <div className={styles.statusBadgesRow}>
         {/* Local-first */}
         <div className={`${styles.badgeCard} ${styles.badgeGreen}`}>
-          <Cpu size={17} weight="duotone" />
+          <Cpu size={16} weight="duotone" />
           <div className={styles.badgeTexts}>
-            <span className={styles.badgeTitle} style={{ color: "#4ade80" }}>
+            <span className={styles.badgeTitleSingle} style={{ color: "#4ade80" }}>
               Local-first
             </span>
           </div>
@@ -23,7 +23,7 @@ export function TopStatusBar() {
 
         {/* PostgreSQL */}
         <div className={`${styles.badgeCard} ${styles.badgeBlue}`}>
-          <Database size={17} weight="duotone" color="#60a5fa" />
+          <Database size={16} weight="duotone" color="#60a5fa" />
           <div className={styles.badgeTexts}>
             <span className={styles.badgeTitle}>PostgreSQL</span>
             <span className={styles.badgeSub}>Saudável</span>
@@ -32,7 +32,7 @@ export function TopStatusBar() {
 
         {/* MAX */}
         <div className={`${styles.badgeCard} ${styles.badgePurple}`}>
-          <Sparkle size={17} weight="fill" color="#c084fc" />
+          <Sparkle size={16} weight="fill" color="#c084fc" />
           <div className={styles.badgeTexts}>
             <span className={styles.badgeTitle}>MAX</span>
             <span className={styles.badgeSub}>Assistente ativo</span>
@@ -41,7 +41,7 @@ export function TopStatusBar() {
 
         {/* Sistema */}
         <div className={`${styles.badgeCard} ${styles.badgeCyan}`}>
-          <ShieldCheck size={17} weight="duotone" color="#38bdf8" />
+          <ShieldCheck size={16} weight="duotone" color="#38bdf8" />
           <div className={styles.badgeTexts}>
             <span className={styles.badgeTitle}>Sistema</span>
             <span className={styles.badgeSub}>Tudo operacional</span>

@@ -1,11 +1,13 @@
 .chipsGrid {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
-  gap: 4px;
-  background: rgba(18, 20, 36, 0.5);
-  border: 1px solid rgba(255, 255, 255, 0.04);
-  border-radius: 10px;
-  padding: 8px 6px;
+  gap: 6px;
+  background: rgba(18, 20, 36, 0.6);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 14px;
+  padding: 10px 8px;
 }
 
 .chipItem {
@@ -13,7 +15,7 @@
   flex-direction: column;
   align-items: center;
   text-align: center;
-  gap: 2px;
+  gap: 3px;
 }
 
 .chipIconRed { color: #f43f5e; }
@@ -24,13 +26,13 @@
 .chipIconPink { color: #f472b6; }
 
 .chipLabel {
-  font-size: 0.58rem;
-  color: #64748b;
+  font-size: 0.62rem;
+  color: #94a3b8;
   white-space: nowrap;
 }
 
 .chipValue {
-  font-size: 0.8rem;
+  font-size: 0.85rem;
   font-weight: 700;
   color: #f1f5f9;
 }
@@ -39,20 +41,22 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 2px;
+  margin-top: 4px;
+  padding: 0 2px;
 }
 
 .subHeaderTitle {
-  font-size: 0.76rem;
+  font-size: 0.78rem;
   color: #cbd5e1;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .subHeaderLink {
-  font-size: 0.72rem;
+  font-size: 0.74rem;
   color: #c084fc;
   text-decoration: none;
   cursor: pointer;
+  font-weight: 500;
 }
 
 .subHeaderLink:hover {
@@ -62,30 +66,36 @@
 .suppliersList {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .supplierRow {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 7px 9px;
-  border-radius: 8px;
-  background: rgba(22, 24, 42, 0.5);
-  border: 1px solid rgba(255, 255, 255, 0.03);
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(22, 24, 44, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  transition: all 0.15s ease;
+}
+
+.supplierRow:hover {
+  background: rgba(30, 34, 60, 0.7);
+  border-color: rgba(255, 255, 255, 0.08);
 }
 
 .supplierLeft {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 .letterAvatar {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  font-size: 0.72rem;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  font-size: 0.76rem;
   font-weight: 700;
   display: flex;
   align-items: center;
@@ -95,52 +105,57 @@
 .detailsCol {
   display: flex;
   flex-direction: column;
+  gap: 1px;
 }
 
 .nameText {
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   font-weight: 600;
   color: #f8fafc;
 }
 
 .categoryText {
-  font-size: 0.65rem;
-  color: #64748b;
+  font-size: 0.68rem;
+  color: #94a3b8;
 }
 
 .rightCol {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 0.7rem;
+  gap: 10px;
+  font-size: 0.72rem;
 }
 
 .statusIndicatorActive {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   color: #4ade80;
+  font-weight: 500;
 }
 
 .statusIndicatorTest {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   color: #fbbf24;
+  font-weight: 500;
 }
 
 .dotGreen {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: #4ade80;
+  box-shadow: 0 0 6px rgba(74, 222, 128, 0.4);
 }
 
 .dotAmber {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: #fbbf24;
+  box-shadow: 0 0 6px rgba(251, 191, 36, 0.4);
 }
 
 .timeText {

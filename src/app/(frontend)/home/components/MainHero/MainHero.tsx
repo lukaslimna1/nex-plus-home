@@ -36,19 +36,16 @@ export function MainHero() {
               : styles.metricTrendNeutral;
 
           return (
-            <React.Fragment key={m.id}>
-              {idx > 0 && <div className={styles.metricDivider} />}
-              <div className={styles.metricItem}>
-                <div className={styles.metricIconBox}>
-                  <Icon size={17} color={color} />
-                </div>
-                <div className={styles.metricData}>
-                  <span className={styles.metricLabel}>{m.label}</span>
-                  <span className={styles.metricValue}>{m.value}</span>
-                  <span className={trendClass}>{m.trendText}</span>
-                </div>
+            <div key={m.id} className={styles.metricItem}>
+              <div className={styles.metricIconBox}>
+                <Icon size={17} color={color} />
               </div>
-            </React.Fragment>
+              <div className={styles.metricData}>
+                <span className={styles.metricLabel}>{m.label}</span>
+                <span className={styles.metricValue}>{m.value}</span>
+                <span className={trendClass}>{m.trendText}</span>
+              </div>
+            </div>
           );
         })}
       </div>

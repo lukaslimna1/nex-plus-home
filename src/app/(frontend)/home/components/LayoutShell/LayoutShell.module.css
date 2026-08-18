@@ -23,15 +23,15 @@
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 20px 24px 30px 24px;
+  padding: 20px 24px 28px 24px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  background: radial-gradient(circle at 40% 10%, rgba(99, 102, 241, 0.03) 0%, transparent 60%);
+  gap: 18px;
+  background: radial-gradient(circle at 40% 10%, rgba(99, 102, 241, 0.04) 0%, transparent 60%);
   box-sizing: border-box;
 }
 
-/* Scroll elegante e discreto */
+/* Custom scrollbar para a área central */
 .contentArea::-webkit-scrollbar {
   width: 6px;
 }
@@ -46,5 +46,5 @@
 }
 
 .contentArea::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.15);
 }

@@ -1,7 +1,7 @@
 import React from "react";
 import styles from "./Sidebar.module.css";
 import { UserMiniCard } from "../UserMiniCard/UserMiniCard";
-import Image from "next/image";
+import { NexWordmark } from "@/app/(frontend)/login/NexWordmark";
 import {
   House,
   Sparkle,
@@ -36,12 +36,9 @@ export function Sidebar({
         <div className={styles.brandRow}>
           <div className={styles.brandIcon}>N</div>
           {!isCollapsed && (
-            /* eslint-disable-next-line @next/next/no-img-element */
-            <img
-              src="/branding/nex-wordmark.svg"
-              alt="NEX+"
-              className={styles.wordmarkImg}
-            />
+            <div className={styles.wordmarkWrapper}>
+              <NexWordmark height={22} width={105} />
+            </div>
           )}
         </div>
 
@@ -75,7 +72,7 @@ export function Sidebar({
             title="Home"
           >
             <House
-              size={19}
+              size={18}
               weight={activeItem === "home" ? "fill" : "regular"}
               color={activeItem === "home" ? "#c084fc" : "currentColor"}
             />
@@ -89,7 +86,7 @@ export function Sidebar({
             } ${isCollapsed ? styles.navButtonCollapsed : ""}`}
             title="MAX"
           >
-            <Sparkle size={19} weight="regular" />
+            <Sparkle size={18} weight="regular" />
             {!isCollapsed && <span>MAX</span>}
           </button>
 
@@ -100,7 +97,7 @@ export function Sidebar({
             } ${isCollapsed ? styles.navButtonCollapsed : ""}`}
             title="Fornecedores"
           >
-            <UsersThree size={19} weight="regular" />
+            <UsersThree size={18} weight="regular" />
             {!isCollapsed && <span>Fornecedores</span>}
           </button>
 
@@ -111,7 +108,7 @@ export function Sidebar({
             } ${isCollapsed ? styles.navButtonCollapsed : ""}`}
             title="Radar de Compra"
           >
-            <Crosshair size={19} weight="regular" />
+            <Crosshair size={18} weight="regular" />
             {!isCollapsed && <span>Radar de Compra</span>}
           </button>
 
@@ -122,7 +119,7 @@ export function Sidebar({
             } ${isCollapsed ? styles.navButtonCollapsed : ""}`}
             title="Ferramentas"
           >
-            <Wrench size={19} weight="regular" />
+            <Wrench size={18} weight="regular" />
             {!isCollapsed && <span>Ferramentas</span>}
           </button>
         </nav>
@@ -137,7 +134,7 @@ export function Sidebar({
           }`}
           title="Configuração"
         >
-          <Gear size={19} weight="regular" />
+          <Gear size={18} weight="regular" />
           {!isCollapsed && <span>Configuração</span>}
         </button>
 

@@ -17,7 +17,7 @@ export function ToolsPanel() {
     <ModuleCard
       title="Ferramentas"
       subtitle="Utilitários e cálculos para decisões inteligentes."
-      icon={<Wrench size={22} weight="duotone" />}
+      icon={<Wrench size={20} weight="duotone" />}
       themeColor="purple"
       actionLabel="Abrir ferramentas"
     >
@@ -40,7 +40,7 @@ export function ToolsPanel() {
           return (
             <div key={t.id} className={styles.toolBox}>
               <IconComponent
-                size={20}
+                size={19}
                 style={{ color: t.accentColor }}
                 className={styles.toolIcon}
                 weight="duotone"

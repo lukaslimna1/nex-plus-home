@@ -3,33 +3,36 @@
   align-items: center;
   justify-content: space-between;
   gap: 20px;
-  background: #0b0d18;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 14px;
-  padding: 16px 20px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+  background: rgba(11, 13, 24, 0.78);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 18px;
+  padding: 18px 24px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
   width: 100%;
   box-sizing: border-box;
+  flex-wrap: wrap;
 }
 
 .greetingBlock {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 16px;
 }
 
 .greetingIcon {
-  width: 42px;
-  height: 42px;
-  border-radius: 11px;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
   background: linear-gradient(135deg, #4f46e5 0%, #9333ea 100%);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.25rem;
+  font-size: 1.3rem;
   font-weight: 800;
   color: #ffffff;
-  box-shadow: 0 0 16px rgba(147, 51, 234, 0.4);
+  box-shadow: 0 0 18px rgba(147, 51, 234, 0.45);
   flex-shrink: 0;
 }
 
@@ -40,14 +43,15 @@
 }
 
 .greetingTitle {
-  font-size: 0.98rem;
-  font-weight: 600;
+  font-size: 1.05rem;
+  font-weight: 700;
   color: #ffffff;
   margin: 0;
+  line-height: 1.2;
 }
 
 .greetingSubtitle {
-  font-size: 0.76rem;
+  font-size: 0.78rem;
   color: #94a3b8;
   margin: 0;
   line-height: 1.35;
@@ -56,21 +60,22 @@
 .metricsGroup {
   display: flex;
   align-items: center;
-  gap: 24px;
+  gap: 28px;
+  flex-wrap: wrap;
 }
 
 .metricItem {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .metricIconBox {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.07);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -80,34 +85,35 @@
 .metricData {
   display: flex;
   flex-direction: column;
+  gap: 1px;
 }
 
 .metricLabel {
-  font-size: 0.67rem;
+  font-size: 0.7rem;
   color: #94a3b8;
 }
 
 .metricValue {
-  font-size: 1.12rem;
+  font-size: 1.25rem;
   font-weight: 700;
   color: #f8fafc;
   line-height: 1.1;
 }
 
 .metricTrendPositive {
-  font-size: 0.67rem;
+  font-size: 0.7rem;
   color: #4ade80;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .metricTrendWarning {
-  font-size: 0.67rem;
+  font-size: 0.7rem;
   color: #f87171;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .metricTrendNeutral {
-  font-size: 0.67rem;
+  font-size: 0.7rem;
   color: #60a5fa;
-  font-weight: 500;
+  font-weight: 600;
 }

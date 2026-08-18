@@ -1,6 +1,6 @@
 .topHeader {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
@@ -10,7 +10,7 @@
 .headingCol {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
 }
 
 .title {
@@ -19,6 +19,7 @@
   letter-spacing: -0.02em;
   color: #ffffff;
   margin: 0;
+  line-height: 1.15;
 }
 
 .subtitle {
@@ -30,53 +31,73 @@
 .statusBadgesRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   flex-wrap: wrap;
 }
 
 .badgeCard {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  border-radius: 8px;
-  background: #0b0d18;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  font-size: 0.74rem;
+  gap: 9px;
+  padding: 6px 14px;
+  height: 40px;
+  border-radius: 10px;
+  background: rgba(11, 13, 24, 0.75);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  font-size: 0.76rem;
+  box-sizing: border-box;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  transition: all 0.15s ease;
+}
+
+.badgeCard:hover {
+  background: rgba(18, 20, 36, 0.85);
+  border-color: rgba(255, 255, 255, 0.12);
 }
 
 .badgeTexts {
   display: flex;
   flex-direction: column;
+  justify-content: center;
 }
 
 .badgeTitle {
   font-weight: 600;
   color: #ffffff;
+  font-size: 0.76rem;
+  line-height: 1.15;
+}
+
+.badgeTitleSingle {
+  font-weight: 600;
+  font-size: 0.78rem;
 }
 
 .badgeSub {
-  font-size: 0.67rem;
+  font-size: 0.66rem;
   color: #94a3b8;
+  line-height: 1.15;
 }
 
 .badgeGreen {
   color: #4ade80;
-  border-color: rgba(34, 197, 94, 0.25);
-  background: rgba(34, 197, 94, 0.05);
+  border-color: rgba(34, 197, 94, 0.28);
+  background: rgba(34, 197, 94, 0.06);
 }
 
 .badgeBlue {
   color: #60a5fa;
-  border-color: rgba(59, 130, 246, 0.22);
+  border-color: rgba(59, 130, 246, 0.25);
 }
 
 .badgePurple {
   color: #c084fc;
-  border-color: rgba(168, 85, 247, 0.22);
+  border-color: rgba(168, 85, 247, 0.25);
 }
 
 .badgeCyan {
   color: #38bdf8;
-  border-color: rgba(56, 189, 248, 0.22);
+  border-color: rgba(56, 189, 248, 0.25);
 }

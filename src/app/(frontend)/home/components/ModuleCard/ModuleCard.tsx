@@ -44,7 +44,7 @@ export function ModuleCard({
 
   return (
     <div className={`${styles.moduleCard} ${borderClass}`}>
-      <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+      <div className={styles.topContentGroup}>
         {/* Header do Card */}
         <div className={styles.cardHeader}>
           <div className={`${styles.iconBox} ${iconClass}`}>{icon}</div>
@@ -55,7 +55,7 @@ export function ModuleCard({
         </div>
 
         {/* Conteúdo Interno Específico do Módulo */}
-        {children}
+        <div className={styles.cardBody}>{children}</div>
       </div>
 
       {/* Botão de Rodapé */}

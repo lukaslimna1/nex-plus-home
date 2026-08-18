@@ -1,28 +1,36 @@
 .moduleCard {
-  background: #0b0d18;
-  border-radius: 16px;
-  padding: 16px;
+  background: rgba(11, 13, 24, 0.78);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-radius: 20px;
+  padding: 18px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: 14px;
+  gap: 16px;
   box-sizing: border-box;
   width: 100%;
 }
 
+.topContentGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
 .borderRed {
-  border: 1px solid rgba(244, 63, 94, 0.22);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(244, 63, 94, 0.25);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35), 0 0 20px rgba(244, 63, 94, 0.05);
 }
 
 .borderAmber {
-  border: 1px solid rgba(245, 158, 11, 0.22);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35), 0 0 20px rgba(245, 158, 11, 0.05);
 }
 
 .borderPurple {
-  border: 1px solid rgba(168, 85, 247, 0.22);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(168, 85, 247, 0.25);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35), 0 0 20px rgba(168, 85, 247, 0.05);
 }
 
 .cardHeader {
@@ -32,9 +40,9 @@
 }
 
 .iconBox {
-  width: 38px;
-  height: 38px;
-  border-radius: 10px;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -45,79 +53,96 @@
 .iconRed {
   background: rgba(244, 63, 94, 0.12);
   color: #f43f5e;
-  border: 1px solid rgba(244, 63, 94, 0.25);
+  border: 1px solid rgba(244, 63, 94, 0.28);
 }
 
 .iconAmber {
   background: rgba(245, 158, 11, 0.12);
   color: #f59e0b;
-  border: 1px solid rgba(245, 158, 11, 0.25);
+  border: 1px solid rgba(245, 158, 11, 0.28);
 }
 
 .iconPurple {
   background: rgba(168, 85, 247, 0.12);
   color: #c084fc;
-  border: 1px solid rgba(168, 85, 247, 0.25);
+  border: 1px solid rgba(168, 85, 247, 0.28);
 }
 
 .headerTexts {
   display: flex;
   flex-direction: column;
+  gap: 2px;
 }
 
 .title {
-  font-size: 1.05rem;
+  font-size: 1.1rem;
   font-weight: 700;
   color: #ffffff;
   margin: 0;
+  line-height: 1.2;
 }
 
 .subtitle {
-  font-size: 0.74rem;
+  font-size: 0.76rem;
   color: #94a3b8;
   margin: 0;
+  line-height: 1.25;
+}
+
+.cardBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .actionButton {
   width: 100%;
-  padding: 9px;
-  border-radius: 8px;
-  font-size: 0.8rem;
+  padding: 10px;
+  height: 42px;
+  border-radius: 12px;
+  font-size: 0.82rem;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.15s ease;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 8px;
+  box-sizing: border-box;
 }
 
 .btnRed {
   background: rgba(244, 63, 94, 0.08);
   color: #f43f5e;
-  border: 1px solid rgba(244, 63, 94, 0.2);
+  border: 1px solid rgba(244, 63, 94, 0.25);
 }
 
 .btnRed:hover {
   background: rgba(244, 63, 94, 0.18);
+  border-color: rgba(244, 63, 94, 0.4);
+  transform: translateY(-1px);
 }
 
 .btnAmber {
   background: rgba(245, 158, 11, 0.08);
   color: #fbbf24;
-  border: 1px solid rgba(245, 158, 11, 0.2);
+  border: 1px solid rgba(245, 158, 11, 0.25);
 }
 
 .btnAmber:hover {
   background: rgba(245, 158, 11, 0.18);
+  border-color: rgba(245, 158, 11, 0.4);
+  transform: translateY(-1px);
 }
 
 .btnPurple {
   background: rgba(168, 85, 247, 0.08);
   color: #c084fc;
-  border: 1px solid rgba(168, 85, 247, 0.2);
+  border: 1px solid rgba(168, 85, 247, 0.25);
 }
 
 .btnPurple:hover {
   background: rgba(168, 85, 247, 0.18);
+  border-color: rgba(168, 85, 247, 0.4);
+  transform: translateY(-1px);
 }

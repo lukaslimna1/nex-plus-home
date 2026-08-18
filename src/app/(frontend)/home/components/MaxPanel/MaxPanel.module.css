@@ -1,29 +1,44 @@
 .maxPanel {
-  width: 300px;
-  min-width: 300px;
+  width: 332px;
+  min-width: 332px;
   height: 100%;
-  background: #080913;
-  border-left: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(8, 9, 19, 0.75);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-left: 1px solid rgba(255, 255, 255, 0.07);
   display: flex;
   flex-direction: column;
-  padding: 18px 16px 14px 16px;
-  gap: 10px;
+  padding: 20px 18px 16px 18px;
+  gap: 16px;
   transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1), padding 0.25s ease;
   overflow-y: auto;
+  overflow-x: hidden;
   z-index: 20;
   box-sizing: border-box;
 }
 
+/* Custom scrollbar para o painel MAX */
+.maxPanel::-webkit-scrollbar {
+  width: 5px;
+}
+.maxPanel::-webkit-scrollbar-track {
+  background: transparent;
+}
+.maxPanel::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+}
+
 .maxPanelCollapsed {
-  width: 58px;
-  min-width: 58px;
-  padding: 18px 8px 14px 8px;
+  width: 68px;
+  min-width: 68px;
+  padding: 20px 10px 16px 10px;
   align-items: center;
 }
 
 .headerRow {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   width: 100%;
 }
@@ -31,82 +46,156 @@
 .titleArea {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
-.title {
-  font-size: 1.55rem;
-  font-weight: 800;
-  letter-spacing: -0.01em;
-  color: #c084fc;
-  margin: 0;
-}
-
-.tagline {
-  font-size: 0.72rem;
-  color: #94a3b8;
-  margin: -4px 0 2px 0;
-}
-
-.collapseBtn {
-  background: transparent;
-  border: none;
-  color: #94a3b8;
-  cursor: pointer;
-  padding: 4px;
+.sparkleBox {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: rgba(192, 132, 252, 0.12);
+  border: 1px solid rgba(192, 132, 252, 0.25);
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+.sparkleIcon {
+  color: #c084fc;
+}
+
+.headerTitles {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.title {
+  font-size: 1.25rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: #ffffff;
+  margin: 0;
+  line-height: 1.2;
+}
+
+.subtitle {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  margin: 0;
+  line-height: 1.2;
+}
+
+.collapseBtn {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
   transition: all 0.15s ease;
 }
 
 .collapseBtn:hover {
   color: #ffffff;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.panelBody {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
 }
 
 .contextCard {
-  background: #0b0d18;
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  border-radius: 12px;
-  padding: 12px;
+  background: rgba(13, 15, 28, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  padding: 14px 16px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
 }
 
 .cardHead {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 0.8rem;
+  gap: 8px;
+}
+
+.cardIconBoxBlue {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: rgba(96, 165, 250, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cardIconBoxPurple {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: rgba(192, 132, 252, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cardIconBoxAmber {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: rgba(245, 158, 11, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cardHeadTitle {
+  font-size: 0.82rem;
   font-weight: 600;
   color: #f8fafc;
 }
 
 .cardText {
-  font-size: 0.72rem;
+  font-size: 0.74rem;
   color: #94a3b8;
   line-height: 1.45;
   margin: 0;
 }
 
+.waveContainer {
+  margin-top: 4px;
+  width: 100%;
+}
+
+.waveChart {
+  width: 100%;
+  height: 28px;
+}
+
 .suggestionsList {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
 }
 
 .suggestionItem {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 7px 8px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.03);
-  font-size: 0.72rem;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.04);
   color: #e2e8f0;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -114,44 +203,57 @@
 
 .suggestionItem:hover {
   background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(168, 85, 247, 0.2);
+  border-color: rgba(168, 85, 247, 0.25);
+  transform: translateX(2px);
 }
 
 .suggestionLeft {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.suggestionText {
+  font-size: 0.74rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .quickActionsGrid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 6px;
+  gap: 8px;
 }
 
 .quickActionBtn {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 7px 8px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.04);
+  gap: 7px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.05);
   color: #cbd5e1;
-  font-size: 0.7rem;
+  font-size: 0.72rem;
+  font-weight: 500;
   cursor: pointer;
   transition: all 0.15s ease;
+  white-space: nowrap;
 }
 
 .quickActionBtn:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.07);
   color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.1);
 }
 
 .disclaimer {
-  font-size: 0.62rem;
+  font-size: 0.65rem;
   color: #64748b;
   text-align: center;
   margin-top: auto;
-  padding-top: 8px;
+  padding: 8px 0 2px 0;
 }

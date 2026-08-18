@@ -4,7 +4,7 @@ import { ModuleCard } from "../ModuleCard/ModuleCard";
 import {
   Crosshair,
   Storefront,
-  Package,
+  Bag,
   Headphones,
   TShirt,
   Watch,
@@ -19,7 +19,7 @@ export function RadarPanel() {
     <ModuleCard
       title="Radar de Compra"
       subtitle="Monitoramento de marketplaces e tendências."
-      icon={<Crosshair size={22} weight="duotone" />}
+      icon={<Crosshair size={20} weight="duotone" />}
       themeColor="amber"
       actionLabel="Ver radar completo"
     >
@@ -32,7 +32,7 @@ export function RadarPanel() {
           }`}
           onClick={() => setActiveTab("Mercado Livre")}
         >
-          <Storefront size={13} color="#fbbf24" />
+          <Storefront size={13} color="#fbbf24" weight="fill" />
           <span>Mercado Livre</span>
         </button>
 
@@ -43,7 +43,7 @@ export function RadarPanel() {
           }`}
           onClick={() => setActiveTab("Shopee")}
         >
-          <Package size={13} color="#f97316" />
+          <Bag size={13} color="#f97316" weight="fill" />
           <span>Shopee</span>
         </button>
 
@@ -54,7 +54,7 @@ export function RadarPanel() {
           }`}
           onClick={() => setActiveTab("Amazon")}
         >
-          <span style={{ fontWeight: 800, fontSize: "0.75rem", color: "#60a5fa" }}>a</span>
+          <span className={styles.amazonLogo}>a</span>
           <span>Amazon</span>
         </button>
 
@@ -94,7 +94,7 @@ export function RadarPanel() {
             <div key={p.id} className={styles.productRow}>
               <div className={styles.productLeft}>
                 <div className={styles.thumbBox}>
-                  <ProductIcon size={16} />
+                  <ProductIcon size={15} />
                 </div>
                 <div className={styles.infoCol}>
                   <span className={styles.productName}>{p.name}</span>
@@ -110,13 +110,13 @@ export function RadarPanel() {
                   >
                     {p.isDiscount ? "↓" : "↑"} {p.variationPercentage}
                   </span>
-                  {/* Sparkline SVG Discreta */}
-                  <svg width="34" height="14" viewBox="0 0 34 14">
+                  {/* Sparkline SVG refinada */}
+                  <svg width="32" height="12" viewBox="0 0 32 12">
                     <path
                       d={
                         p.isDiscount
-                          ? "M1 3 Q 7 1, 13 8 T 23 5 T 33 11"
-                          : "M1 11 Q 7 9, 13 4 T 23 7 T 33 2"
+                          ? "M1 2 Q 8 1, 14 7 T 22 4 T 31 10"
+                          : "M1 10 Q 8 9, 14 4 T 22 7 T 31 2"
                       }
                       fill="none"
                       stroke={p.isDiscount ? "#4ade80" : "#f87171"}
