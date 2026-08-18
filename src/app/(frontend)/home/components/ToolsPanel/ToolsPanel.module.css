@@ -1,0 +1,40 @@
+.toolsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.toolBox {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 12px 8px;
+  border-radius: 10px;
+  background: rgba(22, 24, 42, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  gap: 3px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.toolBox:hover {
+  background: rgba(30, 32, 56, 0.75);
+  border-color: rgba(168, 85, 247, 0.3);
+}
+
+.toolIcon {
+  margin-bottom: 2px;
+}
+
+.toolTitle {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #f1f5f9;
+}
+
+.toolDesc {
+  font-size: 0.62rem;
+  color: #64748b;
+}

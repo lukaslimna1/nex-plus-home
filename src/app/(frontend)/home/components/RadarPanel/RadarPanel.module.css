@@ -1,0 +1,125 @@
+.tabsRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tabButton {
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  color: #94a3b8;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.15s ease;
+}
+
+.tabButton:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+}
+
+.tabButtonActive {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #fbbf24;
+}
+
+.tableHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.68rem;
+  color: #64748b;
+  padding: 0 4px;
+}
+
+.headerMetrics {
+  display: flex;
+  gap: 28px;
+}
+
+.productsList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.productRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: rgba(22, 24, 42, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.productLeft {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.thumbBox {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: #141628;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  flex-shrink: 0;
+}
+
+.infoCol {
+  display: flex;
+  flex-direction: column;
+}
+
+.productName {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #f8fafc;
+}
+
+.marketplaceName {
+  font-size: 0.65rem;
+  color: #64748b;
+}
+
+.priceRightCol {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.priceText {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.sparklineBlock {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.trendGreen {
+  color: #4ade80;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.trendRed {
+  color: #f87171;
+  font-size: 0.7rem;
+  font-weight: 600;
+}

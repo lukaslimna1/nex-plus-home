@@ -1,0 +1,157 @@
+.maxPanel {
+  width: 300px;
+  min-width: 300px;
+  height: 100%;
+  background: #080913;
+  border-left: 1px solid rgba(255, 255, 255, 0.05);
+  display: flex;
+  flex-direction: column;
+  padding: 18px 16px 14px 16px;
+  gap: 10px;
+  transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1), padding 0.25s ease;
+  overflow-y: auto;
+  z-index: 20;
+  box-sizing: border-box;
+}
+
+.maxPanelCollapsed {
+  width: 58px;
+  min-width: 58px;
+  padding: 18px 8px 14px 8px;
+  align-items: center;
+}
+
+.headerRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.titleArea {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.title {
+  font-size: 1.55rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: #c084fc;
+  margin: 0;
+}
+
+.tagline {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  margin: -4px 0 2px 0;
+}
+
+.collapseBtn {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  transition: all 0.15s ease;
+}
+
+.collapseBtn:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.contextCard {
+  background: #0b0d18;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cardHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #f8fafc;
+}
+
+.cardText {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.suggestionsList {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.suggestionItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  font-size: 0.72rem;
+  color: #e2e8f0;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.suggestionItem:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(168, 85, 247, 0.2);
+}
+
+.suggestionLeft {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.quickActionsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.quickActionBtn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  color: #cbd5e1;
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.quickActionBtn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+}
+
+.disclaimer {
+  font-size: 0.62rem;
+  color: #64748b;
+  text-align: center;
+  margin-top: auto;
+  padding-top: 8px;
+}

@@ -1,0 +1,148 @@
+.chipsGrid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+  background: rgba(18, 20, 36, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 10px;
+  padding: 8px 6px;
+}
+
+.chipItem {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 2px;
+}
+
+.chipIconRed { color: #f43f5e; }
+.chipIconPurple { color: #c084fc; }
+.chipIconBlue { color: #60a5fa; }
+.chipIconGreen { color: #4ade80; }
+.chipIconYellow { color: #facc15; }
+.chipIconPink { color: #f472b6; }
+
+.chipLabel {
+  font-size: 0.58rem;
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.chipValue {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #f1f5f9;
+}
+
+.subHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 2px;
+}
+
+.subHeaderTitle {
+  font-size: 0.76rem;
+  color: #cbd5e1;
+  font-weight: 500;
+}
+
+.subHeaderLink {
+  font-size: 0.72rem;
+  color: #c084fc;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.subHeaderLink:hover {
+  text-decoration: underline;
+}
+
+.suppliersList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.supplierRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: rgba(22, 24, 42, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.supplierLeft {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.letterAvatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.detailsCol {
+  display: flex;
+  flex-direction: column;
+}
+
+.nameText {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #f8fafc;
+}
+
+.categoryText {
+  font-size: 0.65rem;
+  color: #64748b;
+}
+
+.rightCol {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.7rem;
+}
+
+.statusIndicatorActive {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #4ade80;
+}
+
+.statusIndicatorTest {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #fbbf24;
+}
+
+.dotGreen {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #4ade80;
+}
+
+.dotAmber {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #fbbf24;
+}
+
+.timeText {
+  color: #64748b;
+}

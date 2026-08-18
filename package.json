@@ -16,6 +16,7 @@
   "dependencies": {
     "@payloadcms/db-postgres": "3.88.0",
     "@payloadcms/next": "3.88.0",
+    "@phosphor-icons/react": "2.1.10",
     "graphql": "16.14.2",
     "next": "16.3.1",
     "payload": "3.88.0",

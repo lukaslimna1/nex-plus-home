@@ -1,8 +1,5 @@
-export default function HomePage() {
-  return (
-    <main>
-      <h1>NEX+ Home</h1>
-      <p>Foundation bootstrap</p>
-    </main>
-  );
+import HomePage from "./home/page";
+
+export default function RootPage() {
+  return <HomePage />;
 }
