@@ -1,13 +1,14 @@
 .chipsGrid {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 6px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  column-gap: 12px;
+  row-gap: 12px;
   background: rgba(18, 20, 36, 0.6);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.05);
   border-radius: 14px;
-  padding: 10px 8px;
+  padding: 12px 10px;
 }
 
 .chipItem {
@@ -15,54 +16,76 @@
   flex-direction: column;
   align-items: center;
   text-align: center;
-  gap: 3px;
+  gap: 4px;
+  padding: 3px 2px;
+  border-radius: 8px;
+  transition: background 0.15s ease;
 }
 
-.chipIconRed { color: #f43f5e; }
-.chipIconPurple { color: #c084fc; }
-.chipIconBlue { color: #60a5fa; }
-.chipIconGreen { color: #4ade80; }
-.chipIconYellow { color: #facc15; }
-.chipIconPink { color: #f472b6; }
+.chipItem:hover {
+  background: rgba(247, 242, 255, 0.03);
+}
+
+.chipItem svg {
+  width: 17px;
+  height: 17px;
+}
+
+.chipIconRed { color: #e45b4f; } /* Nexus */
+.chipIconPurple { color: #b01862; } /* Pulso */
+.chipIconBlue { color: #2f7dd9; } /* Boreal */
+.chipIconGreen { color: #49a67c; } /* Éter */
+.chipIconYellow { color: #ffb300; } /* Incandescente */
+.chipIconPink { color: #f28c28; } /* Centelha */
 
 .chipLabel {
-  font-size: 0.62rem;
+  font-size: 0.72rem;
   color: #94a3b8;
   white-space: nowrap;
+  line-height: 1.2;
 }
 
 .chipValue {
-  font-size: 0.85rem;
+  font-size: 0.94rem;
   font-weight: 700;
   color: #f1f5f9;
+  line-height: 1.1;
 }
 
+/* Subheader com hierarquia refinada */
 .subHeader {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 4px;
+  margin-top: 8px;
+  margin-bottom: 3px;
   padding: 0 2px;
 }
 
 .subHeaderTitle {
-  font-size: 0.78rem;
-  color: #cbd5e1;
+  font-size: 0.82rem;
+  color: #f7f2ff;
   font-weight: 600;
 }
 
 .subHeaderLink {
-  font-size: 0.74rem;
-  color: #c084fc;
+  font-size: 0.76rem;
+  color: #e45b4f;
   text-decoration: none;
   cursor: pointer;
-  font-weight: 500;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  transition: all 0.15s ease;
 }
 
 .subHeaderLink:hover {
-  text-decoration: underline;
+  color: #f7f2ff;
+  gap: 5px;
 }
 
+/* Lista de Fornecedores Dark Glass */
 .suppliersList {
   display: flex;
   flex-direction: column;
@@ -73,91 +96,138 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 10px;
-  border-radius: 12px;
-  background: rgba(22, 24, 44, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.04);
-  transition: all 0.15s ease;
+  min-height: 52px;
+  padding: 9px 12px;
+  border-radius: 11px;
+  background: linear-gradient(
+    135deg,
+    rgba(33, 16, 57, 0.18) 0%,
+    rgba(5, 2, 10, 0.58) 100%
+  );
+  border: 1px solid rgba(247, 242, 255, 0.055);
+  box-shadow: inset 0 1px 0 rgba(247, 242, 255, 0.02);
+  transition: all 160ms ease;
+  box-sizing: border-box;
 }
 
 .supplierRow:hover {
-  background: rgba(30, 34, 60, 0.7);
-  border-color: rgba(255, 255, 255, 0.08);
+  background: linear-gradient(
+    135deg,
+    rgba(33, 16, 57, 0.32) 0%,
+    rgba(5, 2, 10, 0.75) 100%
+  );
+  border-color: rgba(228, 91, 79, 0.28);
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 rgba(247, 242, 255, 0.03),
+    0 4px 14px rgba(0, 0, 0, 0.25);
 }
 
 .supplierLeft {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: 1;
+  min-width: 0;
 }
 
 .letterAvatar {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
-  font-size: 0.76rem;
+  width: 33px;
+  height: 33px;
+  border-radius: 9px;
+  font-size: 0.82rem;
   font-weight: 700;
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
+  box-sizing: border-box;
 }
 
 .detailsCol {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
+  min-width: 0;
 }
 
 .nameText {
-  font-size: 0.8rem;
+  font-size: 0.84rem;
   font-weight: 600;
-  color: #f8fafc;
+  color: #f7f2ff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
 }
 
 .categoryText {
-  font-size: 0.68rem;
-  color: #94a3b8;
+  font-size: 0.70rem;
+  color: #8fa1b2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
 }
 
 .rightCol {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: 0.72rem;
+  gap: 9px;
+  flex-shrink: 0;
 }
 
+/* Status Pills */
 .statusIndicatorActive {
   display: flex;
   align-items: center;
   gap: 5px;
-  color: #4ade80;
-  font-weight: 500;
+  height: 23px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(73, 166, 124, 0.10);
+  border: 1px solid rgba(73, 166, 124, 0.24);
+  color: #49a67c;
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1;
+  box-sizing: border-box;
 }
 
 .statusIndicatorTest {
   display: flex;
   align-items: center;
   gap: 5px;
-  color: #fbbf24;
-  font-weight: 500;
+  height: 23px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(242, 140, 40, 0.10);
+  border: 1px solid rgba(242, 140, 40, 0.24);
+  color: #ffb300;
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1;
+  box-sizing: border-box;
 }
 
 .dotGreen {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
-  background: #4ade80;
-  box-shadow: 0 0 6px rgba(74, 222, 128, 0.4);
+  background: #49a67c;
+  box-shadow: 0 0 5px rgba(73, 166, 124, 0.45);
 }
 
 .dotAmber {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
-  background: #fbbf24;
-  box-shadow: 0 0 6px rgba(251, 191, 36, 0.4);
+  background: #ffb300;
+  box-shadow: 0 0 5px rgba(255, 179, 0, 0.45);
 }
 
 .timeText {
-  color: #64748b;
+  color: #8fa1b2;
+  opacity: 0.85;
+  font-size: 0.68rem;
+  white-space: nowrap;
 }

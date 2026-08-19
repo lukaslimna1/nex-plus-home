@@ -1,60 +1,74 @@
 .tabsRow {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  width: 100%;
 }
 
 .tabButton {
-  padding: 5px 9px;
-  border-radius: 8px;
+  height: 38px;
+  padding: 0 8px;
+  border-radius: 9px;
   font-size: 0.72rem;
-  font-weight: 500;
-  background: rgba(255, 255, 255, 0.035);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  color: #94a3b8;
+  font-weight: 600;
+  background: linear-gradient(
+    135deg,
+    rgba(33, 16, 57, 0.16) 0%,
+    rgba(5, 2, 10, 0.55) 100%
+  );
+  border: 1px solid rgba(247, 242, 255, 0.06);
+  color: #8fa1b2;
   cursor: pointer;
   display: flex;
   align-items: center;
-  gap: 5px;
+  justify-content: center;
+  gap: 6px;
   transition: all 0.15s ease;
   white-space: nowrap;
+  box-sizing: border-box;
 }
 
 .tabButton:hover {
-  background: rgba(255, 255, 255, 0.07);
-  color: #ffffff;
+  background: linear-gradient(
+    135deg,
+    rgba(33, 16, 57, 0.28) 0%,
+    rgba(5, 2, 10, 0.75) 100%
+  );
+  border-color: rgba(247, 242, 255, 0.12);
+  color: #f7f2ff;
 }
 
 .tabButtonActive {
-  background: rgba(245, 158, 11, 0.16);
-  border-color: rgba(245, 158, 11, 0.4);
-  color: #fbbf24;
-  box-shadow: 0 0 10px rgba(245, 158, 11, 0.15);
-}
-
-.amazonLogo {
-  font-weight: 800;
-  font-size: 0.76rem;
-  color: #60a5fa;
-  line-height: 1;
+  background: linear-gradient(
+    135deg,
+    rgba(242, 140, 40, 0.16) 0%,
+    rgba(255, 179, 0, 0.08) 100%
+  );
+  border-color: rgba(242, 140, 40, 0.35);
+  color: #f7f2ff;
+  box-shadow: 0 0 12px rgba(242, 140, 40, 0.15);
 }
 
 .tableHeader {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px 88px;
   align-items: center;
-  justify-content: space-between;
-  font-size: 0.7rem;
-  color: #64748b;
-  padding: 0 4px;
-  margin-top: 4px;
+  gap: 8px;
+  font-size: 0.70rem;
+  color: #8fa1b2;
+  padding: 0 10px;
+  margin-top: 8px;
+  margin-bottom: 2px;
   font-weight: 500;
+  box-sizing: border-box;
 }
 
-.headerMetrics {
-  display: flex;
-  gap: 22px;
-  flex-shrink: 0;
+.headerPrice {
+  text-align: right;
+}
+
+.headerVariation {
+  text-align: right;
 }
 
 .productsList {
@@ -64,42 +78,56 @@
 }
 
 .productRow {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px 88px;
   align-items: center;
-  justify-content: space-between;
-  padding: 8px 10px;
-  border-radius: 12px;
-  background: rgba(22, 24, 44, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.04);
-  transition: all 0.15s ease;
   gap: 8px;
+  min-height: 52px;
+  padding: 8px 10px;
+  border-radius: 11px;
+  background: linear-gradient(
+    135deg,
+    rgba(33, 16, 57, 0.18) 0%,
+    rgba(5, 2, 10, 0.58) 100%
+  );
+  border: 1px solid rgba(247, 242, 255, 0.055);
+  box-shadow: inset 0 1px 0 rgba(247, 242, 255, 0.02);
+  transition: all 160ms ease;
+  box-sizing: border-box;
 }
 
 .productRow:hover {
-  background: rgba(30, 34, 60, 0.7);
-  border-color: rgba(255, 255, 255, 0.08);
+  background: linear-gradient(
+    135deg,
+    rgba(33, 16, 57, 0.32) 0%,
+    rgba(5, 2, 10, 0.75) 100%
+  );
+  border-color: rgba(242, 140, 40, 0.28);
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 rgba(247, 242, 255, 0.03),
+    0 4px 14px rgba(0, 0, 0, 0.25);
 }
 
 .productLeft {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 1;
   min-width: 0;
   overflow: hidden;
 }
 
 .thumbBox {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
-  background: #141628;
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #211039 0%, #05020a 100%);
+  border: 1px solid rgba(247, 242, 255, 0.08);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #94a3b8;
+  color: #8fa1b2;
   flex-shrink: 0;
+  box-sizing: border-box;
 }
 
 .infoCol {
@@ -111,51 +139,75 @@
 }
 
 .productName {
-  font-size: 0.78rem;
+  font-size: 0.82rem;
   font-weight: 600;
-  color: #f8fafc;
+  color: #f7f2ff;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  line-height: 1.2;
 }
 
 .marketplaceName {
-  font-size: 0.66rem;
-  color: #64748b;
+  font-size: 0.68rem;
+  color: #8fa1b2;
   white-space: nowrap;
+  line-height: 1.2;
 }
 
-.priceRightCol {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
+.priceCol {
+  text-align: right;
 }
 
 .priceText {
-  font-size: 0.8rem;
+  font-size: 0.86rem;
   font-weight: 700;
-  color: #f8fafc;
+  color: #f7f2ff;
   white-space: nowrap;
 }
 
-.sparklineBlock {
+.variationCol {
   display: flex;
   align-items: center;
-  gap: 4px;
+  justify-content: flex-end;
+  gap: 5px;
   flex-shrink: 0;
 }
 
-.trendGreen {
-  color: #4ade80;
-  font-size: 0.7rem;
+.trendPillDiscount {
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(73, 166, 124, 0.10);
+  border: 1px solid rgba(73, 166, 124, 0.24);
+  color: #49a67c;
+  font-size: 0.68rem;
   font-weight: 600;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  box-sizing: border-box;
   white-space: nowrap;
 }
 
-.trendRed {
-  color: #f87171;
-  font-size: 0.7rem;
+.trendPillHike {
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(255, 27, 27, 0.08);
+  border: 1px solid rgba(255, 27, 27, 0.20);
+  color: #ff1b1b;
+  font-size: 0.68rem;
   font-weight: 600;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  box-sizing: border-box;
   white-space: nowrap;
+}
+
+.sparklineSvg {
+  flex-shrink: 0;
 }

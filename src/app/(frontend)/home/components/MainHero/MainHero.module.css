@@ -1,119 +1,160 @@
 .heroBanner {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto 1fr;
   align-items: center;
-  justify-content: space-between;
   gap: 20px;
-  background: rgba(11, 13, 24, 0.78);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 18px;
-  padding: 18px 24px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  background: linear-gradient(
+    135deg,
+    rgba(33, 16, 57, 0.32) 0%,
+    rgba(5, 2, 10, 0.88) 100%
+  );
+  backdrop-filter: blur(18px) saturate(120%);
+  -webkit-backdrop-filter: blur(18px) saturate(120%);
+  border: 1px solid rgba(247, 242, 255, 0.08);
+  border-radius: 16px;
+  padding: 16px 22px;
+  min-height: 118px;
+  box-shadow: inset 0 1px 0 rgba(247, 242, 255, 0.03),
+    0 10px 32px rgba(0, 0, 0, 0.32);
   width: 100%;
   box-sizing: border-box;
-  flex-wrap: wrap;
 }
 
 .greetingBlock {
   display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.greetingIcon {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #4f46e5 0%, #9333ea 100%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1.3rem;
-  font-weight: 800;
-  color: #ffffff;
-  box-shadow: 0 0 18px rgba(147, 51, 234, 0.45);
+  flex-direction: column;
   flex-shrink: 0;
+  max-width: 160px;
 }
 
 .greetingTexts {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
+  min-width: 0;
 }
 
 .greetingTitle {
-  font-size: 1.05rem;
-  font-weight: 700;
-  color: #ffffff;
+  font-size: 1.02rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: #f7f2ff;
   margin: 0;
-  line-height: 1.2;
+  line-height: 1.15;
+  white-space: nowrap;
 }
 
 .greetingSubtitle {
-  font-size: 0.78rem;
-  color: #94a3b8;
+  font-size: 0.68rem;
+  color: #8fa1b2;
   margin: 0;
-  line-height: 1.35;
+  line-height: 1.3;
 }
 
 .metricsGroup {
-  display: flex;
-  align-items: center;
-  gap: 28px;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  border-left: 1px solid rgba(247, 242, 255, 0.06);
+  padding-left: 10px;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .metricItem {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 7px;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.metricItem:not(:last-child) {
+  border-right: 1px solid rgba(247, 242, 255, 0.05);
+  padding-right: 5px;
 }
 
 .metricIconBox {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.035);
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  box-sizing: border-box;
+  transition: all 0.15s ease;
 }
 
 .metricData {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  min-width: 0;
+  flex: 1;
 }
 
 .metricLabel {
-  font-size: 0.7rem;
-  color: #94a3b8;
+  font-size: 0.65rem;
+  letter-spacing: -0.01em;
+  color: #8fa1b2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
 }
 
 .metricValue {
-  font-size: 1.25rem;
+  font-size: 1.20rem;
   font-weight: 700;
-  color: #f8fafc;
-  line-height: 1.1;
+  color: #f7f2ff;
+  line-height: 1.15;
 }
 
 .metricTrendPositive {
-  font-size: 0.7rem;
-  color: #4ade80;
+  font-size: 0.68rem;
+  color: #49a67c;
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
 }
 
 .metricTrendWarning {
-  font-size: 0.7rem;
-  color: #f87171;
+  font-size: 0.68rem;
+  color: #ff1b1b;
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
 }
 
 .metricTrendNeutral {
-  font-size: 0.7rem;
-  color: #60a5fa;
+  font-size: 0.68rem;
+  color: #2f7dd9;
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+
+@media (max-width: 1120px) {
+  .heroBanner {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .greetingBlock {
+    max-width: 100%;
+  }
+
+  .metricsGroup {
+    border-left: none;
+    padding-left: 0;
+    border-top: 1px solid rgba(247, 242, 255, 0.06);
+    padding-top: 16px;
+  }
 }

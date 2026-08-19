@@ -1,38 +1,61 @@
 .maxPanel {
-  width: 332px;
-  min-width: 332px;
+  width: 326px;
+  min-width: 326px;
   height: 100%;
-  background: rgba(8, 9, 19, 0.75);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border-left: 1px solid rgba(255, 255, 255, 0.07);
+  background: linear-gradient(
+    180deg,
+    rgba(33, 16, 57, 0.35) 0%,
+    rgba(5, 2, 10, 0.88) 50%,
+    rgba(5, 2, 10, 0.96) 100%
+  );
+  backdrop-filter: blur(20px) saturate(125%);
+  -webkit-backdrop-filter: blur(20px) saturate(125%);
+  border-left: 1px solid rgba(247, 242, 255, 0.08);
+  box-shadow: inset 1px 0 0 rgba(247, 242, 255, 0.02),
+    -8px 0 32px rgba(0, 0, 0, 0.35);
   display: flex;
   flex-direction: column;
-  padding: 20px 18px 16px 18px;
-  gap: 16px;
+  padding: 16px 14px 14px 14px;
+  gap: 14px;
   transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1), padding 0.25s ease;
   overflow-y: auto;
   overflow-x: hidden;
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE e Edge */
   z-index: 20;
   box-sizing: border-box;
+  position: relative;
 }
 
-/* Custom scrollbar para o painel MAX */
+/* Scrollbar invisível compatível com WebKit/Chromium */
 .maxPanel::-webkit-scrollbar {
-  width: 5px;
+  display: none;
+  width: 0;
+  height: 0;
 }
-.maxPanel::-webkit-scrollbar-track {
-  background: transparent;
-}
-.maxPanel::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: 3px;
+
+.maxPanel::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 180px;
+  height: 180px;
+  background: radial-gradient(
+    circle,
+    rgba(75, 29, 115, 0.28) 0%,
+    rgba(176, 24, 98, 0.10) 50%,
+    transparent 80%
+  );
+  filter: blur(40px);
+  pointer-events: none;
+  z-index: 0;
 }
 
 .maxPanelCollapsed {
-  width: 68px;
-  min-width: 68px;
-  padding: 20px 10px 16px 10px;
+  width: 56px;
+  min-width: 56px;
+  padding: 18px 8px 14px 8px;
   align-items: center;
 }
 
@@ -41,86 +64,167 @@
   align-items: center;
   justify-content: space-between;
   width: 100%;
+  position: relative;
+  z-index: 1;
+  gap: 6px;
+}
+
+.maxPanelCollapsed .headerRow {
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
 }
 
 .titleArea {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 9px;
+  min-width: 0;
 }
 
 .sparkleBox {
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   border-radius: 10px;
-  background: rgba(192, 132, 252, 0.12);
-  border: 1px solid rgba(192, 132, 252, 0.25);
+  background: linear-gradient(
+    135deg,
+    rgba(75, 29, 115, 0.45) 0%,
+    rgba(176, 24, 98, 0.22) 100%
+  );
+  border: 1px solid rgba(176, 24, 98, 0.35);
+  box-shadow: 0 0 16px rgba(75, 29, 115, 0.30);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  transition: all 0.2s ease;
 }
 
 .sparkleIcon {
-  color: #c084fc;
+  color: #f7f2ff;
 }
 
 .headerTitles {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  min-width: 0;
 }
 
 .title {
-  font-size: 1.25rem;
+  font-size: 1.20rem;
   font-weight: 800;
-  letter-spacing: -0.01em;
-  color: #ffffff;
+  letter-spacing: 0.02em;
+  color: #f7f2ff;
   margin: 0;
   line-height: 1.2;
 }
 
 .subtitle {
-  font-size: 0.72rem;
-  color: #94a3b8;
+  font-size: 0.69rem;
+  color: #8fa1b2;
   margin: 0;
   line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.collapseBtn {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  color: #94a3b8;
-  cursor: pointer;
-  padding: 6px;
+.headerRight {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.maxPanelCollapsed .headerRight {
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+}
+
+/* Badge de Contexto */
+.contextBadge {
+  font-size: 0.63rem;
+  font-weight: 600;
+  color: #8fa1b2;
+  background: rgba(75, 29, 115, 0.22);
+  border: 1px solid rgba(176, 24, 98, 0.25);
+  border-radius: 999px;
+  padding: 3px 7px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.contextDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #b01862;
+  box-shadow: 0 0 5px rgba(176, 24, 98, 0.5);
+}
+
+/* Botão de Recolher/Expandir Integrado no Header */
+.toggleCollapseBtn {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: rgba(247, 242, 255, 0.03);
+  border: 1px solid rgba(247, 242, 255, 0.08);
+  color: #8fa1b2;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 8px;
+  cursor: pointer;
   transition: all 0.15s ease;
+  flex-shrink: 0;
+  box-sizing: border-box;
 }
 
-.collapseBtn:hover {
-  color: #ffffff;
-  background: rgba(255, 255, 255, 0.08);
+.toggleCollapseBtn:hover {
+  color: #f7f2ff;
+  background: rgba(247, 242, 255, 0.08);
+  border-color: rgba(176, 24, 98, 0.35);
+  box-shadow: 0 0 8px rgba(176, 24, 98, 0.20);
 }
 
 .panelBody {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 13px;
   flex: 1;
+  position: relative;
+  z-index: 1;
+  min-width: 0;
 }
 
 .contextCard {
-  background: rgba(13, 15, 28, 0.75);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 16px;
-  padding: 14px 16px;
+  background: linear-gradient(
+    145deg,
+    rgba(33, 16, 57, 0.22) 0%,
+    rgba(5, 2, 10, 0.65) 100%
+  );
+  border: 1px solid rgba(247, 242, 255, 0.06);
+  border-radius: 14px;
+  padding: 13px 13px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+  gap: 9px;
+  box-shadow: inset 0 1px 0 rgba(247, 242, 255, 0.025),
+    0 4px 18px rgba(0, 0, 0, 0.22);
+  transition: all 0.18s ease;
+  position: relative;
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.contextCard:hover {
+  border-color: rgba(176, 24, 98, 0.22);
+  box-shadow: inset 0 1px 0 rgba(247, 242, 255, 0.035),
+    0 6px 22px rgba(0, 0, 0, 0.28);
 }
 
 .cardHead {
@@ -130,130 +234,238 @@
 }
 
 .cardIconBoxBlue {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  background: rgba(96, 165, 250, 0.12);
+  width: 25px;
+  height: 25px;
+  border-radius: 7px;
+  background: rgba(47, 125, 217, 0.12);
+  border: 1px solid rgba(47, 125, 217, 0.25);
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
 }
 
 .cardIconBoxPurple {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  background: rgba(192, 132, 252, 0.12);
+  width: 25px;
+  height: 25px;
+  border-radius: 7px;
+  background: rgba(176, 24, 98, 0.14);
+  border: 1px solid rgba(176, 24, 98, 0.28);
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
 }
 
-.cardIconBoxAmber {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  background: rgba(245, 158, 11, 0.12);
+.cardIconBoxCentelha {
+  width: 25px;
+  height: 25px;
+  border-radius: 7px;
+  background: rgba(242, 140, 40, 0.12);
+  border: 1px solid rgba(242, 140, 40, 0.25);
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
 }
 
 .cardHeadTitle {
   font-size: 0.82rem;
   font-weight: 600;
-  color: #f8fafc;
+  color: #f7f2ff;
 }
 
 .cardText {
-  font-size: 0.74rem;
-  color: #94a3b8;
+  font-size: 0.73rem;
+  color: #8fa1b2;
   line-height: 1.45;
   margin: 0;
 }
 
-.waveContainer {
-  margin-top: 4px;
-  width: 100%;
+/* Sinais Compactos do Bloco Em Foco */
+.signalsRow {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 2px;
 }
 
-.waveChart {
-  width: 100%;
-  height: 28px;
+.signalChipRed {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: rgba(255, 27, 27, 0.08);
+  border: 1px solid rgba(255, 27, 27, 0.20);
+  color: #ff1b1b;
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.2;
 }
 
-.suggestionsList {
+.signalChipAmber {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: rgba(242, 140, 40, 0.08);
+  border: 1px solid rgba(242, 140, 40, 0.20);
+  color: #f28c28;
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.signalChipGreen {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: rgba(73, 166, 124, 0.08);
+  border: 1px solid rgba(73, 166, 124, 0.20);
+  color: #49a67c;
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+/* Lista de Prioridades com Microcontexto */
+.prioritiesList {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-.suggestionItem {
+.priorityItem {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 10px;
+  padding: 7px 9px;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.025);
-  border: 1px solid rgba(255, 255, 255, 0.04);
-  color: #e2e8f0;
+  background: rgba(247, 242, 255, 0.025);
+  border: 1px solid rgba(247, 242, 255, 0.045);
   cursor: pointer;
   transition: all 0.15s ease;
+  box-sizing: border-box;
 }
 
-.suggestionItem:hover {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(168, 85, 247, 0.25);
+.priorityItem:hover {
+  background: rgba(247, 242, 255, 0.06);
+  border-color: rgba(176, 24, 98, 0.28);
   transform: translateX(2px);
 }
 
-.suggestionLeft {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  overflow: hidden;
-}
-
-.suggestionText {
-  font-size: 0.74rem;
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.quickActionsGrid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 8px;
-}
-
-.quickActionBtn {
+.priorityLeft {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 9px 10px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.025);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  color: #cbd5e1;
-  font-size: 0.72rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
 }
 
-.quickActionBtn:hover {
-  background: rgba(255, 255, 255, 0.07);
-  color: #ffffff;
-  border-color: rgba(255, 255, 255, 0.1);
+.priorityIconBox {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: rgba(247, 242, 255, 0.04);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.priorityTexts {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.priorityTitle {
+  font-size: 0.73rem;
+  font-weight: 600;
+  color: #f7f2ff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+
+.priorityContext {
+  font-size: 0.65rem;
+  color: #8fa1b2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+
+/* Ações com MAX Grid */
+.assistantActionsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.assistantActionBtn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 8px;
+  border-radius: 10px;
+  background: rgba(247, 242, 255, 0.025);
+  border: 1px solid rgba(247, 242, 255, 0.05);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+}
+
+.assistantActionBtn:hover {
+  background: rgba(247, 242, 255, 0.07);
+  border-color: rgba(247, 242, 255, 0.12);
+  transform: translateY(-1px);
+}
+
+.assistantActionIcon {
+  flex-shrink: 0;
+}
+
+.assistantActionLabel {
+  font-size: 0.69rem;
+  font-weight: 500;
+  color: #f7f2ff;
+  line-height: 1.22;
+  white-space: normal;
+  word-break: normal;
+  min-width: 0;
 }
 
 .disclaimer {
   font-size: 0.65rem;
-  color: #64748b;
+  color: #8fa1b2;
+  opacity: 0.75;
   text-align: center;
   margin-top: auto;
-  padding: 8px 0 2px 0;
+  padding: 10px 0 2px 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .maxPanel,
+  .contextCard,
+  .priorityItem,
+  .assistantActionBtn,
+  .toggleCollapseBtn,
+  .sparkleBox {
+    transition: none !important;
+    transform: none !important;
+  }
 }

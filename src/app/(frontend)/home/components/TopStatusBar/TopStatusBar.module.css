@@ -3,101 +3,189 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  flex-wrap: wrap;
   width: 100%;
 }
 
 .headingCol {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
 }
 
 .title {
-  font-size: 1.75rem;
+  font-size: 1.82rem;
   font-weight: 700;
   letter-spacing: -0.02em;
-  color: #ffffff;
+  color: #f7f2ff;
   margin: 0;
   line-height: 1.15;
+  white-space: nowrap;
 }
 
 .subtitle {
   font-size: 0.85rem;
-  color: #94a3b8;
+  color: #8fa1b2;
   margin: 0;
+  white-space: nowrap;
 }
 
 .statusBadgesRow {
   display: flex;
+  gap: 8px;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+  flex-shrink: 0;
 }
 
 .badgeCard {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 6px 14px;
-  height: 40px;
+  gap: 8px;
+  height: 48px;
+  padding: 0 10px;
   border-radius: 10px;
-  background: rgba(11, 13, 24, 0.75);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  font-size: 0.76rem;
+  background: linear-gradient(
+    145deg,
+    rgba(33, 16, 57, 0.28) 0%,
+    rgba(5, 2, 10, 0.78) 100%
+  );
+  backdrop-filter: blur(14px) saturate(115%);
+  -webkit-backdrop-filter: blur(14px) saturate(115%);
+  border: 1px solid rgba(247, 242, 255, 0.07);
+  box-shadow: inset 0 1px 0 rgba(247, 242, 255, 0.03),
+    0 4px 16px rgba(0, 0, 0, 0.25);
   box-sizing: border-box;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
   transition: all 0.15s ease;
+  width: 136px;
+  overflow: hidden;
+  cursor: pointer;
+  flex-shrink: 0;
 }
 
-.badgeCard:hover {
-  background: rgba(18, 20, 36, 0.85);
-  border-color: rgba(255, 255, 255, 0.12);
+.iconContainer {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
 }
 
 .badgeTexts {
   display: flex;
   flex-direction: column;
   justify-content: center;
+  min-width: 0;
+  overflow: hidden;
+  gap: 1px;
 }
 
 .badgeTitle {
   font-weight: 600;
-  color: #ffffff;
-  font-size: 0.76rem;
-  line-height: 1.15;
-}
-
-.badgeTitleSingle {
-  font-weight: 600;
-  font-size: 0.78rem;
+  color: #f7f2ff;
+  font-size: 0.77rem;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .badgeSub {
-  font-size: 0.66rem;
-  color: #94a3b8;
-  line-height: 1.15;
+  font-size: 0.65rem;
+  color: #8fa1b2;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.badgeGreen {
-  color: #4ade80;
-  border-color: rgba(34, 197, 94, 0.28);
-  background: rgba(34, 197, 94, 0.06);
+/* Acidentes Cromáticos Arkana */
+.badgeEther {
+  border-color: rgba(73, 166, 124, 0.28);
+}
+.badgeEther .iconContainer {
+  background: rgba(73, 166, 124, 0.12);
+  color: #49a67c;
+}
+.badgeEther:hover {
+  background: linear-gradient(
+    145deg,
+    rgba(33, 16, 57, 0.42) 0%,
+    rgba(5, 2, 10, 0.88) 100%
+  );
+  border-color: rgba(73, 166, 124, 0.45);
+  box-shadow: 0 0 14px rgba(73, 166, 124, 0.18);
+  transform: translateY(-1px);
 }
 
-.badgeBlue {
-  color: #60a5fa;
-  border-color: rgba(59, 130, 246, 0.25);
+.badgeBoreal {
+  border-color: rgba(47, 125, 217, 0.28);
+}
+.badgeBoreal .iconContainer {
+  background: rgba(47, 125, 217, 0.12);
+  color: #2f7dd9;
+}
+.badgeBoreal:hover {
+  background: linear-gradient(
+    145deg,
+    rgba(33, 16, 57, 0.42) 0%,
+    rgba(5, 2, 10, 0.88) 100%
+  );
+  border-color: rgba(47, 125, 217, 0.45);
+  box-shadow: 0 0 14px rgba(47, 125, 217, 0.18);
+  transform: translateY(-1px);
 }
 
-.badgePurple {
-  color: #c084fc;
-  border-color: rgba(168, 85, 247, 0.25);
+.badgeArcana {
+  border-color: rgba(176, 24, 98, 0.35);
+  box-shadow: inset 0 1px 0 rgba(247, 242, 255, 0.03),
+    0 0 14px rgba(75, 29, 115, 0.2);
+}
+.badgeArcana .iconContainer {
+  background: linear-gradient(
+    135deg,
+    rgba(75, 29, 115, 0.4) 0%,
+    rgba(176, 24, 98, 0.3) 100%
+  );
+  color: #b01862;
+}
+.badgeArcana:hover {
+  background: linear-gradient(
+    145deg,
+    rgba(75, 29, 115, 0.28) 0%,
+    rgba(5, 2, 10, 0.88) 100%
+  );
+  border-color: rgba(176, 24, 98, 0.55);
+  box-shadow: 0 0 18px rgba(176, 24, 98, 0.25);
+  transform: translateY(-1px);
 }
 
-.badgeCyan {
-  color: #38bdf8;
-  border-color: rgba(56, 189, 248, 0.25);
+.badgeFoton {
+  border-color: rgba(113, 155, 185, 0.28);
+}
+.badgeFoton .iconContainer {
+  background: rgba(113, 155, 185, 0.12);
+  color: #719bb9;
+}
+.badgeFoton:hover {
+  background: linear-gradient(
+    145deg,
+    rgba(33, 16, 57, 0.42) 0%,
+    rgba(5, 2, 10, 0.88) 100%
+  );
+  border-color: rgba(113, 155, 185, 0.48);
+  box-shadow: 0 0 14px rgba(113, 155, 185, 0.20);
+  transform: translateY(-1px);
+}
+
+@media (max-width: 1080px) {
+  .topHeader {
+    flex-wrap: wrap;
+  }
+  .statusBadgesRow {
+    width: 100%;
+  }
 }

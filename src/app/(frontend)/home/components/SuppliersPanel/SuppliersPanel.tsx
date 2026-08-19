@@ -7,6 +7,7 @@ import {
   Truck,
   Star,
   Flask,
+  CaretRight,
 } from "@phosphor-icons/react";
 import { MOCK_SUPPLIERS } from "../../data/mockHomeData";
 
@@ -19,7 +20,7 @@ export function SuppliersPanel() {
       themeColor="red"
       actionLabel="Abrir fornecedores"
     >
-      {/* 6 Chips de Métricas Coloridos */}
+      {/* 6 Chips de Métricas Coloridos (KPIs Preservados da Parte 1B) */}
       <div className={styles.chipsGrid}>
         <div className={styles.chipItem}>
           <UsersThree size={13} className={styles.chipIconRed} />
@@ -58,7 +59,10 @@ export function SuppliersPanel() {
         <span className={styles.subHeaderTitle}>
           Últimos fornecedores adicionados
         </span>
-        <a className={styles.subHeaderLink}>Ver todos</a>
+        <a className={styles.subHeaderLink}>
+          <span>Ver todos</span>
+          <CaretRight size={12} weight="bold" />
+        </a>
       </div>
 
       {/* Lista de Fornecedores Recentes */}

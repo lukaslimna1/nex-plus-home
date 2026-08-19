@@ -2,12 +2,21 @@
   width: 224px;
   min-width: 224px;
   height: 100%;
-  background: #080913;
-  border-right: 1px solid rgba(255, 255, 255, 0.05);
+  background: linear-gradient(
+    180deg,
+    rgba(33, 16, 57, 0.25) 0%,
+    rgba(5, 2, 10, 0.96) 100%
+  );
+  backdrop-filter: blur(18px) saturate(115%);
+  -webkit-backdrop-filter: blur(18px) saturate(115%);
+  border-right: 1px solid rgba(247, 242, 255, 0.07);
+  box-shadow: inset -1px 0 0 rgba(247, 242, 255, 0.02),
+    inset 0 1px 0 rgba(247, 242, 255, 0.04),
+    4px 0 24px rgba(5, 2, 10, 0.5);
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  padding: 18px 12px 14px 12px;
+  padding: 20px 12px 16px 12px;
   transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1), padding 0.25s ease;
   z-index: 20;
   box-sizing: border-box;
@@ -16,7 +25,7 @@
 .sidebarCollapsed {
   width: 68px;
   min-width: 68px;
-  padding: 18px 8px 14px 8px;
+  padding: 20px 8px 16px 8px;
 }
 
 .topSection {
@@ -28,29 +37,20 @@
 .brandRow {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 4px;
-  height: 36px;
+  justify-content: flex-start;
+  padding: 0 8px;
+  height: 44px;
 }
 
-.brandIcon {
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  background: linear-gradient(135deg, #4f46e5 0%, #9333ea 100%);
-  display: flex;
-  align-items: center;
+.brandRowCollapsed {
   justify-content: center;
-  font-weight: 800;
-  font-size: 1.05rem;
-  color: #ffffff;
-  box-shadow: 0 0 14px rgba(147, 51, 234, 0.45);
-  flex-shrink: 0;
+  padding: 0;
 }
 
 .wordmarkWrapper {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   overflow: visible;
 }
 
@@ -58,12 +58,13 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 7px;
-  color: #94a3b8;
-  padding: 5px 9px;
-  font-size: 0.74rem;
+  background: rgba(33, 16, 57, 0.35);
+  border: 1px solid rgba(247, 242, 255, 0.08);
+  border-radius: 8px;
+  color: #8fa1b2;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 0.76rem;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -71,31 +72,33 @@
 }
 
 .collapseToggle:hover {
-  background: rgba(255, 255, 255, 0.07);
-  color: #ffffff;
+  background: rgba(247, 242, 255, 0.07);
+  border-color: rgba(247, 242, 255, 0.14);
+  color: #f7f2ff;
 }
 
 .collapseToggleCentered {
   width: 100%;
   justify-content: center;
-  padding: 6px 0;
+  padding: 0;
 }
 
 .navigationList {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  margin-top: 4px;
+  gap: 4px;
+  margin-top: 6px;
 }
 
 .navButton {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  color: #94a3b8;
-  font-size: 0.84rem;
+  gap: 12px;
+  height: 46px;
+  padding: 0 12px;
+  border-radius: 9px;
+  color: #8fa1b2;
+  font-size: 0.92rem;
   font-weight: 500;
   background: transparent;
   border: 1px solid transparent;
@@ -104,27 +107,61 @@
   white-space: nowrap;
   width: 100%;
   text-align: left;
+  box-sizing: border-box;
+}
+
+.navButton svg {
+  flex-shrink: 0;
+  color: #8fa1b2;
+  transition: color 0.15s ease;
 }
 
 .navButton:hover {
-  background: rgba(255, 255, 255, 0.04);
-  color: #f1f5f9;
+  background: rgba(247, 242, 255, 0.04);
+  border-color: rgba(247, 242, 255, 0.06);
+  color: #f7f2ff;
+  transform: translateX(2px);
+}
+
+.navButton:hover svg {
+  color: #f7f2ff;
 }
 
 .navButtonActive {
-  background: rgba(147, 51, 234, 0.12);
-  border: 1px solid rgba(168, 85, 247, 0.35);
-  color: #ffffff;
-  box-shadow: 0 0 14px rgba(168, 85, 247, 0.14), inset 0 0 10px rgba(147, 51, 234, 0.08);
+  background: linear-gradient(
+    90deg,
+    rgba(75, 29, 115, 0.35) 0%,
+    rgba(176, 24, 98, 0.12) 100%
+  );
+  border: 1px solid rgba(176, 24, 98, 0.38);
+  color: #f7f2ff;
+  font-weight: 600;
+  box-shadow: 0 0 16px rgba(75, 29, 115, 0.28),
+    inset 0 0 10px rgba(176, 24, 98, 0.14);
+}
+
+.navButtonActive svg {
+  color: #f7f2ff;
 }
 
 .navButtonCollapsed {
   justify-content: center;
-  padding: 8px 0;
+  padding: 0;
+}
+
+.navButtonCollapsed:hover {
+  transform: none;
 }
 
 .bottomSection {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
+}
+
+.bottomDivider {
+  height: 1px;
+  width: 100%;
+  background: rgba(247, 242, 255, 0.06);
+  margin-bottom: 2px;
 }

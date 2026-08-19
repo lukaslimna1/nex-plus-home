@@ -1,6 +1,6 @@
 import React from "react";
 import styles from "./TopStatusBar.module.css";
-import { Cpu, Database, Sparkle, ShieldCheck } from "@phosphor-icons/react";
+import { HardDrives, Database, Sparkle, ShieldCheck } from "@phosphor-icons/react";
 
 export function TopStatusBar() {
   return (
@@ -12,18 +12,20 @@ export function TopStatusBar() {
 
       <div className={styles.statusBadgesRow}>
         {/* Local-first */}
-        <div className={`${styles.badgeCard} ${styles.badgeGreen}`}>
-          <Cpu size={16} weight="duotone" />
+        <div className={`${styles.badgeCard} ${styles.badgeEther}`}>
+          <div className={styles.iconContainer}>
+            <HardDrives size={19} weight="duotone" />
+          </div>
           <div className={styles.badgeTexts}>
-            <span className={styles.badgeTitleSingle} style={{ color: "#4ade80" }}>
-              Local-first
-            </span>
+            <span className={styles.badgeTitle}>Local-first</span>
           </div>
         </div>
 
         {/* PostgreSQL */}
-        <div className={`${styles.badgeCard} ${styles.badgeBlue}`}>
-          <Database size={16} weight="duotone" color="#60a5fa" />
+        <div className={`${styles.badgeCard} ${styles.badgeBoreal}`}>
+          <div className={styles.iconContainer}>
+            <Database size={19} weight="duotone" />
+          </div>
           <div className={styles.badgeTexts}>
             <span className={styles.badgeTitle}>PostgreSQL</span>
             <span className={styles.badgeSub}>Saudável</span>
@@ -31,8 +33,10 @@ export function TopStatusBar() {
         </div>
 
         {/* MAX */}
-        <div className={`${styles.badgeCard} ${styles.badgePurple}`}>
-          <Sparkle size={16} weight="fill" color="#c084fc" />
+        <div className={`${styles.badgeCard} ${styles.badgeArcana}`}>
+          <div className={styles.iconContainer}>
+            <Sparkle size={19} weight="fill" />
+          </div>
           <div className={styles.badgeTexts}>
             <span className={styles.badgeTitle}>MAX</span>
             <span className={styles.badgeSub}>Assistente ativo</span>
@@ -40,8 +44,10 @@ export function TopStatusBar() {
         </div>
 
         {/* Sistema */}
-        <div className={`${styles.badgeCard} ${styles.badgeCyan}`}>
-          <ShieldCheck size={16} weight="duotone" color="#38bdf8" />
+        <div className={`${styles.badgeCard} ${styles.badgeFoton}`}>
+          <div className={styles.iconContainer}>
+            <ShieldCheck size={19} weight="duotone" />
+          </div>
           <div className={styles.badgeTexts}>
             <span className={styles.badgeTitle}>Sistema</span>
             <span className={styles.badgeSub}>Tudo operacional</span>

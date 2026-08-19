@@ -32,14 +32,15 @@ export function Sidebar({
       }`}
     >
       <div className={styles.topSection}>
-        {/* Marca / Logo */}
-        <div className={styles.brandRow}>
-          <div className={styles.brandIcon}>N</div>
-          {!isCollapsed && (
-            <div className={styles.wordmarkWrapper}>
-              <NexWordmark height={22} width={105} />
-            </div>
-          )}
+        {/* Marca / Logo Oficial */}
+        <div
+          className={`${styles.brandRow} ${
+            isCollapsed ? styles.brandRowCollapsed : ""
+          }`}
+        >
+          <div className={styles.wordmarkWrapper}>
+            <NexWordmark width={isCollapsed ? 46 : 128} height="auto" />
+          </div>
         </div>
 
         {/* Botão de Recolher */}
@@ -62,7 +63,7 @@ export function Sidebar({
           )}
         </button>
 
-        {/* Itens de Navegação v0.1 */}
+        {/* Itens de Navegação */}
         <nav className={styles.navigationList}>
           <button
             type="button"
@@ -72,9 +73,8 @@ export function Sidebar({
             title="Home"
           >
             <House
-              size={18}
+              size={20}
               weight={activeItem === "home" ? "fill" : "regular"}
-              color={activeItem === "home" ? "#c084fc" : "currentColor"}
             />
             {!isCollapsed && <span>Home</span>}
           </button>
@@ -86,7 +86,7 @@ export function Sidebar({
             } ${isCollapsed ? styles.navButtonCollapsed : ""}`}
             title="MAX"
           >
-            <Sparkle size={18} weight="regular" />
+            <Sparkle size={20} weight={activeItem === "max" ? "fill" : "regular"} />
             {!isCollapsed && <span>MAX</span>}
           </button>
 
@@ -97,7 +97,7 @@ export function Sidebar({
             } ${isCollapsed ? styles.navButtonCollapsed : ""}`}
             title="Fornecedores"
           >
-            <UsersThree size={18} weight="regular" />
+            <UsersThree size={20} weight={activeItem === "suppliers" ? "fill" : "regular"} />
             {!isCollapsed && <span>Fornecedores</span>}
           </button>
 
@@ -108,7 +108,7 @@ export function Sidebar({
             } ${isCollapsed ? styles.navButtonCollapsed : ""}`}
             title="Radar de Compra"
           >
-            <Crosshair size={18} weight="regular" />
+            <Crosshair size={20} weight={activeItem === "radar" ? "fill" : "regular"} />
             {!isCollapsed && <span>Radar de Compra</span>}
           </button>
 
@@ -119,7 +119,7 @@ export function Sidebar({
             } ${isCollapsed ? styles.navButtonCollapsed : ""}`}
             title="Ferramentas"
           >
-            <Wrench size={18} weight="regular" />
+            <Wrench size={20} weight={activeItem === "tools" ? "fill" : "regular"} />
             {!isCollapsed && <span>Ferramentas</span>}
           </button>
         </nav>
@@ -127,6 +127,7 @@ export function Sidebar({
 
       {/* Seção Inferior */}
       <div className={styles.bottomSection}>
+        <div className={styles.bottomDivider} />
         <button
           type="button"
           className={`${styles.navButton} ${
@@ -134,7 +135,7 @@ export function Sidebar({
           }`}
           title="Configuração"
         >
-          <Gear size={18} weight="regular" />
+          <Gear size={20} weight="regular" />
           {!isCollapsed && <span>Configuração</span>}
         </button>
 

@@ -5,6 +5,8 @@ import {
   Crosshair,
   Storefront,
   Bag,
+  ShoppingCartSimple,
+  CirclesFour,
   Headphones,
   TShirt,
   Watch,
@@ -32,7 +34,11 @@ export function RadarPanel() {
           }`}
           onClick={() => setActiveTab("Mercado Livre")}
         >
-          <Storefront size={13} color="#fbbf24" weight="fill" />
+          <Storefront
+            size={16}
+            color={activeTab === "Mercado Livre" ? "#FFB300" : "#FFB300"}
+            weight={activeTab === "Mercado Livre" ? "fill" : "regular"}
+          />
           <span>Mercado Livre</span>
         </button>
 
@@ -43,7 +49,11 @@ export function RadarPanel() {
           }`}
           onClick={() => setActiveTab("Shopee")}
         >
-          <Bag size={13} color="#f97316" weight="fill" />
+          <Bag
+            size={16}
+            color={activeTab === "Shopee" ? "#F28C28" : "#E45B4F"}
+            weight={activeTab === "Shopee" ? "fill" : "regular"}
+          />
           <span>Shopee</span>
         </button>
 
@@ -54,7 +64,11 @@ export function RadarPanel() {
           }`}
           onClick={() => setActiveTab("Amazon")}
         >
-          <span className={styles.amazonLogo}>a</span>
+          <ShoppingCartSimple
+            size={16}
+            color={activeTab === "Amazon" ? "#719BB9" : "#719BB9"}
+            weight={activeTab === "Amazon" ? "fill" : "regular"}
+          />
           <span>Amazon</span>
         </button>
 
@@ -65,17 +79,20 @@ export function RadarPanel() {
           }`}
           onClick={() => setActiveTab("Outros")}
         >
+          <CirclesFour
+            size={16}
+            color={activeTab === "Outros" ? "#F7F2FF" : "#8FA1B2"}
+            weight={activeTab === "Outros" ? "fill" : "regular"}
+          />
           <span>Outros</span>
         </button>
       </div>
 
-      {/* Header da Tabela */}
+      {/* Header da Tabela alinhado em grid */}
       <div className={styles.tableHeader}>
         <span>Produtos monitorados</span>
-        <div className={styles.headerMetrics}>
-          <span>Preço</span>
-          <span>Variação</span>
-        </div>
+        <span className={styles.headerPrice}>Preço</span>
+        <span className={styles.headerVariation}>Variação</span>
       </div>
 
       {/* Lista de Produtos Monitorados */}
@@ -92,9 +109,10 @@ export function RadarPanel() {
 
           return (
             <div key={p.id} className={styles.productRow}>
+              {/* Informações do Produto */}
               <div className={styles.productLeft}>
                 <div className={styles.thumbBox}>
-                  <ProductIcon size={15} />
+                  <ProductIcon size={17} weight="duotone" />
                 </div>
                 <div className={styles.infoCol}>
                   <span className={styles.productName}>{p.name}</span>
@@ -102,29 +120,40 @@ export function RadarPanel() {
                 </div>
               </div>
 
-              <div className={styles.priceRightCol}>
+              {/* Preço Alinhado */}
+              <div className={styles.priceCol}>
                 <span className={styles.priceText}>{p.priceFormatted}</span>
-                <div className={styles.sparklineBlock}>
-                  <span
-                    className={p.isDiscount ? styles.trendGreen : styles.trendRed}
-                  >
-                    {p.isDiscount ? "↓" : "↑"} {p.variationPercentage}
-                  </span>
-                  {/* Sparkline SVG refinada */}
-                  <svg width="32" height="12" viewBox="0 0 32 12">
-                    <path
-                      d={
-                        p.isDiscount
-                          ? "M1 2 Q 8 1, 14 7 T 22 4 T 31 10"
-                          : "M1 10 Q 8 9, 14 4 T 22 7 T 31 2"
-                      }
-                      fill="none"
-                      stroke={p.isDiscount ? "#4ade80" : "#f87171"}
-                      strokeWidth="1.5"
-                      strokeLinecap="round"
-                    />
-                  </svg>
-                </div>
+              </div>
+
+              {/* Variação + Sparkline */}
+              <div className={styles.variationCol}>
+                <span
+                  className={
+                    p.isDiscount ? styles.trendPillDiscount : styles.trendPillHike
+                  }
+                >
+                  {p.isDiscount ? "↓" : "↑"} {p.variationPercentage}
+                </span>
+
+                {/* Sparkline SVG 44x15 */}
+                <svg
+                  width="44"
+                  height="15"
+                  viewBox="0 0 44 15"
+                  className={styles.sparklineSvg}
+                >
+                  <path
+                    d={
+                      p.isDiscount
+                        ? "M2 3 Q 12 2, 20 9 T 32 5 T 42 12"
+                        : "M2 12 Q 12 11, 20 5 T 32 8 T 42 3"
+                    }
+                    fill="none"
+                    stroke={p.isDiscount ? "#49A67C" : "#FF1B1B"}
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                  />
+                </svg>
               </div>
             </div>
           );

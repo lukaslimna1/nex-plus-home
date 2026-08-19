@@ -22,6 +22,7 @@ export default function HomePage() {
     try {
       const savedSidebar = localStorage.getItem(SIDEBAR_KEY);
       const savedMax = localStorage.getItem(MAX_KEY);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setIsSidebarCollapsed(savedSidebar === "true");
       setIsMaxCollapsed(savedMax === "true");
     } catch {

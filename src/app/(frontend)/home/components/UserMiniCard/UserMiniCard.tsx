@@ -8,7 +8,12 @@ interface UserMiniCardProps {
 
 export function UserMiniCard({ isCollapsed }: UserMiniCardProps) {
   return (
-    <div className={styles.userMiniCard} title="Daniel Silva (Administrador)">
+    <div
+      className={`${styles.userMiniCard} ${
+        isCollapsed ? styles.userMiniCardCollapsed : ""
+      }`}
+      title="Daniel Silva (Administrador)"
+    >
       <div className={styles.avatarWrapper}>
         <div className={styles.avatarCircle}>DS</div>
         <div className={styles.onlineStatusDot} />
@@ -20,7 +25,7 @@ export function UserMiniCard({ isCollapsed }: UserMiniCardProps) {
             <span className={styles.nameText}>Daniel Silva</span>
             <span className={styles.roleText}>Administrador</span>
           </div>
-          <CaretDown size={13} color="#94a3b8" />
+          <CaretDown size={14} className={styles.chevronIcon} />
         </>
       )}
     </div>
