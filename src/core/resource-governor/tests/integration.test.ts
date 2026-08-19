@@ -2,7 +2,7 @@
  * NEX+ · Resource Governor & Local Runtime Lifecycle
  * Testes de Integração com o Core 0.5 (DispatchAdmission & L0 Attempt) — Escopo 0.6 (Hardening)
  *
- * Cenários B41 a B50 + G1 a G7: Correlação causal rigorosa entre DispatchAdmission,
+ * Cenários B41 a B50 + G1 a G7 + H6 a H9: Correlação causal rigorosa entre DispatchAdmission,
  * GovernorDecision e ResourceAdmission.
  */
 
@@ -65,6 +65,8 @@ function createMockRequest(overrides: Partial<ResourceRequest> = {}): ResourceRe
     routeEvaluationId: 'eval_01' as RouteEvaluationId,
     routeRevisionId: 'route_rev_01' as RouteRevisionId,
     profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId,
+    targetModel: 'llama3:8b',
+    targetGpuUuid: 'GPU-01',
     intent: 'use_current_state',
     requestedAt: '2026-08-19T20:00:00.000Z',
     ...overrides,
@@ -94,6 +96,8 @@ function createMockResourceAdmission(overrides: Partial<ResourceAdmission> = {})
     routeRevisionId: 'route_rev_01' as RouteRevisionId,
     profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId,
     resourceSnapshotId: 'snap_01' as ResourceSnapshotId,
+    targetModel: 'llama3:8b',
+    targetGpuUuid: 'GPU-01',
     materialFacts: { freeRamBytes: 16000000000 },
     admittedAt: '2026-08-19T20:00:00.000Z',
     ...overrides,
@@ -112,15 +116,16 @@ describe('NEX+ Resource Governor · Core 0.5 Integration (Fase B & Hardening)', 
       request,
       governorDecision: decision,
       dispatchAdmission: dispatch,
-      profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId,
-      resourceSnapshotId: 'snap_01' as ResourceSnapshotId,
-      materialFacts: { freeRamBytes: 16000000000 },
       admittedAt: '2026-08-19T20:00:01.000Z',
     });
 
     assert.equal(adm.admissionId, 'res_adm_01');
     assert.equal(adm.decisionId, dispatch.decisionId);
     assert.equal(adm.materialContextId, dispatch.materialContextId);
+    assert.equal(adm.profileRevisionId, decision.profileRevisionId);
+    assert.equal(adm.resourceSnapshotId, decision.resourceSnapshotId);
+    assert.equal(adm.targetModel, request.targetModel);
+    assert.equal(adm.targetGpuUuid, request.targetGpuUuid);
   });
 
   // G2. GovernorDecision defer → não materializa admission
@@ -135,9 +140,6 @@ describe('NEX+ Resource Governor · Core 0.5 Integration (Fase B & Hardening)', 
         request,
         governorDecision: decision,
         dispatchAdmission: dispatch,
-        profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId,
-        resourceSnapshotId: 'snap_01' as ResourceSnapshotId,
-        materialFacts: {},
         admittedAt: '2026-08-19T20:00:01.000Z',
       });
     }, /GovernorDecision disposition is 'defer'/);
@@ -155,9 +157,6 @@ describe('NEX+ Resource Governor · Core 0.5 Integration (Fase B & Hardening)', 
         request,
         governorDecision: decision,
         dispatchAdmission: dispatch,
-        profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId,
-        resourceSnapshotId: 'snap_01' as ResourceSnapshotId,
-        materialFacts: {},
         admittedAt: '2026-08-19T20:00:01.000Z',
       });
     }, /GovernorDecision disposition is 'deny'/);
@@ -175,9 +174,6 @@ describe('NEX+ Resource Governor · Core 0.5 Integration (Fase B & Hardening)', 
         request,
         governorDecision: decision,
         dispatchAdmission: dispatch,
-        profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId,
-        resourceSnapshotId: 'snap_01' as ResourceSnapshotId,
-        materialFacts: {},
         admittedAt: '2026-08-19T20:00:01.000Z',
       });
     }, /GovernorDecision disposition is 'action_required'/);
@@ -195,35 +191,12 @@ describe('NEX+ Resource Governor · Core 0.5 Integration (Fase B & Hardening)', 
         request,
         governorDecision: decision,
         dispatchAdmission: dispatch,
-        profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId,
-        resourceSnapshotId: 'snap_01' as ResourceSnapshotId,
-        materialFacts: {},
         admittedAt: '2026-08-19T20:00:01.000Z',
       });
     }, /requestId mismatch/);
   });
 
-  // G6. snapshot mismatch → rejeita
-  it('G6. snapshot mismatch rejeita por resourceSnapshotId mismatch', () => {
-    const dispatch = createMockDispatchAdmission();
-    const request = createMockRequest();
-    const decision = createMockGovernorDecision({ resourceSnapshotId: 'snap_01' as ResourceSnapshotId });
-
-    assert.throws(() => {
-      materializeResourceAdmission({
-        admissionId: 'res_adm_01' as ResourceAdmissionId,
-        request,
-        governorDecision: decision,
-        dispatchAdmission: dispatch,
-        profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId,
-        resourceSnapshotId: 'snap_DIVERGENT' as ResourceSnapshotId,
-        materialFacts: {},
-        admittedAt: '2026-08-19T20:00:01.000Z',
-      });
-    }, /resourceSnapshotId mismatch/);
-  });
-
-  // G7. profile mismatch → rejeita
+  // G7. profile mismatch entre request e decision → rejeita
   it('G7. profile mismatch rejeita por profileRevisionId mismatch', () => {
     const dispatch = createMockDispatchAdmission();
     const request = createMockRequest({ profileRevisionId: 'prof_A' as ResourceProfileRevisionId });
@@ -235,12 +208,86 @@ describe('NEX+ Resource Governor · Core 0.5 Integration (Fase B & Hardening)', 
         request,
         governorDecision: decision,
         dispatchAdmission: dispatch,
-        profileRevisionId: 'prof_A' as ResourceProfileRevisionId,
-        resourceSnapshotId: 'snap_01' as ResourceSnapshotId,
-        materialFacts: {},
         admittedAt: '2026-08-19T20:00:01.000Z',
       });
     }, /profileRevisionId mismatch/);
+  });
+
+  // H6. ResourceAdmission.materialFacts é exatamente projeção da GovernorDecision
+  it('H6. ResourceAdmission.materialFacts é exatamente projeção da GovernorDecision', () => {
+    const dispatch = createMockDispatchAdmission();
+    const request = createMockRequest();
+    const decision = createMockGovernorDecision({
+      materialFacts: {
+        freeRamBytes: 123456,
+        freeVramBytes: 654321,
+        cpuUtilizationPercent: 42,
+        snapshotFreshness: 'fresh',
+      },
+    });
+
+    const adm = materializeResourceAdmission({
+      admissionId: 'res_adm_01' as ResourceAdmissionId,
+      request,
+      governorDecision: decision,
+      dispatchAdmission: dispatch,
+      admittedAt: '2026-08-19T20:00:01.000Z',
+    });
+
+    assert.deepEqual(adm.materialFacts, decision.materialFacts);
+  });
+
+  // H7. ResourceAdmission.targetModel vem do ResourceRequest
+  it('H7. ResourceAdmission.targetModel vem do ResourceRequest', () => {
+    const dispatch = createMockDispatchAdmission();
+    const request = createMockRequest({ targetModel: 'custom-model:latest' });
+    const decision = createMockGovernorDecision();
+
+    const adm = materializeResourceAdmission({
+      admissionId: 'res_adm_01' as ResourceAdmissionId,
+      request,
+      governorDecision: decision,
+      dispatchAdmission: dispatch,
+      admittedAt: '2026-08-19T20:00:01.000Z',
+    });
+
+    assert.equal(adm.targetModel, 'custom-model:latest');
+  });
+
+  // H8. ResourceAdmission.targetGpuUuid vem do ResourceRequest
+  it('H8. ResourceAdmission.targetGpuUuid vem do ResourceRequest', () => {
+    const dispatch = createMockDispatchAdmission();
+    const request = createMockRequest({ targetGpuUuid: 'GPU-UUID-SPECIFIC' });
+    const decision = createMockGovernorDecision();
+
+    const adm = materializeResourceAdmission({
+      admissionId: 'res_adm_01' as ResourceAdmissionId,
+      request,
+      governorDecision: decision,
+      dispatchAdmission: dispatch,
+      admittedAt: '2026-08-19T20:00:01.000Z',
+    });
+
+    assert.equal(adm.targetGpuUuid, 'GPU-UUID-SPECIFIC');
+  });
+
+  // H9. API de materialização não aceita facts/target paralelos como fonte de verdade
+  it('H9. MaterializeResourceAdmissionParams não possui campos paralelos redundantes', () => {
+    const dispatch = createMockDispatchAdmission();
+    const request = createMockRequest();
+    const decision = createMockGovernorDecision();
+
+    const params = {
+      admissionId: 'res_adm_01' as ResourceAdmissionId,
+      request,
+      governorDecision: decision,
+      dispatchAdmission: dispatch,
+      admittedAt: '2026-08-19T20:00:01.000Z',
+    };
+
+    const adm = materializeResourceAdmission(params);
+    assert.equal(adm.profileRevisionId, decision.profileRevisionId);
+    assert.equal(adm.resourceSnapshotId, decision.resourceSnapshotId);
   });
 
   // B41. ResourceAdmission + DispatchAdmission com Decision mismatch → rejeita
@@ -355,9 +402,6 @@ describe('NEX+ Resource Governor · Core 0.5 Integration (Fase B & Hardening)', 
       request,
       governorDecision: decision,
       dispatchAdmission: dispatch,
-      profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId,
-      resourceSnapshotId: 'snap_01' as ResourceSnapshotId,
-      materialFacts: { freeRamBytes: 8000 },
       admittedAt: '2026-08-19T20:00:00.000Z',
     });
 

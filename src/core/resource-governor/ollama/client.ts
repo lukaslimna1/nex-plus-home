@@ -231,12 +231,18 @@ export function createOllamaClient(config: OllamaClientConfig = {}): OllamaClien
           signal: controller.signal,
         });
 
-        // Consome a resposta não-streaming completa antes de prosseguir
+        // Consome e valida a resposta não-streaming completa
         if (res.ok) {
           try {
-            await res.json();
-          } catch {
-            // tolera formato de término vazio caso status seja OK
+            const body = await res.json();
+            if (!body || typeof body !== 'object') {
+              throw new InvalidOllamaResponseError('/api/generate response returned invalid non-object JSON');
+            }
+          } catch (err: any) {
+            if (err instanceof OllamaClientError) {
+              throw err;
+            }
+            throw new InvalidOllamaResponseError(`/api/generate response returned invalid JSON: ${err.message}`);
           }
         }
 

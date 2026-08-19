@@ -4,6 +4,7 @@
  *
  * Admissão formal de recursos físicos de L0 e wrapper de AttemptCreatedEvent
  * correlacionando causalmente DispatchAdmission (0.5), GovernorDecision e ResourceAdmission (0.6).
+ * ResourceAdmission é estritamente uma projeção imutável da GovernorDecision admitida.
  */
 
 import type { AttemptCreatedEvent, AttemptId } from '../../execution/contracts';
@@ -15,10 +16,7 @@ import type {
   ResourceAdmission,
   ResourceAdmissionId,
   ResourceLeaseId,
-  ResourceMaterialFacts,
-  ResourceProfileRevisionId,
   ResourceRequest,
-  ResourceSnapshotId,
 } from '../contracts';
 
 export class ResourceAdmissionMismatchError extends Error {
@@ -35,18 +33,14 @@ export interface MaterializeResourceAdmissionParams {
   readonly request: ResourceRequest;
   readonly governorDecision: GovernorDecision;
   readonly dispatchAdmission: DispatchAdmission;
-  readonly profileRevisionId: ResourceProfileRevisionId;
-  readonly resourceSnapshotId: ResourceSnapshotId;
   readonly leaseId?: ResourceLeaseId;
-  readonly targetModel?: string;
-  readonly targetGpuUuid?: string;
-  readonly materialFacts: ResourceMaterialFacts;
   readonly admittedAt: string;
 }
 
 /**
- * Materializa uma ResourceAdmission imutável a partir de uma DispatchAdmission e decisão 'admit' do Governor.
- * Valida estritamente a linhagem causal entre Request, GovernorDecision, DispatchAdmission e Snapshot.
+ * Materializa uma ResourceAdmission imutável como projeção direta da GovernorDecision e DispatchAdmission.
+ * Deriva profileRevisionId, resourceSnapshotId e materialFacts diretamente da GovernorDecision admitida,
+ * e targetModel / targetGpuUuid diretamente do ResourceRequest validado.
  */
 export function materializeResourceAdmission(
   params: MaterializeResourceAdmissionParams,
@@ -56,12 +50,7 @@ export function materializeResourceAdmission(
     request,
     governorDecision,
     dispatchAdmission,
-    profileRevisionId,
-    resourceSnapshotId,
     leaseId,
-    targetModel,
-    targetGpuUuid,
-    materialFacts,
     admittedAt,
   } = params;
 
@@ -69,6 +58,13 @@ export function materializeResourceAdmission(
     throw new ResourceAdmissionMismatchError(
       'admissionId is mandatory and cannot be omitted or randomly generated in domain logic.',
       'INVALID_ADMISSION_ID',
+    );
+  }
+
+  if (!admittedAt || isNaN(Date.parse(admittedAt))) {
+    throw new ResourceAdmissionMismatchError(
+      `admittedAt must be a valid ISO 8601 timestamp (got '${admittedAt}').`,
+      'INVALID_TIMESTAMP',
     );
   }
 
@@ -92,20 +88,6 @@ export function materializeResourceAdmission(
     throw new ResourceAdmissionMismatchError(
       `profileRevisionId mismatch: governorDecision '${governorDecision.profileRevisionId}' vs request '${request.profileRevisionId}'.`,
       'PROFILE_REVISION_MISMATCH',
-    );
-  }
-
-  if (governorDecision.profileRevisionId !== profileRevisionId) {
-    throw new ResourceAdmissionMismatchError(
-      `profileRevisionId mismatch: governorDecision '${governorDecision.profileRevisionId}' vs parameter '${profileRevisionId}'.`,
-      'PROFILE_REVISION_MISMATCH',
-    );
-  }
-
-  if (governorDecision.resourceSnapshotId !== resourceSnapshotId) {
-    throw new ResourceAdmissionMismatchError(
-      `resourceSnapshotId mismatch: governorDecision '${governorDecision.resourceSnapshotId}' vs parameter '${resourceSnapshotId}'.`,
-      'SNAPSHOT_ID_MISMATCH',
     );
   }
 
@@ -145,12 +127,12 @@ export function materializeResourceAdmission(
     materialContextId: dispatchAdmission.materialContextId,
     routeEvaluationId: dispatchAdmission.routeEvaluationId,
     routeRevisionId: dispatchAdmission.routeRevisionId,
-    profileRevisionId,
-    resourceSnapshotId,
+    profileRevisionId: governorDecision.profileRevisionId,
+    resourceSnapshotId: governorDecision.resourceSnapshotId,
     leaseId,
-    targetModel,
-    targetGpuUuid,
-    materialFacts: Object.freeze({ ...materialFacts }),
+    targetModel: request.targetModel,
+    targetGpuUuid: request.targetGpuUuid,
+    materialFacts: Object.freeze({ ...governorDecision.materialFacts }),
     admittedAt,
   });
 }

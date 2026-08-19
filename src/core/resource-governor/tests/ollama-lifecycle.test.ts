@@ -2,8 +2,10 @@
  * NEX+ · Resource Governor & Local Runtime Lifecycle
  * Testes Unitários de Cliente e Lifecycle Ollama — Escopo 0.6 (Fase A & Hardening)
  *
- * Cenários A11 a A24 + G16 a G19: Parsing de VRAM/context, loopback gating, catálogo aprovado,
- * stream:false, checagem de modelos instalados e correspondência de digest.
+ * Cenários A11 a A24 + G16 a G19 + H10 a H15:
+ * Parsing de VRAM/context, loopback gating, catálogo aprovado, stream:false,
+ * checagem de modelos instalados, digest pinning fail-closed no preload e unload,
+ * precheck fail-closed e validação de JSON em setLifecycle.
  */
 
 import { describe, it } from 'node:test';
@@ -12,6 +14,7 @@ import assert from 'node:assert/strict';
 import type { ApprovedLocalModelRef } from '../contracts';
 import {
   createOllamaClient,
+  InvalidOllamaResponseError,
   OllamaClientError,
   OllamaTimeoutError,
   validateLoopbackUrl,
@@ -398,5 +401,154 @@ describe('NEX+ Resource Governor · Ollama Client & Lifecycle (Fase A & Hardenin
 
     assert.equal(result.status, 'rejected');
     assert.equal(result.reasonCode, 'MODEL_DIGEST_MISMATCH');
+  });
+
+  // H10. approved digest presente + installed digest ausente → MODEL_DIGEST_UNVERIFIED
+  it('H10. approved digest presente + installed digest ausente no /api/tags retorna MODEL_DIGEST_UNVERIFIED', async () => {
+    const mockFetch = async (url: string | URL | Request) => {
+      const urlStr = String(url);
+      if (urlStr.endsWith('/api/tags')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            models: [{ name: 'llama3:8b' }], // Sem digest
+          }),
+        } as Response;
+      }
+      return { ok: false, status: 404 } as Response;
+    };
+
+    const client = createOllamaClient({ fetchFn: mockFetch as any });
+    const result = await preloadModel(client, mockApprovedCatalog, 'llama3:8b');
+
+    assert.equal(result.status, 'rejected');
+    assert.equal(result.reasonCode, 'MODEL_DIGEST_UNVERIFIED');
+  });
+
+  // H11. approved digest presente + installed digest diferente → MODEL_DIGEST_MISMATCH
+  it('H11. approved digest presente + installed digest diferente retorna MODEL_DIGEST_MISMATCH', async () => {
+    const mockFetch = async (url: string | URL | Request) => {
+      const urlStr = String(url);
+      if (urlStr.endsWith('/api/tags')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            models: [{ name: 'llama3:8b', digest: 'sha256:DIFFERENT_HASH' }],
+          }),
+        } as Response;
+      }
+      return { ok: false, status: 404 } as Response;
+    };
+
+    const client = createOllamaClient({ fetchFn: mockFetch as any });
+    const result = await preloadModel(client, mockApprovedCatalog, 'llama3:8b');
+
+    assert.equal(result.status, 'rejected');
+    assert.equal(result.reasonCode, 'MODEL_DIGEST_MISMATCH');
+  });
+
+  // H12. approved digest presente + loaded digest ausente no unload → não executa lifecycle
+  it('H12. approved digest presente + loaded digest ausente no unload retorna MODEL_DIGEST_UNVERIFIED e não descarrega', async () => {
+    let generateCalled = false;
+    const mockFetch = async (url: string | URL | Request) => {
+      const urlStr = String(url);
+      if (urlStr.endsWith('/api/ps')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            models: [{ name: 'llama3:8b' }], // Sem digest no loaded model
+          }),
+        } as Response;
+      }
+      if (urlStr.endsWith('/api/generate')) {
+        generateCalled = true;
+        return { ok: true, status: 200, json: async () => ({ done: true }) } as Response;
+      }
+      return { ok: false, status: 404 } as Response;
+    };
+
+    const client = createOllamaClient({ fetchFn: mockFetch as any });
+    const result = await unloadModel(client, mockApprovedCatalog, 'llama3:8b');
+
+    assert.equal(result.status, 'rejected');
+    assert.equal(result.reasonCode, 'MODEL_DIGEST_UNVERIFIED');
+    assert.equal(generateCalled, false);
+  });
+
+  // H13. approved digest presente + precheck /api/ps falha → setLifecycle NÃO é chamado
+  it('H13. approved digest presente + precheck /api/ps falha retorna DIGEST_PRECHECK_UNAVAILABLE e não chama setLifecycle', async () => {
+    let generateCalled = false;
+    const mockFetch = async (url: string | URL | Request) => {
+      const urlStr = String(url);
+      if (urlStr.endsWith('/api/ps')) {
+        return { ok: false, status: 500 } as Response; // Falha no precheck
+      }
+      if (urlStr.endsWith('/api/generate')) {
+        generateCalled = true;
+        return { ok: true, status: 200, json: async () => ({ done: true }) } as Response;
+      }
+      return { ok: false, status: 404 } as Response;
+    };
+
+    const client = createOllamaClient({ fetchFn: mockFetch as any });
+    const result = await unloadModel(client, mockApprovedCatalog, 'llama3:8b');
+
+    assert.equal(result.status, 'indeterminate');
+    assert.equal(result.reasonCode, 'DIGEST_PRECHECK_UNAVAILABLE');
+    assert.equal(generateCalled, false);
+  });
+
+  // H14. approved digest correto → lifecycle continua normalmente
+  it('H14. approved digest correto no preload e unload continua normalmente', async () => {
+    const mockFetch = async (url: string | URL | Request) => {
+      const urlStr = String(url);
+      if (urlStr.endsWith('/api/tags')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            models: [{ name: 'llama3:8b', digest: 'sha256:llama3digest' }],
+          }),
+        } as Response;
+      }
+      if (urlStr.endsWith('/api/generate')) {
+        return { ok: true, status: 200, json: async () => ({ done: true }) } as Response;
+      }
+      if (urlStr.endsWith('/api/ps')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            models: [{ name: 'llama3:8b', digest: 'sha256:llama3digest' }],
+          }),
+        } as Response;
+      }
+      return { ok: false, status: 404 } as Response;
+    };
+
+    const client = createOllamaClient({ fetchFn: mockFetch as any });
+    const preloadRes = await preloadModel(client, mockApprovedCatalog, 'llama3:8b');
+    assert.equal(preloadRes.status, 'verified_loaded');
+  });
+
+  // H15. HTTP 200 + JSON inválido em setLifecycle → lança InvalidOllamaResponseError
+  it('H15. HTTP 200 com JSON inválido em setLifecycle lança InvalidOllamaResponseError', async () => {
+    const mockFetch = async () => {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new Error('Unexpected token < in JSON');
+        },
+      } as unknown as Response;
+    };
+
+    const client = createOllamaClient({ fetchFn: mockFetch as any });
+    await assert.rejects(async () => {
+      await client.setLifecycle('llama3:8b', -1);
+    }, InvalidOllamaResponseError);
   });
 });

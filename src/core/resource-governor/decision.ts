@@ -4,7 +4,7 @@
  *
  * Avalia se um workload local pode utilizar recursos físicos no momento e sob o perfil configurado.
  * Função pura, sem relógio interno, sem IDs aleatórios internos.
- * Proíbe auto-eviction e ordenação incidental de candidatos.
+ * Proíbe auto-eviction, ordenação incidental de candidatos e double-counting de modelos já carregados.
  */
 
 import type {
@@ -18,7 +18,7 @@ import type {
   ResourceSnapshot,
 } from './contracts';
 
-import { isModelApproved, normalizeModelName } from './ollama/lifecycle';
+import { normalizeModelName } from './ollama/lifecycle';
 
 export class ProfileRevisionMismatchError extends Error {
   readonly code: string;
@@ -80,7 +80,7 @@ export function evaluateResourceRequest(
     };
   }
 
-  // 2. TARGET MODEL APPROVAL GATE & ESTIMATIVAS EFETIVAS
+  // 2. TARGET MODEL APPROVAL GATE
   const targetModel = request.targetModel;
   const targetNorm = targetModel ? normalizeModelName(targetModel) : '';
 
@@ -105,18 +105,7 @@ export function evaluateResourceRequest(
     }
   }
 
-  // Precedência de estimativas: request explícito vence; catálogo serve de fallback factual
-  const effectiveEstimatedRamBytes =
-    request.estimatedAdditionalRamBytes !== undefined
-      ? request.estimatedAdditionalRamBytes
-      : approvedEntry?.estimatedRamBytes;
-
-  const effectiveEstimatedVramBytes =
-    request.estimatedAdditionalVramBytes !== undefined
-      ? request.estimatedAdditionalVramBytes
-      : approvedEntry?.estimatedVramBytes;
-
-  // 3. OLLAMA TELEMETRY STATE CHECK (Material para intents que dependem do estado do modelo)
+  // 3. OLLAMA TELEMETRY STATE CHECK (Material para intents de lifecycle)
   const isLifecycleIntent =
     request.intent === 'ensure_model_loaded' || request.intent === 'ensure_model_unloaded';
 
@@ -134,7 +123,44 @@ export function evaluateResourceRequest(
     };
   }
 
-  // 4. SYSTEM RAM & CPU GATE
+  // 4. DETECÇÃO DE ESTADO DO TARGET & CÁLCULO DE CONSUMO ADICIONAL REAL
+  const isTargetLoaded = Boolean(
+    targetNorm &&
+    snapshot.ollama.status === 'available' &&
+    snapshot.ollama.loadedModels.some((m) => normalizeModelName(m.modelName) === targetNorm),
+  );
+
+  let additionalRamRequired: number | undefined = undefined;
+  let additionalVramRequired: number | undefined = undefined;
+
+  if (request.intent === 'ensure_model_loaded') {
+    if (isTargetLoaded) {
+      // Modelo já está carregado na memória; footprint já refletido na telemetria.
+      // Consumo adicional = 0 para evitar double-counting.
+      additionalRamRequired = 0;
+      additionalVramRequired = 0;
+    } else {
+      // Modelo não está carregado; novo consumo adicional será exigido.
+      additionalRamRequired =
+        request.estimatedAdditionalRamBytes !== undefined
+          ? request.estimatedAdditionalRamBytes
+          : approvedEntry?.estimatedRamBytes;
+
+      additionalVramRequired =
+        request.estimatedAdditionalVramBytes !== undefined
+          ? request.estimatedAdditionalVramBytes
+          : approvedEntry?.estimatedVramBytes;
+    }
+  } else if (request.intent === 'ensure_model_unloaded') {
+    // Unload libera memória e não consome footprint adicional.
+    additionalRamRequired = 0;
+    additionalVramRequired = 0;
+  } else if (request.intent === 'use_current_state') {
+    additionalRamRequired = request.estimatedAdditionalRamBytes !== undefined ? request.estimatedAdditionalRamBytes : 0;
+    additionalVramRequired = request.estimatedAdditionalVramBytes !== undefined ? request.estimatedAdditionalVramBytes : 0;
+  }
+
+  // 5. SYSTEM RAM & CPU GATE
   if (snapshot.system.status !== 'available') {
     return {
       disposition: 'defer',
@@ -160,8 +186,8 @@ export function evaluateResourceRequest(
   const effectiveFreeRamBytes = snapshot.system.freeRamBytes - pendingReservedRamBytes;
   const availableRamHeadroom = effectiveFreeRamBytes - profile.minimumFreeSystemRamBytes;
 
-  if (effectiveEstimatedRamBytes !== undefined && effectiveEstimatedRamBytes > 0) {
-    if (availableRamHeadroom < effectiveEstimatedRamBytes) {
+  if (additionalRamRequired !== undefined && additionalRamRequired > 0) {
+    if (availableRamHeadroom < additionalRamRequired) {
       return {
         disposition: 'defer',
         reasonCode: 'INSUFFICIENT_SYSTEM_RAM',
@@ -170,8 +196,8 @@ export function evaluateResourceRequest(
         resourceSnapshotId: snapshot.snapshotId,
         materialFacts: {
           freeRamBytes: snapshot.system.freeRamBytes,
-          pendingReservedRamBytes,
-          effectiveEstimatedRamBytes,
+          pendingReservedRamBytes: pendingReservedRamBytes > 0 ? pendingReservedRamBytes : undefined,
+          effectiveEstimatedRamBytes: additionalRamRequired,
           snapshotFreshness: 'fresh',
         },
         evaluatedAt,
@@ -189,7 +215,7 @@ export function evaluateResourceRequest(
         resourceSnapshotId: snapshot.snapshotId,
         materialFacts: {
           freeRamBytes: snapshot.system.freeRamBytes,
-          pendingReservedRamBytes,
+          pendingReservedRamBytes: pendingReservedRamBytes > 0 ? pendingReservedRamBytes : undefined,
           snapshotFreshness: 'fresh',
         },
         evaluatedAt,
@@ -206,7 +232,7 @@ export function evaluateResourceRequest(
         materialFacts: {
           cpuUtilizationPercent: snapshot.system.cpuUtilizationPercent,
           freeRamBytes: snapshot.system.freeRamBytes,
-          pendingReservedRamBytes,
+          pendingReservedRamBytes: pendingReservedRamBytes > 0 ? pendingReservedRamBytes : undefined,
           snapshotFreshness: 'fresh',
         },
         evaluatedAt,
@@ -214,14 +240,15 @@ export function evaluateResourceRequest(
     }
   }
 
-  // 5. GPU & VRAM GATE COM ESCOPO DE DISPOSITIVO
+  // 6. GPU & VRAM GATE COM ESCOPO DE DISPOSITIVO
   let selectedGpu: GpuDeviceTelemetry | undefined = undefined;
   let pendingReservedVramBytes = 0;
 
   const isGpuMaterial =
     request.requiresGpu === true ||
     request.targetGpuUuid !== undefined ||
-    (effectiveEstimatedVramBytes !== undefined && effectiveEstimatedVramBytes > 0);
+    (additionalVramRequired !== undefined && additionalVramRequired > 0) ||
+    (request.intent === 'ensure_model_loaded' && !isTargetLoaded);
 
   if (isGpuMaterial) {
     if (snapshot.gpu.status !== 'available' || snapshot.gpu.devices.length === 0) {
@@ -324,8 +351,8 @@ export function evaluateResourceRequest(
     const effectiveFreeVramBytes = selectedGpu.memoryFreeBytes - pendingReservedVramBytes;
     const availableVramHeadroom = effectiveFreeVramBytes - profile.minimumFreeVramBytes;
 
-    if (effectiveEstimatedVramBytes !== undefined && effectiveEstimatedVramBytes > 0) {
-      if (availableVramHeadroom < effectiveEstimatedVramBytes) {
+    if (additionalVramRequired !== undefined && additionalVramRequired > 0) {
+      if (availableVramHeadroom < additionalVramRequired) {
         // Coleta candidatos a descarregamento (fatos neutros, sem ordenação de auto-eviction)
         const evictionCandidates: string[] = [];
         if (snapshot.ollama.status === 'available') {
@@ -350,8 +377,8 @@ export function evaluateResourceRequest(
           resourceSnapshotId: snapshot.snapshotId,
           materialFacts: {
             freeVramBytes: selectedGpu.memoryFreeBytes,
-            pendingReservedVramBytes,
-            effectiveEstimatedVramBytes,
+            pendingReservedVramBytes: pendingReservedVramBytes > 0 ? pendingReservedVramBytes : undefined,
+            effectiveEstimatedVramBytes: additionalVramRequired,
             evictionCandidates: evictionCandidates.length > 0 ? Object.freeze(evictionCandidates) : undefined,
             snapshotFreshness: 'fresh',
           },
@@ -379,11 +406,7 @@ export function evaluateResourceRequest(
     }
   }
 
-  // 6. INTENT EVALUATION
-  const isTargetLoaded = targetNorm && snapshot.ollama.status === 'available'
-    ? snapshot.ollama.loadedModels.some((m) => normalizeModelName(m.modelName) === targetNorm)
-    : false;
-
+  // 7. INTENT EVALUATION
   const baseMaterialFacts: ResourceMaterialFacts = {
     freeRamBytes: snapshot.system.freeRamBytes,
     freeVramBytes: selectedGpu?.memoryFreeBytes,
@@ -392,12 +415,12 @@ export function evaluateResourceRequest(
     targetModelLoaded: targetModel ? isTargetLoaded : undefined,
     pendingReservedRamBytes: pendingReservedRamBytes > 0 ? pendingReservedRamBytes : undefined,
     pendingReservedVramBytes: pendingReservedVramBytes > 0 ? pendingReservedVramBytes : undefined,
-    effectiveEstimatedRamBytes,
-    effectiveEstimatedVramBytes,
+    effectiveEstimatedRamBytes: additionalRamRequired !== undefined && additionalRamRequired > 0 ? additionalRamRequired : undefined,
+    effectiveEstimatedVramBytes: additionalVramRequired !== undefined && additionalVramRequired > 0 ? additionalVramRequired : undefined,
     snapshotFreshness: 'fresh',
   };
 
-  // 6.1 Intent: use_current_state
+  // 7.1 Intent: use_current_state
   if (request.intent === 'use_current_state') {
     return {
       disposition: 'admit',
@@ -410,7 +433,7 @@ export function evaluateResourceRequest(
     };
   }
 
-  // 6.2 Intent: ensure_model_loaded
+  // 7.2 Intent: ensure_model_loaded
   if (request.intent === 'ensure_model_loaded') {
     if (!targetModel) {
       return {
@@ -450,7 +473,7 @@ export function evaluateResourceRequest(
     }
 
     // Se exige GPU e a estimativa de VRAM não está disponível no request nem no catálogo
-    if (isGpuMaterial && effectiveEstimatedVramBytes === undefined) {
+    if (isGpuMaterial && additionalVramRequired === undefined) {
       return {
         disposition: 'defer',
         reasonCode: 'ESTIMATED_RESOURCES_MISSING',
@@ -479,7 +502,7 @@ export function evaluateResourceRequest(
     };
   }
 
-  // 6.3 Intent: ensure_model_unloaded
+  // 7.3 Intent: ensure_model_unloaded
   if (request.intent === 'ensure_model_unloaded') {
     if (!targetModel) {
       return {

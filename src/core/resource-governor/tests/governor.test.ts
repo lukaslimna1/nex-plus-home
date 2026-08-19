@@ -2,9 +2,10 @@
  * NEX+ · Resource Governor & Local Runtime Lifecycle
  * Testes Determinísticos do Motor do Governor — Escopo 0.6 (Fase B & Hardening)
  *
- * Cenários B14 a B40 + G8 a G15 + G23 a G24: Matriz completa de admissão, deferral, denial,
- * lifecycle actions, estimativas efetivas (request vs catálogo), multi-GPU leases,
- * checagem de Ollama state, profile pinning e validações numéricas.
+ * Cenários B14 a B40 + G8 a G15 + G23 a G24 + H1 a H5:
+ * Matriz completa de admissão, deferral, denial, lifecycle actions, estimativas efetivas,
+ * prevenção de double-counting em modelos já carregados, comportamento de unload sob pressão,
+ * multi-GPU leases, Ollama state check, profile pinning e validações numéricas.
  */
 
 import { describe, it } from 'node:test';
@@ -1034,5 +1035,185 @@ describe('NEX+ Resource Governor · Decision Engine (Fase B & Hardening)', () =>
         evaluatedAt: '2026-08-19T20:00:01.000Z',
       });
     }, ProfileRevisionMismatchError);
+  });
+
+  // H1. target já loaded + catalog estimatedVramBytes maior que headroom → NÃO retorna INSUFFICIENT_VRAM por double-counting
+  it('H1. target já loaded + catalog estimatedVramBytes maior que headroom não causa double-counting e admite', () => {
+    // VRAM livre = 2 GiB, min = 1 GiB -> Headroom = 1 GiB.
+    // Llama3:8b já está carregado (consumindo 6 GiB refletidos na telemetria).
+    // O catálogo diz 6 GiB. Como já está carregado, não cobra 6 GiB extras.
+    const snap = createBaseSnapshot({
+      gpu: {
+        status: 'available',
+        devices: [
+          { ...createBaseSnapshot().gpu.devices[0], memoryFreeBytes: 2 * 1024 * 1024 * 1024 },
+        ],
+        observedAt: '2026-08-19T20:00:00.000Z',
+      },
+      ollama: {
+        status: 'available',
+        loadedModels: [
+          { modelName: 'llama3:8b', sizeVramBytes: 6 * 1024 * 1024 * 1024, observedAt: '2026-08-19T20:00:00.000Z' },
+        ],
+        observedAt: '2026-08-19T20:00:00.000Z',
+      },
+    });
+
+    const decision = evaluateResourceRequest({
+      request: createBaseRequest({
+        intent: 'ensure_model_loaded',
+        targetModel: 'llama3:8b',
+        requiresGpu: true,
+      }),
+      snapshot: snap,
+      profile: mockProfile,
+      leases: [],
+      approvedCatalog: mockCatalog,
+      evaluatedAt: '2026-08-19T20:00:01.000Z',
+    });
+
+    assert.equal(decision.disposition, 'admit');
+    assert.equal(decision.reasonCode, 'MODEL_ALREADY_LOADED');
+  });
+
+  // H2. target já loaded + catalog estimatedRamBytes maior que headroom → NÃO retorna INSUFFICIENT_SYSTEM_RAM por double-counting
+  it('H2. target já loaded + catalog estimatedRamBytes maior que headroom não causa double-counting e admite', () => {
+    // RAM livre = 2.5 GiB, min = 2 GiB -> Headroom = 0.5 GiB.
+    // Llama3:8b tem 1 GiB de estimativa de RAM no catálogo, mas já está carregado.
+    const snap = createBaseSnapshot({
+      system: {
+        ...createBaseSnapshot().system,
+        freeRamBytes: 2.5 * 1024 * 1024 * 1024,
+      },
+      ollama: {
+        status: 'available',
+        loadedModels: [
+          { modelName: 'llama3:8b', observedAt: '2026-08-19T20:00:00.000Z' },
+        ],
+        observedAt: '2026-08-19T20:00:00.000Z',
+      },
+    });
+
+    const decision = evaluateResourceRequest({
+      request: createBaseRequest({
+        intent: 'ensure_model_loaded',
+        targetModel: 'llama3:8b',
+      }),
+      snapshot: snap,
+      profile: mockProfile,
+      leases: [],
+      approvedCatalog: mockCatalog,
+      evaluatedAt: '2026-08-19T20:00:01.000Z',
+    });
+
+    assert.equal(decision.disposition, 'admit');
+    assert.equal(decision.reasonCode, 'MODEL_ALREADY_LOADED');
+  });
+
+  // H3. target não loaded + estimate maior que headroom → continua defer
+  it('H3. target não loaded + estimate maior que headroom continua defer INSUFFICIENT_VRAM', () => {
+    // VRAM livre = 4 GiB, min = 1 GiB -> Headroom = 3 GiB.
+    // Mistral:7b precisa de 5 GiB e NÃO está carregado.
+    const snap = createBaseSnapshot({
+      gpu: {
+        status: 'available',
+        devices: [
+          { ...createBaseSnapshot().gpu.devices[0], memoryFreeBytes: 4 * 1024 * 1024 * 1024 },
+        ],
+        observedAt: '2026-08-19T20:00:00.000Z',
+      },
+      ollama: {
+        status: 'available',
+        loadedModels: [], // Não carregado
+        observedAt: '2026-08-19T20:00:00.000Z',
+      },
+    });
+
+    const decision = evaluateResourceRequest({
+      request: createBaseRequest({
+        intent: 'ensure_model_loaded',
+        targetModel: 'mistral:7b',
+        requiresGpu: true,
+      }),
+      snapshot: snap,
+      profile: mockProfile,
+      leases: [],
+      approvedCatalog: mockCatalog,
+      evaluatedAt: '2026-08-19T20:00:01.000Z',
+    });
+
+    assert.equal(decision.disposition, 'defer');
+    assert.equal(decision.reasonCode, 'INSUFFICIENT_VRAM');
+  });
+
+  // H4. ensure_model_unloaded + VRAM pressionada → estimativa do target não impede unload
+  it('H4. ensure_model_unloaded + VRAM pressionada não impede unload por estimativa do target', () => {
+    // VRAM livre = 1.1 GiB, min = 1.0 GiB -> Headroom = 0.1 GiB.
+    // Llama3:8b (6 GiB) está carregado e queremos descarregar.
+    const snap = createBaseSnapshot({
+      gpu: {
+        status: 'available',
+        devices: [
+          { ...createBaseSnapshot().gpu.devices[0], memoryFreeBytes: 1.1 * 1024 * 1024 * 1024 },
+        ],
+        observedAt: '2026-08-19T20:00:00.000Z',
+      },
+      ollama: {
+        status: 'available',
+        loadedModels: [
+          { modelName: 'llama3:8b', sizeVramBytes: 6 * 1024 * 1024 * 1024, observedAt: '2026-08-19T20:00:00.000Z' },
+        ],
+        observedAt: '2026-08-19T20:00:00.000Z',
+      },
+    });
+
+    const decision = evaluateResourceRequest({
+      request: createBaseRequest({
+        intent: 'ensure_model_unloaded',
+        targetModel: 'llama3:8b',
+      }),
+      snapshot: snap,
+      profile: mockProfile,
+      leases: [],
+      approvedCatalog: mockCatalog,
+      evaluatedAt: '2026-08-19T20:00:01.000Z',
+    });
+
+    assert.equal(decision.disposition, 'action_required');
+    assert.equal(decision.requiredAction?.kind, 'unload_model');
+  });
+
+  // H5. ensure_model_unloaded + RAM pressionada → estimativa do target não impede unload
+  it('H5. ensure_model_unloaded + RAM pressionada não impede unload por estimativa do target', () => {
+    // RAM livre = 2.1 GiB, min = 2.0 GiB -> Headroom = 0.1 GiB.
+    // Heavy-model:70b (8 GiB RAM) está carregado e queremos descarregar.
+    const snap = createBaseSnapshot({
+      system: {
+        ...createBaseSnapshot().system,
+        freeRamBytes: 2.1 * 1024 * 1024 * 1024,
+      },
+      ollama: {
+        status: 'available',
+        loadedModels: [
+          { modelName: 'heavy-model:70b', observedAt: '2026-08-19T20:00:00.000Z' },
+        ],
+        observedAt: '2026-08-19T20:00:00.000Z',
+      },
+    });
+
+    const decision = evaluateResourceRequest({
+      request: createBaseRequest({
+        intent: 'ensure_model_unloaded',
+        targetModel: 'heavy-model:70b',
+      }),
+      snapshot: snap,
+      profile: mockProfile,
+      leases: [],
+      approvedCatalog: mockCatalog,
+      evaluatedAt: '2026-08-19T20:00:01.000Z',
+    });
+
+    assert.equal(decision.disposition, 'action_required');
+    assert.equal(decision.requiredAction?.kind, 'unload_model');
   });
 });

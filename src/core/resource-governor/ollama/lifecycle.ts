@@ -94,14 +94,25 @@ export async function preloadModel(
       };
     }
 
-    if (approvedEntry.digest && installed.digest && approvedEntry.digest !== installed.digest) {
-      return {
-        status: 'rejected',
-        modelName,
-        reasonCode: 'MODEL_DIGEST_MISMATCH',
-        observedAt,
-        detail: `Installed model digest '${installed.digest}' does not match approved digest '${approvedEntry.digest}'.`,
-      };
+    if (approvedEntry.digest) {
+      if (!installed.digest) {
+        return {
+          status: 'rejected',
+          modelName,
+          reasonCode: 'MODEL_DIGEST_UNVERIFIED',
+          observedAt,
+          detail: `Approved model specifies digest '${approvedEntry.digest}' but installed model in /api/tags has no digest.`,
+        };
+      }
+      if (approvedEntry.digest !== installed.digest) {
+        return {
+          status: 'rejected',
+          modelName,
+          reasonCode: 'MODEL_DIGEST_MISMATCH',
+          observedAt,
+          detail: `Installed model digest '${installed.digest}' does not match approved digest '${approvedEntry.digest}'.`,
+        };
+      }
     }
   } catch (err: any) {
     return {
@@ -197,21 +208,41 @@ export async function unloadModel(
   }
 
   // 2. Checagem prévia de digest em /api/ps se o modelo estiver carregado
-  try {
-    const loadedBefore = await client.getLoadedModels(options);
-    const loadedTarget = loadedBefore.find((m) => normalizeModelName(m.modelName) === targetNorm);
+  if (approvedEntry.digest) {
+    try {
+      const loadedBefore = await client.getLoadedModels(options);
+      const loadedTarget = loadedBefore.find((m) => normalizeModelName(m.modelName) === targetNorm);
 
-    if (loadedTarget && approvedEntry.digest && loadedTarget.digest && approvedEntry.digest !== loadedTarget.digest) {
+      if (loadedTarget) {
+        if (!loadedTarget.digest) {
+          return {
+            status: 'rejected',
+            modelName,
+            reasonCode: 'MODEL_DIGEST_UNVERIFIED',
+            observedAt,
+            detail: `Approved model specifies digest '${approvedEntry.digest}' but loaded model in /api/ps has no digest.`,
+          };
+        }
+        if (approvedEntry.digest !== loadedTarget.digest) {
+          return {
+            status: 'rejected',
+            modelName,
+            reasonCode: 'MODEL_DIGEST_MISMATCH',
+            observedAt,
+            detail: `Loaded model digest '${loadedTarget.digest}' does not match approved digest '${approvedEntry.digest}'.`,
+          };
+        }
+      }
+    } catch (err: any) {
+      // Se digest está pinado e a checagem prévia de /api/ps falhar -> fail closed, NÃO chama setLifecycle
       return {
-        status: 'rejected',
+        status: 'indeterminate',
         modelName,
-        reasonCode: 'MODEL_DIGEST_MISMATCH',
+        reasonCode: 'DIGEST_PRECHECK_UNAVAILABLE',
         observedAt,
-        detail: `Loaded model digest '${loadedTarget.digest}' does not match approved digest '${approvedEntry.digest}'.`,
+        detail: `Cannot verify model digest prior to unload: ${err.message}`,
       };
     }
-  } catch {
-    // Se a checagem prévia de /api/ps falhar, tenta prosseguir com comando explícito de unload
   }
 
   // 3. Envio do comando de Unload (keep_alive: 0, stream: false)
