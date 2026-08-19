@@ -1,9 +1,10 @@
 /**
  * NEX+ · ExecutionEvidence & Attempt Ledger
- * Avaliador Determinístico de OutcomeAssessment — Escopo 0.5 (Bloco 0.5D)
+ * Avaliador Determinístico de OutcomeAssessment — Escopo 0.5 (Bloco 0.5D / Hardening)
  *
  * Plano de Autoridade (L0).
- * Technical Success != Factual Effect. Nenhuma mutação factual é presumida sem evidência.
+ * Technical Success != Factual Effect / Result.
+ * Validação de integridade causal de evidências e exigência de garantia estrutural para pré-dispatch.
  */
 
 import type {
@@ -25,13 +26,17 @@ export interface AssessOutcomeParams {
 
 /**
  * Avalia deterministicamente o desfecho factual (OutcomeAssessment) de uma tentativa de execução:
- * 1. Para operações não-mutativas: avalia confirmação de resultado ou indeterminação.
- * 2. Para operações mutativas:
+ * 1. Rejeita deterministicamente qualquer evidência que pertença a outro Attempt.
+ * 2. Para operações não-mutativas:
+ *    - result_verified válido -> 'confirmed_result'.
+ *    - Sem evidência factual de resultado (mesmo com technical succeeded) -> 'indeterminate' (NON_MUTATING_TECHNICAL_SUCCESS_WITHOUT_RESULT_EVIDENCE).
+ * 3. Para operações mutativas:
  *    - Se há conflito entre effect_observed e no_effect_verified -> 'indeterminate'.
  *    - Se há effect_observed -> 'confirmed_mutation'.
  *    - Se há no_effect_verified -> 'confirmed_no_mutation'.
- *    - Se há falha comprovada pré-dispatch (sem side-effects possíveis) -> 'confirmed_no_mutation'.
- *    - Sucesso técnico isolado (HTTP 200 / exit 0 sem evidência factual) -> 'indeterminate'.
+ *    - Se há pre_dispatch_failure COM noSideEffectGuarantee === 'structural' -> 'confirmed_no_mutation'.
+ *    - Se há pre_dispatch_failure SEM garantia estrutural -> 'indeterminate'.
+ *    - Sucesso técnico isolado sem evidência factual -> 'indeterminate'.
  *    - Falhas pós-dispatch, timeouts e conclusões desconhecidas -> 'indeterminate'.
  */
 export function assessOutcome(params: AssessOutcomeParams): OutcomeAssessment {
@@ -44,6 +49,15 @@ export function assessOutcome(params: AssessOutcomeParams): OutcomeAssessment {
     supersedesAssessmentId,
   } = params;
 
+  // Validação causal rigorosa das evidências
+  for (const evidence of evidenceList) {
+    if (evidence.attemptId !== attempt.attemptId) {
+      throw new Error(
+        `[L0 Outcome Assessment] Cross-attempt evidence violation: Evidence '${evidence.evidenceId}' belongs to Attempt '${evidence.attemptId}' but Assessment is for Attempt '${attempt.attemptId}'.`,
+      );
+    }
+  }
+
   let verdict: OutcomeAssessmentVerdict;
   let reasonCode: string;
 
@@ -52,12 +66,10 @@ export function assessOutcome(params: AssessOutcomeParams): OutcomeAssessment {
     if (hasResultVerified) {
       verdict = 'confirmed_result';
       reasonCode = 'NON_MUTATING_RESULT_VERIFIED';
-    } else if (attempt.status === 'succeeded') {
-      verdict = 'confirmed_result';
-      reasonCode = 'NON_MUTATING_TECHNICAL_SUCCESS';
     } else {
+      // Technical success isolado NÃO confirma factual result
       verdict = 'indeterminate';
-      reasonCode = 'NON_MUTATING_UNCONFIRMED';
+      reasonCode = 'NON_MUTATING_TECHNICAL_SUCCESS_WITHOUT_RESULT_EVIDENCE';
     }
   } else {
     // Operação mutativa
@@ -74,10 +86,17 @@ export function assessOutcome(params: AssessOutcomeParams): OutcomeAssessment {
       verdict = 'confirmed_no_mutation';
       reasonCode = 'MUTATION_NO_EFFECT_VERIFIED';
     } else {
-      const hasPreDispatchFailure = evidenceList.some((e) => e.kind === 'pre_dispatch_failure');
-      if (hasPreDispatchFailure && attempt.status !== 'succeeded') {
+      const structuralPreDispatchFailure = evidenceList.some(
+        (e) => e.kind === 'pre_dispatch_failure' && e.noSideEffectGuarantee === 'structural',
+      );
+      const rawPreDispatchFailure = evidenceList.some((e) => e.kind === 'pre_dispatch_failure');
+
+      if (structuralPreDispatchFailure && attempt.status !== 'succeeded') {
         verdict = 'confirmed_no_mutation';
-        reasonCode = 'PRE_DISPATCH_FAILURE_NO_MUTATION';
+        reasonCode = 'PRE_DISPATCH_FAILURE_STRUCTURAL_NO_MUTATION';
+      } else if (rawPreDispatchFailure) {
+        verdict = 'indeterminate';
+        reasonCode = 'PRE_DISPATCH_FAILURE_WITHOUT_STRUCTURAL_GUARANTEE';
       } else if (attempt.status === 'succeeded') {
         verdict = 'indeterminate';
         reasonCode = 'TECHNICAL_SUCCESS_WITHOUT_FACTUAL_EVIDENCE';

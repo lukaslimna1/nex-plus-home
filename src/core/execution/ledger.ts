@@ -1,9 +1,10 @@
 /**
  * NEX+ · ExecutionEvidence & Attempt Ledger
- * Implementação do Ledger Append-Only em Memória — Escopo 0.5 (Bloco 0.5D)
+ * Implementação do Ledger Append-Only em Memória — Escopo 0.5 (Bloco 0.5D / Hardening)
  *
  * Plano de Autoridade (L0).
- * Integridade causal estrita, ausência de APIs de update/delete, suporte a late signals.
+ * Integridade causal estrita, lineage linear de OutcomeAssessment, validação de EvidenceRefs,
+ * validação discriminada de Receipt e imutabilidade defensiva do store.
  */
 
 import type {
@@ -69,12 +70,30 @@ export class InvalidSignalReferenceError extends Error {
   }
 }
 
+export class InvalidEvidenceReferenceError extends Error {
+  readonly evidenceId: string;
+  constructor(evidenceId: string) {
+    super(`[L0 Execution Ledger] Reference to non-existent ExecutionEvidence '${evidenceId}'.`);
+    this.name = 'InvalidEvidenceReferenceError';
+    this.evidenceId = evidenceId;
+  }
+}
+
 export class InvalidAssessmentReferenceError extends Error {
   readonly assessmentId: string;
   constructor(assessmentId: string) {
     super(`[L0 Execution Ledger] Reference to non-existent OutcomeAssessment '${assessmentId}'.`);
     this.name = 'InvalidAssessmentReferenceError';
     this.assessmentId = assessmentId;
+  }
+}
+
+export class InvalidAssessmentLineageError extends Error {
+  readonly detail: string;
+  constructor(detail: string) {
+    super(`[L0 Execution Ledger] Invalid assessment lineage: ${detail}.`);
+    this.name = 'InvalidAssessmentLineageError';
+    this.detail = detail;
   }
 }
 
@@ -87,8 +106,25 @@ export class CrossAttemptReferenceError extends Error {
   }
 }
 
+export class InvalidReceiptStructureError extends Error {
+  readonly detail: string;
+  constructor(detail: string) {
+    super(`[L0 Execution Ledger] Invalid receipt structure: ${detail}.`);
+    this.name = 'InvalidReceiptStructureError';
+    this.detail = detail;
+  }
+}
+
 // ============================================================================
-// 2. IMPLEMENTAÇÃO IN-MEMORY DO EXECUTION LEDGER STORE
+// 2. HELPERS DEFENSIVOS DE IMUTABILIDADE
+// ============================================================================
+
+function freezeClone<T extends object>(obj: T): Readonly<T> {
+  return Object.freeze({ ...obj });
+}
+
+// ============================================================================
+// 3. IMPLEMENTAÇÃO IN-MEMORY DO EXECUTION LEDGER STORE
 // ============================================================================
 
 export function createExecutionLedgerStore(
@@ -126,8 +162,8 @@ export function createExecutionLedgerStore(
         createdAt: event.createdAt,
       };
 
-      attemptStatesById.set(event.attemptId, state);
-      attemptEventsList.push(event);
+      attemptStatesById.set(event.attemptId, freezeClone(state));
+      attemptEventsList.push(freezeClone(event));
       return;
     }
 
@@ -146,8 +182,8 @@ export function createExecutionLedgerStore(
         startedAt: event.startedAt,
       };
 
-      attemptStatesById.set(event.attemptId, updated);
-      attemptEventsList.push(event);
+      attemptStatesById.set(event.attemptId, freezeClone(updated));
+      attemptEventsList.push(freezeClone(event));
       return;
     }
 
@@ -167,8 +203,8 @@ export function createExecutionLedgerStore(
         terminalReason: event.terminalReason,
       };
 
-      attemptStatesById.set(event.attemptId, updated);
-      attemptEventsList.push(event);
+      attemptStatesById.set(event.attemptId, freezeClone(updated));
+      attemptEventsList.push(freezeClone(event));
       return;
     }
   }
@@ -182,10 +218,11 @@ export function createExecutionLedgerStore(
       throw new InvalidAttemptReferenceError(signal.attemptId as string, 'appendExecutionSignal');
     }
 
-    signalsById.set(signal.signalId, signal);
+    const frozen = freezeClone(signal);
+    signalsById.set(signal.signalId, frozen);
 
     const list = signalsByAttempt.get(signal.attemptId) || [];
-    list.push(signal);
+    list.push(frozen);
     signalsByAttempt.set(signal.attemptId, list);
   }
 
@@ -211,10 +248,11 @@ export function createExecutionLedgerStore(
       }
     }
 
-    evidenceById.set(evidence.evidenceId, evidence);
+    const frozen = freezeClone(evidence);
+    evidenceById.set(evidence.evidenceId, frozen);
 
     const list = evidenceByAttempt.get(evidence.attemptId) || [];
-    list.push(evidence);
+    list.push(frozen);
     evidenceByAttempt.set(evidence.attemptId, list);
   }
 
@@ -227,6 +265,20 @@ export function createExecutionLedgerStore(
       throw new InvalidAttemptReferenceError(assessment.attemptId as string, 'appendOutcomeAssessment');
     }
 
+    // 1. Validar cada EvidenceRef referenciada
+    for (const eviRef of assessment.evidenceRefs) {
+      const evi = evidenceById.get(eviRef);
+      if (!evi) {
+        throw new InvalidEvidenceReferenceError(eviRef as string);
+      }
+      if (evi.attemptId !== assessment.attemptId) {
+        throw new CrossAttemptReferenceError(
+          `Assessment '${assessment.assessmentId}' (Attempt ${assessment.attemptId}) references Evidence '${eviRef}' belonging to Attempt '${evi.attemptId}'`,
+        );
+      }
+    }
+
+    // 2. Validar lineage estrita e unívoca do Attempt
     if (assessment.supersedesAssessmentId) {
       const prev = assessmentsById.get(assessment.supersedesAssessmentId);
       if (!prev) {
@@ -239,11 +291,32 @@ export function createExecutionLedgerStore(
       }
     }
 
-    assessmentsById.set(assessment.assessmentId, assessment);
+    const existingList = assessmentsByAttempt.get(assessment.attemptId) || [];
+    if (existingList.length === 0) {
+      if (assessment.supersedesAssessmentId) {
+        throw new InvalidAssessmentLineageError(
+          `First assessment '${assessment.assessmentId}' on Attempt '${assessment.attemptId}' cannot supersede another assessment.`,
+        );
+      }
+    } else {
+      const currentHead = existingList[existingList.length - 1];
+      if (!assessment.supersedesAssessmentId) {
+        throw new InvalidAssessmentLineageError(
+          `Second assessment '${assessment.assessmentId}' on Attempt '${assessment.attemptId}' must supersede current head '${currentHead.assessmentId}'`,
+        );
+      }
+      if (assessment.supersedesAssessmentId !== currentHead.assessmentId) {
+        throw new InvalidAssessmentLineageError(
+          `Assessment '${assessment.assessmentId}' must supersede current head '${currentHead.assessmentId}', but specified '${assessment.supersedesAssessmentId}'`,
+        );
+      }
+    }
 
-    const list = assessmentsByAttempt.get(assessment.attemptId) || [];
-    list.push(assessment);
-    assessmentsByAttempt.set(assessment.attemptId, list);
+    const frozen = freezeClone(assessment);
+    assessmentsById.set(assessment.assessmentId, frozen);
+
+    existingList.push(frozen);
+    assessmentsByAttempt.set(assessment.attemptId, existingList);
   }
 
   function appendReceipt(receipt: Receipt): void {
@@ -251,23 +324,40 @@ export function createExecutionLedgerStore(
       throw new DuplicateIdError(receipt.receiptId as string, 'Receipt');
     }
 
-    if (receipt.attemptId && !attemptStatesById.has(receipt.attemptId)) {
-      throw new InvalidAttemptReferenceError(receipt.attemptId as string, 'appendReceipt');
-    }
-
-    if (receipt.outcomeAssessmentId) {
+    if (receipt.kind === 'execution_outcome') {
+      if (!receipt.attemptId || !receipt.outcomeAssessmentId || !receipt.routeEvaluationId) {
+        throw new InvalidReceiptStructureError(
+          `Receipt of kind 'execution_outcome' must have attemptId, outcomeAssessmentId, and routeEvaluationId.`,
+        );
+      }
+      if (!attemptStatesById.has(receipt.attemptId)) {
+        throw new InvalidAttemptReferenceError(receipt.attemptId as string, 'appendReceipt');
+      }
       const assessment = assessmentsById.get(receipt.outcomeAssessmentId);
       if (!assessment) {
         throw new InvalidAssessmentReferenceError(receipt.outcomeAssessmentId as string);
       }
-      if (receipt.attemptId && assessment.attemptId !== receipt.attemptId) {
+      if (assessment.attemptId !== receipt.attemptId) {
         throw new CrossAttemptReferenceError(
           `Receipt '${receipt.receiptId}' references Attempt '${receipt.attemptId}' but Assessment '${receipt.outcomeAssessmentId}' belongs to Attempt '${assessment.attemptId}'`,
         );
       }
+    } else {
+      // Receipts sem Attempt (policy_denial, authorization_denial, no_eligible_route, cancelled)
+      const untyped = (receipt as unknown) as Record<string, unknown>;
+      if (untyped.attemptId !== undefined) {
+        throw new InvalidReceiptStructureError(
+          `Receipt of kind '${receipt.kind}' must NOT have an attemptId (INV-09 violation).`,
+        );
+      }
+      if (untyped.outcomeAssessmentId !== undefined) {
+        throw new InvalidReceiptStructureError(
+          `Receipt of kind '${receipt.kind}' must NOT have an outcomeAssessmentId.`,
+        );
+      }
     }
 
-    receiptsById.set(receipt.receiptId, receipt);
+    receiptsById.set(receipt.receiptId, freezeClone(receipt));
   }
 
   // Pre-popular dados iniciais se fornecidos
@@ -292,65 +382,68 @@ export function createExecutionLedgerStore(
   return {
     appendAttemptEvent,
     getAttempt(attemptId: AttemptId) {
-      return attemptStatesById.get(attemptId);
+      const state = attemptStatesById.get(attemptId);
+      return state ? freezeClone(state) : undefined;
     },
     listAttemptEvents(attemptId: AttemptId) {
-      return attemptEventsList.filter((e) => e.attemptId === attemptId);
+      return Object.freeze(attemptEventsList.filter((e) => e.attemptId === attemptId).map(freezeClone));
     },
     listAttempts(decisionId?: DecisionId) {
-      const all = Array.from(attemptStatesById.values());
-      return decisionId ? all.filter((a) => a.decisionId === decisionId) : all;
+      const all = Array.from(attemptStatesById.values()).map(freezeClone);
+      return Object.freeze(decisionId ? all.filter((a) => a.decisionId === decisionId) : all);
     },
 
     appendExecutionSignal,
     getExecutionSignal(signalId: ExecutionSignalId) {
-      return signalsById.get(signalId);
+      const sig = signalsById.get(signalId);
+      return sig ? freezeClone(sig) : undefined;
     },
     listExecutionSignals(attemptId: AttemptId) {
-      return signalsByAttempt.get(attemptId) || [];
+      return Object.freeze((signalsByAttempt.get(attemptId) || []).map(freezeClone));
     },
 
     appendExecutionEvidence,
     getExecutionEvidence(evidenceId: ExecutionEvidenceId) {
-      return evidenceById.get(evidenceId);
+      const evi = evidenceById.get(evidenceId);
+      return evi ? freezeClone(evi) : undefined;
     },
     listExecutionEvidence(attemptId: AttemptId) {
-      return evidenceByAttempt.get(attemptId) || [];
+      return Object.freeze((evidenceByAttempt.get(attemptId) || []).map(freezeClone));
     },
 
     appendOutcomeAssessment,
     getOutcomeAssessment(assessmentId: OutcomeAssessmentId) {
-      return assessmentsById.get(assessmentId);
+      const ass = assessmentsById.get(assessmentId);
+      return ass ? freezeClone(ass) : undefined;
     },
     getLatestOutcomeAssessment(attemptId: AttemptId) {
       const list = assessmentsByAttempt.get(attemptId) || [];
       if (list.length === 0) return undefined;
-      // Retorna o head (assessment que não foi supersedido por nenhum outro)
-      const supersededIds = new Set(list.map((a) => a.supersedesAssessmentId).filter(Boolean));
-      const heads = list.filter((a) => !supersededIds.has(a.assessmentId));
-      return heads[heads.length - 1] || list[list.length - 1];
+      // Head unívoco: último elemento da cadeia estrita
+      return freezeClone(list[list.length - 1]);
     },
     listOutcomeAssessments(attemptId: AttemptId) {
-      return assessmentsByAttempt.get(attemptId) || [];
+      return Object.freeze((assessmentsByAttempt.get(attemptId) || []).map(freezeClone));
     },
 
     appendReceipt,
     getReceipt(receiptId: ReceiptId) {
-      return receiptsById.get(receiptId);
+      const rc = receiptsById.get(receiptId);
+      return rc ? freezeClone(rc) : undefined;
     },
     listReceipts(decisionId?: DecisionId) {
-      const all = Array.from(receiptsById.values());
-      return decisionId ? all.filter((r) => r.decisionId === decisionId) : all;
+      const all = Array.from(receiptsById.values()).map(freezeClone);
+      return Object.freeze(decisionId ? all.filter((r) => r.decisionId === decisionId) : all);
     },
 
     exportSnapshot(): ExecutionLedgerSnapshot {
-      return {
-        attemptEvents: Array.from(attemptEventsList),
-        signals: Array.from(signalsById.values()),
-        evidence: Array.from(evidenceById.values()),
-        assessments: Array.from(assessmentsById.values()),
-        receipts: Array.from(receiptsById.values()),
-      };
+      return Object.freeze({
+        attemptEvents: Object.freeze(attemptEventsList.map(freezeClone)),
+        signals: Object.freeze(Array.from(signalsById.values()).map(freezeClone)),
+        evidence: Object.freeze(Array.from(evidenceById.values()).map(freezeClone)),
+        assessments: Object.freeze(Array.from(assessmentsById.values()).map(freezeClone)),
+        receipts: Object.freeze(Array.from(receiptsById.values()).map(freezeClone)),
+      });
     },
   };
 }

@@ -1,5 +1,5 @@
 # NEX+ · ExecutionEvidence & Attempt Ledger
-**Escopo 0.5 (Bloco 0.5D) — Especificação Arquitetural e Contratos Canônicos**
+**Escopo 0.5 (Bloco 0.5D / Hardening) — Especificação Arquitetural e Contratos Canônicos**
 
 ---
 
@@ -10,9 +10,10 @@ O Bloco 0.5D é a **camada de integridade factual e ledger append-only de execu�
 - Rastreia o ciclo de vida estrito de tentativas de execução (`Attempt`);
 - Ingere sinais de execução (`ExecutionSignal`) através de projeção segura por allowlist (sem plaintext de segredos);
 - Canonicaliza sinais em evidências fáticas auditáveis (`ExecutionEvidence`);
-- Avalia o desfecho factual (`OutcomeAssessment`) sob a máxima: **Technical Success $\neq$ Factual Effect**;
-- Materializa recibos históricos imutáveis (`Receipt`);
-- Mantém o ledger append-only (`ExecutionLedgerStore`) com integridade causal estrita.
+- Avalia o desfecho factual (`OutcomeAssessment`) sob a máxima: **Technical Success $\neq$ Factual Effect / Result**;
+- Exige garantia estrutural explícita (`noSideEffectGuarantee: 'structural'`) para desfechos `confirmed_no_mutation` em falhas pré-dispatch;
+- Materializa recibos históricos imutáveis discriminados por kind (`Receipt`);
+- Mantém a linearidade unívoca de linhagem de `OutcomeAssessment` por `Attempt` no ledger append-only (`ExecutionLedgerStore`).
 
 > **Fronteira com o Bloco 0.5E**: O 0.5D **NÃO** seleciona rotas, não faz retry, não faz fallback, não checa quotas ao vivo e não executa chamadas de rede. O escalonamento e coordenação de live dispatch pertencem ao 0.5E.
 
@@ -60,33 +61,28 @@ Originado do executor/driver. Pode ocorrer $0..N$ vezes para um Attempt, inclusi
 ### B. `ExecutionEvidence`
 Fato canônico derivado por L0 a partir de sinais validados:
 - `dispatch_confirmed`
-- `pre_dispatch_failure`
+- `pre_dispatch_failure` (com `noSideEffectGuarantee?: 'structural' | 'none'`)
 - `effect_observed`
 - `no_effect_verified`
 - `result_verified`
 - `technical_unproven`
 
 ### C. `OutcomeAssessment`
-Registro imutável que avalia a mutação factual:
+Registro imutável que avalia a mutação factual ou resultado:
 - **Operação Mutativa**:
   - `confirmed_mutation`: Apenas quando há evidência factual (`effect_observed`).
-  - `confirmed_no_mutation`: Apenas quando há prova de não-mutação (`no_effect_verified`) ou falha pré-dispatch comprovada sem side-effects.
-  - `indeterminate`: Sucesso técnico isolado (HTTP 200 / exit 0 sem prova factual), falhas pós-dispatch, timeouts ou conflitos de sinais.
-- **Operação Não-Mutativa**: `confirmed_result` ou `indeterminate`.
+  - `confirmed_no_mutation`: Apenas quando há prova de não-mutação (`no_effect_verified`) ou falha pré-dispatch com garantia estrutural (`noSideEffectGuarantee === 'structural'`).
+  - `indeterminate`: Sucesso técnico isolado (HTTP 200 / exit 0 sem prova factual), falhas pós-dispatch, timeouts, falhas pré-dispatch sem garantia estrutural ou conflitos de sinais.
+- **Operação Não-Mutativa**:
+  - `confirmed_result`: Apenas com evidência factual (`result_verified`).
+  - `indeterminate`: Sucesso técnico isolado sem `result_verified`.
 
-> **Late Evidence**: A chegada de novas evidências gera um **novo `OutcomeAssessment`** que supersede o anterior (`supersedesAssessmentId`), preservando o histórico integral de auditoria.
+> **Linhagem Estrita de Late Evidence**: A chegada de novas evidências gera um novo `OutcomeAssessment` que deve superseder estritamente o head atual da cadeia daquele Attempt (`supersedesAssessmentId === currentHeadId`). A criação de branches concorrentes ou supersession de nós antigos é proibida.
 
 ---
 
 ## 6. Materialização de Receipt
 
-- **Imutabilidade Estrita**: O `Receipt` é **materializado no momento da decisão/conclusão**. Não é uma view recalculada dinamicamente, garantindo que alterações futuras de regras ou termos não modifiquem o histórico.
-- **Sem Falsas Declarações**: Se o `OutcomeAssessment` for `indeterminate`, o `Receipt` preserva a incerteza e **proíbe declarações factuais de sucesso**.
-- **Receipts sem Attempt**: Negações de Policy (`policy_denial`), negações de autorização (`authorization_denial`), cancelamentos pré-dispatch e falta de rota elegível (`no_eligible_route`) geram recibos materializados preservando INV-09.
-
----
-
-## 7. Decisão de Persistência Física
-
-A persistência do Bloco 0.5D é implementada em memória (`InMemoryExecutionLedgerStore`) para validação matemática de integridade causal.  
-A interface `ExecutionLedgerStore` foi projetada para receber adaptadores PostgreSQL/Payload no Bloco 0.6+ sem alteração de contratos ou semântica de domínio.
+- **Discriminated Union**: `Receipt = ExecutionOutcomeReceipt | PolicyDenialReceipt | AuthorizationDenialReceipt | NoEligibleRouteReceipt | CancelledReceipt`.
+- **Imutabilidade e Validação**: Recibos de execução exigem `attemptId`, `outcomeAssessmentId` e `routeEvaluationId` válidos do mesmo Attempt. Recibos de negação/cancelamento proíbem estritamente `attemptId` (INV-09).
+- **Sem Falsas Declarações**: Se o `OutcomeAssessment` for `indeterminate`, o `Receipt` preserva a incerteza e proíbe declarações factuais de sucesso.

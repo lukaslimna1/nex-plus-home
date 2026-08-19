@@ -1,10 +1,10 @@
 /**
  * NEX+ · ExecutionEvidence & Attempt Ledger
- * Materializador de Recibos Imutáveis — Escopo 0.5 (Bloco 0.5D)
+ * Materializador de Recibos Imutáveis — Escopo 0.5 (Bloco 0.5D / Hardening)
  *
  * Plano de Autoridade (L0).
- * Recibos são registros materializados (não recalculados dinamicamente).
- * Suporte a recibos com Attempt (execução) e sem Attempt (negações / cancelamentos pré-dispatch).
+ * Recibos são registros materializados discriminados por kind.
+ * Validação causal estrita na materialização de recibos de execução.
  */
 
 import type { HumanAuthorizationDecision, PolicyDecision } from '../policy/contracts';
@@ -14,14 +14,17 @@ import type {
   RouteEvaluationId,
   AttemptId,
   OutcomeAssessment,
-  Receipt,
   ReceiptId,
+  ExecutionOutcomeReceipt,
+  PolicyDenialReceipt,
+  AuthorizationDenialReceipt,
+  NoEligibleRouteReceipt,
+  CancelledReceipt,
 } from './contracts';
 
 /**
  * Materializa um Receipt de execução a partir de um OutcomeAssessment factual.
- * Se o desfecho for 'indeterminate', o recibo preserva estritamente a incerteza
- * e não emite alegações de sucesso factual.
+ * Rejeita se o OutcomeAssessment não pertencer ao mesmo AttemptId.
  */
 export function materializeExecutionReceipt(params: {
   readonly receiptId: ReceiptId;
@@ -31,7 +34,7 @@ export function materializeExecutionReceipt(params: {
   readonly outcomeAssessment: OutcomeAssessment;
   readonly safeStructuredFacts?: Readonly<Record<string, unknown>>;
   readonly materializedAt: string;
-}): Receipt {
+}): ExecutionOutcomeReceipt {
   const {
     receiptId,
     decisionId,
@@ -41,6 +44,12 @@ export function materializeExecutionReceipt(params: {
     safeStructuredFacts = Object.freeze({}),
     materializedAt,
   } = params;
+
+  if (outcomeAssessment.attemptId !== attemptId) {
+    throw new Error(
+      `[L0 Receipt Materializer] OutcomeAssessment '${outcomeAssessment.assessmentId}' belongs to Attempt '${outcomeAssessment.attemptId}' but Receipt requested for Attempt '${attemptId}'.`,
+    );
+  }
 
   return {
     receiptId,
@@ -64,7 +73,7 @@ export function materializePolicyDenialReceipt(params: {
   readonly decisionId: DecisionId;
   readonly policyDecision: PolicyDecision;
   readonly materializedAt: string;
-}): Receipt {
+}): PolicyDenialReceipt {
   const { receiptId, decisionId, policyDecision, materializedAt } = params;
 
   const reason =
@@ -95,7 +104,7 @@ export function materializeAuthorizationDenialReceipt(params: {
   readonly decisionId: DecisionId;
   readonly authDecision: HumanAuthorizationDecision;
   readonly materializedAt: string;
-}): Receipt {
+}): AuthorizationDenialReceipt {
   const { receiptId, decisionId, authDecision, materializedAt } = params;
 
   return {
@@ -120,7 +129,7 @@ export function materializeNoEligibleRouteReceipt(params: {
   readonly decisionId: DecisionId;
   readonly reasonCode: string;
   readonly materializedAt: string;
-}): Receipt {
+}): NoEligibleRouteReceipt {
   const { receiptId, decisionId, reasonCode, materializedAt } = params;
 
   return {
@@ -142,7 +151,7 @@ export function materializeCancelledReceipt(params: {
   readonly decisionId: DecisionId;
   readonly reasonCode: string;
   readonly materializedAt: string;
-}): Receipt {
+}): CancelledReceipt {
   const { receiptId, decisionId, reasonCode, materializedAt } = params;
 
   return {

@@ -1,9 +1,10 @@
 /**
  * NEX+ · ExecutionEvidence & Attempt Ledger
- * Contratos Canônicos TypeScript — Escopo 0.5 (Bloco 0.5D)
+ * Contratos Canônicos TypeScript — Escopo 0.5 (Bloco 0.5D / Hardening)
  *
  * Plano de Autoridade (L0).
- * Imutabilidade estrita, identificadores opacos, ausência de mutação retrospectiva.
+ * Imutabilidade estrita, identificadores opacos, ausência de mutação retrospectiva,
+ * validação estrutural discriminada de Receipt e garantia de no-side-effects.
  */
 
 import type {
@@ -134,6 +135,7 @@ export interface ExecutionEvidence {
   readonly safeFacts: Readonly<Record<string, unknown>>;
   readonly provenance: FactProvenance;
   readonly recordedAt: string;
+  readonly noSideEffectGuarantee?: 'structural' | 'none';
 }
 
 // ============================================================================
@@ -157,7 +159,7 @@ export interface OutcomeAssessment {
 }
 
 // ============================================================================
-// 6. RECEIPT MATERIALIZADO (Registro Imutável de Decisão / Execução)
+// 6. RECEIPT MATERIALIZADO (Discriminated Union por Kind)
 // ============================================================================
 
 export type ReceiptKind =
@@ -167,18 +169,57 @@ export type ReceiptKind =
   | 'cancelled'
   | 'no_eligible_route';
 
-export interface Receipt {
+export interface BaseReceipt {
   readonly receiptId: ReceiptId;
   readonly decisionId: DecisionId;
   readonly kind: ReceiptKind;
-  readonly routeEvaluationId?: RouteEvaluationId;
-  readonly attemptId?: AttemptId;
-  readonly outcomeAssessmentId?: OutcomeAssessmentId;
   readonly verdictSummary: string;
   readonly reasonCode: string;
   readonly safeStructuredFacts: Readonly<Record<string, unknown>>;
   readonly materializedAt: string;
 }
+
+export interface ExecutionOutcomeReceipt extends BaseReceipt {
+  readonly kind: 'execution_outcome';
+  readonly routeEvaluationId: RouteEvaluationId;
+  readonly attemptId: AttemptId;
+  readonly outcomeAssessmentId: OutcomeAssessmentId;
+}
+
+export interface PolicyDenialReceipt extends BaseReceipt {
+  readonly kind: 'policy_denial';
+  readonly routeEvaluationId?: undefined;
+  readonly attemptId?: undefined;
+  readonly outcomeAssessmentId?: undefined;
+}
+
+export interface AuthorizationDenialReceipt extends BaseReceipt {
+  readonly kind: 'authorization_denial';
+  readonly routeEvaluationId?: undefined;
+  readonly attemptId?: undefined;
+  readonly outcomeAssessmentId?: undefined;
+}
+
+export interface NoEligibleRouteReceipt extends BaseReceipt {
+  readonly kind: 'no_eligible_route';
+  readonly routeEvaluationId?: undefined;
+  readonly attemptId?: undefined;
+  readonly outcomeAssessmentId?: undefined;
+}
+
+export interface CancelledReceipt extends BaseReceipt {
+  readonly kind: 'cancelled';
+  readonly routeEvaluationId?: undefined;
+  readonly attemptId?: undefined;
+  readonly outcomeAssessmentId?: undefined;
+}
+
+export type Receipt =
+  | ExecutionOutcomeReceipt
+  | PolicyDenialReceipt
+  | AuthorizationDenialReceipt
+  | NoEligibleRouteReceipt
+  | CancelledReceipt;
 
 // ============================================================================
 // 7. EXECUTION LEDGER STORE INTERFACE

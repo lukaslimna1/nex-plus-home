@@ -1,8 +1,8 @@
 /**
  * NEX+ · ExecutionEvidence & Attempt Ledger
- * Testes Determinísticos de L0 — Escopo 0.5 (Bloco 0.5D)
+ * Testes Determinísticos de L0 — Escopo 0.5 (Bloco 0.5D / Hardening)
  *
- * Suíte Completa: 45 Testes de Aceitação Obrigatórios.
+ * Suíte Completa: 45 Testes Base Adaptados + 15 Novos Testes de Hardening (60 Testes).
  */
 
 import { describe, it } from 'node:test';
@@ -33,9 +33,10 @@ import type {
   ReceiptId,
   AttemptCreatedEvent,
   AttemptStartedEvent,
-  AttemptTerminalEvent,
   ExecutionSignal,
   ExecutionEvidence,
+  ExecutionOutcomeReceipt,
+  PolicyDenialReceipt,
 } from '../contracts';
 
 import {
@@ -58,9 +59,11 @@ import {
   DuplicateIdError,
   InvalidAttemptTransitionError,
   InvalidAttemptReferenceError,
-  InvalidSignalReferenceError,
+  InvalidEvidenceReferenceError,
   InvalidAssessmentReferenceError,
+  InvalidAssessmentLineageError,
   CrossAttemptReferenceError,
+  InvalidReceiptStructureError,
 } from '../ledger';
 
 const defaultProvenance: FactProvenance = {
@@ -473,7 +476,6 @@ describe('NEX+ L0 ExecutionEvidence & Attempt Ledger (Bloco 0.5D)', () => {
       finishedAt: '2026-08-19T18:40:06.000Z',
     });
 
-    // Late signal chegando após o timeout
     const lateSignal: ExecutionSignal = {
       signalId: 'sig_late' as ExecutionSignalId,
       attemptId: 'att_01' as AttemptId,
@@ -533,7 +535,7 @@ describe('NEX+ L0 ExecutionEvidence & Attempt Ledger (Bloco 0.5D)', () => {
       statusCode: 200,
     };
 
-    const safeMeta = projectSafePayload(rawPayload); // Sem allowlist
+    const safeMeta = projectSafePayload(rawPayload);
     assert.deepEqual(safeMeta, {});
   });
 
@@ -796,6 +798,7 @@ describe('NEX+ L0 ExecutionEvidence & Attempt Ledger (Bloco 0.5D)', () => {
       attemptId: 'att_01' as AttemptId,
       signalRefs: ['sig_01' as ExecutionSignalId],
       kind: 'pre_dispatch_failure',
+      noSideEffectGuarantee: 'structural',
       safeFacts: { error: 'SchemaValidationErrorBeforeSocketOpen' },
       provenance: defaultProvenance,
       recordedAt: '2026-08-19T18:40:02.000Z',
@@ -810,7 +813,7 @@ describe('NEX+ L0 ExecutionEvidence & Attempt Ledger (Bloco 0.5D)', () => {
     });
 
     assert.equal(assessment.verdict, 'confirmed_no_mutation');
-    assert.equal(assessment.reasonCode, 'PRE_DISPATCH_FAILURE_NO_MUTATION');
+    assert.equal(assessment.reasonCode, 'PRE_DISPATCH_FAILURE_STRUCTURAL_NO_MUTATION');
   });
 
   // 26. technical failure pós-dispatch → indeterminate
@@ -826,7 +829,6 @@ describe('NEX+ L0 ExecutionEvidence & Attempt Ledger (Bloco 0.5D)', () => {
       createdAt: '2026-08-19T18:40:00.000Z',
     };
 
-    // Falha ocorreu pós-dispatch sem prova de rollback
     const evidence: ExecutionEvidence = {
       evidenceId: 'evi_post_fail' as ExecutionEvidenceId,
       attemptId: 'att_01' as AttemptId,
@@ -970,7 +972,7 @@ describe('NEX+ L0 ExecutionEvidence & Attempt Ledger (Bloco 0.5D)', () => {
     const a2 = {
       assessmentId: 'ass_02' as OutcomeAssessmentId,
       attemptId: 'att_01' as AttemptId,
-      evidenceRefs: ['evi_late' as ExecutionEvidenceId],
+      evidenceRefs: [],
       verdict: 'confirmed_mutation' as const,
       reasonCode: 'MUTATION_EFFECT_OBSERVED',
       supersedesAssessmentId: 'ass_01' as OutcomeAssessmentId,
@@ -1056,7 +1058,6 @@ describe('NEX+ L0 ExecutionEvidence & Attempt Ledger (Bloco 0.5D)', () => {
       assessedAt: '2026-08-19T18:40:05.000Z',
     });
 
-    // Tentativa de ass_on_att2 superseder ass_on_att1
     const crossAssessment = {
       assessmentId: 'ass_on_att2' as OutcomeAssessmentId,
       attemptId: 'att_02' as AttemptId,
@@ -1143,8 +1144,8 @@ describe('NEX+ L0 ExecutionEvidence & Attempt Ledger (Bloco 0.5D)', () => {
     });
 
     assert.equal(receipt.kind, 'policy_denial');
-    assert.equal(receipt.attemptId, undefined);
-    assert.equal(receipt.outcomeAssessmentId, undefined);
+    assert.equal(((receipt as unknown) as Record<string, unknown>).attemptId, undefined);
+    assert.equal(((receipt as unknown) as Record<string, unknown>).outcomeAssessmentId, undefined);
     assert.equal(receipt.reasonCode, 'EGRESS_LOCAL_ONLY_EXTERNAL_PROVIDER');
   });
 
@@ -1165,7 +1166,7 @@ describe('NEX+ L0 ExecutionEvidence & Attempt Ledger (Bloco 0.5D)', () => {
     });
 
     assert.equal(receipt.kind, 'authorization_denial');
-    assert.equal(receipt.attemptId, undefined);
+    assert.equal(((receipt as unknown) as Record<string, unknown>).attemptId, undefined);
     assert.equal(receipt.reasonCode, 'PERMISSION_DENIED_ROLE');
   });
 
@@ -1179,7 +1180,7 @@ describe('NEX+ L0 ExecutionEvidence & Attempt Ledger (Bloco 0.5D)', () => {
     });
 
     assert.equal(receipt.kind, 'no_eligible_route');
-    assert.equal(receipt.attemptId, undefined);
+    assert.equal(((receipt as unknown) as Record<string, unknown>).attemptId, undefined);
     assert.equal(receipt.reasonCode, 'NO_ELIGIBLE_ROUTE_FOR_CAPABILITY');
   });
 
@@ -1193,7 +1194,7 @@ describe('NEX+ L0 ExecutionEvidence & Attempt Ledger (Bloco 0.5D)', () => {
     });
 
     assert.equal(receipt.kind, 'cancelled');
-    assert.equal(receipt.attemptId, undefined);
+    assert.equal(((receipt as unknown) as Record<string, unknown>).attemptId, undefined);
     assert.equal(receipt.reasonCode, 'USER_CANCELLED_PRE_DISPATCH');
   });
 
@@ -1225,7 +1226,6 @@ describe('NEX+ L0 ExecutionEvidence & Attempt Ledger (Bloco 0.5D)', () => {
       materializedAt: '2026-08-19T18:40:01.000Z',
     });
 
-    // Simulando nova revisão de policy que mudaria a regra no futuro
     const updatedPolicy: PolicyRevision = {
       policyKey: 'policy.test' as PolicyKey,
       policyRevisionId: 'rev_pol_v2' as PolicyRevisionId,
@@ -1246,7 +1246,7 @@ describe('NEX+ L0 ExecutionEvidence & Attempt Ledger (Bloco 0.5D)', () => {
       attemptId: 'att_01' as AttemptId,
       evidenceRefs: [],
       verdict: 'confirmed_result' as const,
-      reasonCode: 'NON_MUTATING_TECHNICAL_SUCCESS',
+      reasonCode: 'NON_MUTATING_RESULT_VERIFIED',
       assessedAt: '2026-08-19T18:40:05.000Z',
     };
 
@@ -1290,7 +1290,6 @@ describe('NEX+ L0 ExecutionEvidence & Attempt Ledger (Bloco 0.5D)', () => {
   it('43. rejected/ineligible Route não exige Attempt', () => {
     const ledger = createExecutionLedgerStore();
 
-    // Rota rejeitada cria recibo diretamente no ledger sem nenhum Attempt
     const denialReceipt = materializeNoEligibleRouteReceipt({
       receiptId: 'rcpt_no_route' as ReceiptId,
       decisionId: 'dec_01' as DecisionId,
@@ -1388,10 +1387,543 @@ describe('NEX+ L0 ExecutionEvidence & Attempt Ledger (Bloco 0.5D)', () => {
     assert.equal(snapshot.evidence.length, 1);
     assert.equal(snapshot.evidence[0].signalRefs[0], 'sig_01');
 
-    // Inicializar novo ledger a partir do snapshot exportado
     const restoredLedger = createExecutionLedgerStore(snapshot);
     assert.equal(restoredLedger.getAttempt('att_01' as AttemptId)?.attemptId, 'att_01');
     assert.equal(restoredLedger.getExecutionSignal('sig_01' as ExecutionSignalId)?.signalId, 'sig_01');
     assert.equal(restoredLedger.getExecutionEvidence('evi_01' as ExecutionEvidenceId)?.evidenceId, 'evi_01');
+  });
+
+  // ==========================================================================
+  // NOVOS TESTES OBRIGATÓRIOS (D46 A D60) - HARDENING 0.5D
+  // ==========================================================================
+
+  // D46. non-mutating succeeded sem result_verified → indeterminate
+  it('D46. non-mutating succeeded sem result_verified → indeterminate', () => {
+    const attempt = {
+      attemptId: 'att_01' as AttemptId,
+      decisionId: 'dec_01' as DecisionId,
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_01' as BindingRevisionId,
+      routeRevisionId: 'route_01' as RouteRevisionId,
+      status: 'succeeded' as const,
+      createdAt: '2026-08-19T18:40:00.000Z',
+    };
+
+    const assessment = assessOutcome({
+      assessmentId: 'ass_01' as OutcomeAssessmentId,
+      attempt,
+      evidenceList: [],
+      isDomainMutating: false,
+      assessedAt: '2026-08-19T18:40:05.000Z',
+    });
+
+    assert.equal(assessment.verdict, 'indeterminate');
+    assert.equal(assessment.reasonCode, 'NON_MUTATING_TECHNICAL_SUCCESS_WITHOUT_RESULT_EVIDENCE');
+  });
+
+  // D47. non-mutating com result_verified → confirmed_result
+  it('D47. non-mutating com result_verified → confirmed_result', () => {
+    const attempt = {
+      attemptId: 'att_01' as AttemptId,
+      decisionId: 'dec_01' as DecisionId,
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_01' as BindingRevisionId,
+      routeRevisionId: 'route_01' as RouteRevisionId,
+      status: 'succeeded' as const,
+      createdAt: '2026-08-19T18:40:00.000Z',
+    };
+
+    const evidence: ExecutionEvidence = {
+      evidenceId: 'evi_res' as ExecutionEvidenceId,
+      attemptId: 'att_01' as AttemptId,
+      signalRefs: ['sig_01' as ExecutionSignalId],
+      kind: 'result_verified',
+      safeFacts: { outputSchemaValid: true },
+      provenance: defaultProvenance,
+      recordedAt: '2026-08-19T18:40:02.000Z',
+    };
+
+    const assessment = assessOutcome({
+      assessmentId: 'ass_01' as OutcomeAssessmentId,
+      attempt,
+      evidenceList: [evidence],
+      isDomainMutating: false,
+      assessedAt: '2026-08-19T18:40:05.000Z',
+    });
+
+    assert.equal(assessment.verdict, 'confirmed_result');
+    assert.equal(assessment.reasonCode, 'NON_MUTATING_RESULT_VERIFIED');
+  });
+
+  // D48. pre_dispatch_failure sem structural guarantee → indeterminate
+  it('D48. pre_dispatch_failure sem structural guarantee → indeterminate', () => {
+    const attempt = {
+      attemptId: 'att_01' as AttemptId,
+      decisionId: 'dec_01' as DecisionId,
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_01' as BindingRevisionId,
+      routeRevisionId: 'route_01' as RouteRevisionId,
+      status: 'failed' as const,
+      createdAt: '2026-08-19T18:40:00.000Z',
+    };
+
+    const evidence: ExecutionEvidence = {
+      evidenceId: 'evi_pre_fail_raw' as ExecutionEvidenceId,
+      attemptId: 'att_01' as AttemptId,
+      signalRefs: ['sig_01' as ExecutionSignalId],
+      kind: 'pre_dispatch_failure',
+      // noSideEffectGuarantee ausente / non-structural
+      safeFacts: {},
+      provenance: defaultProvenance,
+      recordedAt: '2026-08-19T18:40:02.000Z',
+    };
+
+    const assessment = assessOutcome({
+      assessmentId: 'ass_01' as OutcomeAssessmentId,
+      attempt,
+      evidenceList: [evidence],
+      isDomainMutating: true,
+      assessedAt: '2026-08-19T18:40:05.000Z',
+    });
+
+    assert.equal(assessment.verdict, 'indeterminate');
+    assert.equal(assessment.reasonCode, 'PRE_DISPATCH_FAILURE_WITHOUT_STRUCTURAL_GUARANTEE');
+  });
+
+  // D49. pre_dispatch_failure + structural no-side-effect guarantee → confirmed_no_mutation
+  it('D49. pre_dispatch_failure + structural no-side-effect guarantee → confirmed_no_mutation', () => {
+    const attempt = {
+      attemptId: 'att_01' as AttemptId,
+      decisionId: 'dec_01' as DecisionId,
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_01' as BindingRevisionId,
+      routeRevisionId: 'route_01' as RouteRevisionId,
+      status: 'failed' as const,
+      createdAt: '2026-08-19T18:40:00.000Z',
+    };
+
+    const evidence: ExecutionEvidence = {
+      evidenceId: 'evi_pre_fail_struct' as ExecutionEvidenceId,
+      attemptId: 'att_01' as AttemptId,
+      signalRefs: ['sig_01' as ExecutionSignalId],
+      kind: 'pre_dispatch_failure',
+      noSideEffectGuarantee: 'structural',
+      safeFacts: {},
+      provenance: defaultProvenance,
+      recordedAt: '2026-08-19T18:40:02.000Z',
+    };
+
+    const assessment = assessOutcome({
+      assessmentId: 'ass_01' as OutcomeAssessmentId,
+      attempt,
+      evidenceList: [evidence],
+      isDomainMutating: true,
+      assessedAt: '2026-08-19T18:40:05.000Z',
+    });
+
+    assert.equal(assessment.verdict, 'confirmed_no_mutation');
+    assert.equal(assessment.reasonCode, 'PRE_DISPATCH_FAILURE_STRUCTURAL_NO_MUTATION');
+  });
+
+  // D50. Assessment referencia Evidence inexistente → rejeitado
+  it('D50. Assessment referencia Evidence inexistente → rejeitado', () => {
+    const ledger = createExecutionLedgerStore();
+    ledger.appendAttemptEvent({
+      type: 'AttemptCreated',
+      attemptId: 'att_01' as AttemptId,
+      decisionId: 'dec_01' as DecisionId,
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_rev_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_rev_01' as BindingRevisionId,
+      routeRevisionId: 'route_rev_01' as RouteRevisionId,
+      createdAt: '2026-08-19T18:40:00.000Z',
+    });
+
+    assert.throws(
+      () =>
+        ledger.appendOutcomeAssessment({
+          assessmentId: 'ass_01' as OutcomeAssessmentId,
+          attemptId: 'att_01' as AttemptId,
+          evidenceRefs: ['evi_fake_non_existent' as ExecutionEvidenceId],
+          verdict: 'indeterminate',
+          reasonCode: 'TEST',
+          assessedAt: '2026-08-19T18:40:05.000Z',
+        }),
+      InvalidEvidenceReferenceError,
+    );
+  });
+
+  // D51. Assessment referencia Evidence de outro Attempt → rejeitado
+  it('D51. Assessment referencia Evidence de outro Attempt → rejeitado', () => {
+    const ledger = createExecutionLedgerStore();
+    ledger.appendAttemptEvent({
+      type: 'AttemptCreated',
+      attemptId: 'att_01' as AttemptId,
+      decisionId: 'dec_01' as DecisionId,
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_rev_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_rev_01' as BindingRevisionId,
+      routeRevisionId: 'route_rev_01' as RouteRevisionId,
+      createdAt: '2026-08-19T18:40:00.000Z',
+    });
+    ledger.appendAttemptEvent({
+      type: 'AttemptCreated',
+      attemptId: 'att_02' as AttemptId,
+      decisionId: 'dec_02' as DecisionId,
+      routeEvaluationId: 'eval_02' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_rev_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_rev_01' as BindingRevisionId,
+      routeRevisionId: 'route_rev_01' as RouteRevisionId,
+      createdAt: '2026-08-19T18:40:00.000Z',
+    });
+    ledger.appendExecutionSignal({
+      signalId: 'sig_att_02' as ExecutionSignalId,
+      attemptId: 'att_02' as AttemptId,
+      kind: 'effect_observed',
+      safeMetadata: {},
+      provenance: defaultProvenance,
+      observedAt: '2026-08-19T18:40:01.000Z',
+    });
+    ledger.appendExecutionEvidence({
+      evidenceId: 'evi_att_02' as ExecutionEvidenceId,
+      attemptId: 'att_02' as AttemptId,
+      signalRefs: ['sig_att_02' as ExecutionSignalId],
+      kind: 'effect_observed',
+      safeFacts: {},
+      provenance: defaultProvenance,
+      recordedAt: '2026-08-19T18:40:02.000Z',
+    });
+
+    assert.throws(
+      () =>
+        ledger.appendOutcomeAssessment({
+          assessmentId: 'ass_att_01' as OutcomeAssessmentId,
+          attemptId: 'att_01' as AttemptId,
+          evidenceRefs: ['evi_att_02' as ExecutionEvidenceId],
+          verdict: 'confirmed_mutation',
+          reasonCode: 'TEST',
+          assessedAt: '2026-08-19T18:40:05.000Z',
+        }),
+      CrossAttemptReferenceError,
+    );
+  });
+
+  // D52. assessOutcome recebe Evidence cross-Attempt → rejeitado
+  it('D52. assessOutcome recebe Evidence cross-Attempt → rejeitado', () => {
+    const attempt = {
+      attemptId: 'att_01' as AttemptId,
+      decisionId: 'dec_01' as DecisionId,
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_01' as BindingRevisionId,
+      routeRevisionId: 'route_01' as RouteRevisionId,
+      status: 'succeeded' as const,
+      createdAt: '2026-08-19T18:40:00.000Z',
+    };
+
+    const evidenceFromAtt2: ExecutionEvidence = {
+      evidenceId: 'evi_02' as ExecutionEvidenceId,
+      attemptId: 'att_02' as AttemptId,
+      signalRefs: ['sig_01' as ExecutionSignalId],
+      kind: 'effect_observed',
+      safeFacts: {},
+      provenance: defaultProvenance,
+      recordedAt: '2026-08-19T18:40:02.000Z',
+    };
+
+    assert.throws(
+      () =>
+        assessOutcome({
+          assessmentId: 'ass_01' as OutcomeAssessmentId,
+          attempt,
+          evidenceList: [evidenceFromAtt2],
+          isDomainMutating: true,
+          assessedAt: '2026-08-19T18:40:05.000Z',
+        }),
+      /Cross-attempt evidence violation/,
+    );
+  });
+
+  // D53. A2 supersede A1 head → válido
+  it('D53. A2 supersede A1 head → válido', () => {
+    const ledger = createExecutionLedgerStore();
+    ledger.appendAttemptEvent({
+      type: 'AttemptCreated',
+      attemptId: 'att_01' as AttemptId,
+      decisionId: 'dec_01' as DecisionId,
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_rev_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_rev_01' as BindingRevisionId,
+      routeRevisionId: 'route_rev_01' as RouteRevisionId,
+      createdAt: '2026-08-19T18:40:00.000Z',
+    });
+
+    ledger.appendOutcomeAssessment({
+      assessmentId: 'ass_01' as OutcomeAssessmentId,
+      attemptId: 'att_01' as AttemptId,
+      evidenceRefs: [],
+      verdict: 'indeterminate',
+      reasonCode: 'INITIAL',
+      assessedAt: '2026-08-19T18:40:05.000Z',
+    });
+
+    ledger.appendOutcomeAssessment({
+      assessmentId: 'ass_02' as OutcomeAssessmentId,
+      attemptId: 'att_01' as AttemptId,
+      evidenceRefs: [],
+      verdict: 'confirmed_mutation',
+      reasonCode: 'LATE',
+      supersedesAssessmentId: 'ass_01' as OutcomeAssessmentId,
+      assessedAt: '2026-08-19T18:40:10.000Z',
+    });
+
+    assert.equal(ledger.getLatestOutcomeAssessment('att_01' as AttemptId)?.assessmentId, 'ass_02');
+  });
+
+  // D54. A3 tenta superseder A1 depois de A2 → rejeitado
+  it('D54. A3 tenta superseder A1 depois de A2 → rejeitado', () => {
+    const ledger = createExecutionLedgerStore();
+    ledger.appendAttemptEvent({
+      type: 'AttemptCreated',
+      attemptId: 'att_01' as AttemptId,
+      decisionId: 'dec_01' as DecisionId,
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_rev_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_rev_01' as BindingRevisionId,
+      routeRevisionId: 'route_rev_01' as RouteRevisionId,
+      createdAt: '2026-08-19T18:40:00.000Z',
+    });
+
+    ledger.appendOutcomeAssessment({
+      assessmentId: 'ass_01' as OutcomeAssessmentId,
+      attemptId: 'att_01' as AttemptId,
+      evidenceRefs: [],
+      verdict: 'indeterminate',
+      reasonCode: 'INITIAL',
+      assessedAt: '2026-08-19T18:40:05.000Z',
+    });
+
+    ledger.appendOutcomeAssessment({
+      assessmentId: 'ass_02' as OutcomeAssessmentId,
+      attemptId: 'att_01' as AttemptId,
+      evidenceRefs: [],
+      verdict: 'confirmed_mutation',
+      reasonCode: 'LATE',
+      supersedesAssessmentId: 'ass_01' as OutcomeAssessmentId,
+      assessedAt: '2026-08-19T18:40:10.000Z',
+    });
+
+    // A3 tenta superseder A1 (que não é mais head)
+    assert.throws(
+      () =>
+        ledger.appendOutcomeAssessment({
+          assessmentId: 'ass_03' as OutcomeAssessmentId,
+          attemptId: 'att_01' as AttemptId,
+          evidenceRefs: [],
+          verdict: 'confirmed_mutation',
+          reasonCode: 'ANOTHER_BRANCH',
+          supersedesAssessmentId: 'ass_01' as OutcomeAssessmentId,
+          assessedAt: '2026-08-19T18:40:15.000Z',
+        }),
+      InvalidAssessmentLineageError,
+    );
+  });
+
+  // D55. segundo Assessment sem superseder head existente → rejeitado
+  it('D55. segundo Assessment sem superseder head existente → rejeitado', () => {
+    const ledger = createExecutionLedgerStore();
+    ledger.appendAttemptEvent({
+      type: 'AttemptCreated',
+      attemptId: 'att_01' as AttemptId,
+      decisionId: 'dec_01' as DecisionId,
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_rev_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_rev_01' as BindingRevisionId,
+      routeRevisionId: 'route_rev_01' as RouteRevisionId,
+      createdAt: '2026-08-19T18:40:00.000Z',
+    });
+
+    ledger.appendOutcomeAssessment({
+      assessmentId: 'ass_01' as OutcomeAssessmentId,
+      attemptId: 'att_01' as AttemptId,
+      evidenceRefs: [],
+      verdict: 'indeterminate',
+      reasonCode: 'INITIAL',
+      assessedAt: '2026-08-19T18:40:05.000Z',
+    });
+
+    // Segundo assessment sem supersedesAssessmentId
+    assert.throws(
+      () =>
+        ledger.appendOutcomeAssessment({
+          assessmentId: 'ass_02_parallel' as OutcomeAssessmentId,
+          attemptId: 'att_01' as AttemptId,
+          evidenceRefs: [],
+          verdict: 'confirmed_mutation',
+          reasonCode: 'PARALLEL_HEAD',
+          assessedAt: '2026-08-19T18:40:10.000Z',
+        }),
+      InvalidAssessmentLineageError,
+    );
+  });
+
+  // D56. getLatestOutcomeAssessment é inequívoco
+  it('D56. getLatestOutcomeAssessment é inequívoco', () => {
+    const ledger = createExecutionLedgerStore();
+    ledger.appendAttemptEvent({
+      type: 'AttemptCreated',
+      attemptId: 'att_01' as AttemptId,
+      decisionId: 'dec_01' as DecisionId,
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_rev_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_rev_01' as BindingRevisionId,
+      routeRevisionId: 'route_rev_01' as RouteRevisionId,
+      createdAt: '2026-08-19T18:40:00.000Z',
+    });
+
+    ledger.appendOutcomeAssessment({
+      assessmentId: 'ass_01' as OutcomeAssessmentId,
+      attemptId: 'att_01' as AttemptId,
+      evidenceRefs: [],
+      verdict: 'indeterminate',
+      reasonCode: 'INITIAL',
+      assessedAt: '2026-08-19T18:40:05.000Z',
+    });
+    ledger.appendOutcomeAssessment({
+      assessmentId: 'ass_02' as OutcomeAssessmentId,
+      attemptId: 'att_01' as AttemptId,
+      evidenceRefs: [],
+      verdict: 'indeterminate',
+      reasonCode: 'UPDATE_1',
+      supersedesAssessmentId: 'ass_01' as OutcomeAssessmentId,
+      assessedAt: '2026-08-19T18:40:10.000Z',
+    });
+    ledger.appendOutcomeAssessment({
+      assessmentId: 'ass_03' as OutcomeAssessmentId,
+      attemptId: 'att_01' as AttemptId,
+      evidenceRefs: [],
+      verdict: 'confirmed_mutation',
+      reasonCode: 'FINAL',
+      supersedesAssessmentId: 'ass_02' as OutcomeAssessmentId,
+      assessedAt: '2026-08-19T18:40:15.000Z',
+    });
+
+    assert.equal(ledger.getLatestOutcomeAssessment('att_01' as AttemptId)?.assessmentId, 'ass_03');
+  });
+
+  // D57. execution Receipt sem Attempt → rejeitado
+  it('D57. execution Receipt sem Attempt → rejeitado', () => {
+    const ledger = createExecutionLedgerStore();
+    const badReceipt = {
+      receiptId: 'rcpt_bad' as ReceiptId,
+      decisionId: 'dec_01' as DecisionId,
+      kind: 'execution_outcome' as const,
+      verdictSummary: 'confirmed_mutation',
+      reasonCode: 'MUTATION_EFFECT_OBSERVED',
+      safeStructuredFacts: {},
+      materializedAt: '2026-08-19T18:40:06.000Z',
+    } as unknown as ExecutionOutcomeReceipt;
+
+    assert.throws(() => ledger.appendReceipt(badReceipt), InvalidReceiptStructureError);
+  });
+
+  // D58. execution Receipt com Assessment de outro Attempt → rejeitado
+  it('D58. execution Receipt com Assessment de outro Attempt → rejeitado', () => {
+    const ledger = createExecutionLedgerStore();
+    ledger.appendAttemptEvent({
+      type: 'AttemptCreated',
+      attemptId: 'att_01' as AttemptId,
+      decisionId: 'dec_01' as DecisionId,
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_rev_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_rev_01' as BindingRevisionId,
+      routeRevisionId: 'route_rev_01' as RouteRevisionId,
+      createdAt: '2026-08-19T18:40:00.000Z',
+    });
+    ledger.appendAttemptEvent({
+      type: 'AttemptCreated',
+      attemptId: 'att_02' as AttemptId,
+      decisionId: 'dec_02' as DecisionId,
+      routeEvaluationId: 'eval_02' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_rev_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_rev_01' as BindingRevisionId,
+      routeRevisionId: 'route_rev_01' as RouteRevisionId,
+      createdAt: '2026-08-19T18:40:00.000Z',
+    });
+    ledger.appendOutcomeAssessment({
+      assessmentId: 'ass_on_att2' as OutcomeAssessmentId,
+      attemptId: 'att_02' as AttemptId,
+      evidenceRefs: [],
+      verdict: 'confirmed_mutation',
+      reasonCode: 'TEST',
+      assessedAt: '2026-08-19T18:40:05.000Z',
+    });
+
+    const crossReceipt: ExecutionOutcomeReceipt = {
+      receiptId: 'rcpt_cross' as ReceiptId,
+      decisionId: 'dec_01' as DecisionId,
+      kind: 'execution_outcome',
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      attemptId: 'att_01' as AttemptId,
+      outcomeAssessmentId: 'ass_on_att2' as OutcomeAssessmentId,
+      verdictSummary: 'confirmed_mutation',
+      reasonCode: 'TEST',
+      safeStructuredFacts: {},
+      materializedAt: '2026-08-19T18:40:06.000Z',
+    };
+
+    assert.throws(() => ledger.appendReceipt(crossReceipt), CrossAttemptReferenceError);
+  });
+
+  // D59. policy denial Receipt com Attempt → rejeitado
+  it('D59. policy denial Receipt com Attempt → rejeitado', () => {
+    const ledger = createExecutionLedgerStore();
+    const badDenial = {
+      receiptId: 'rcpt_bad_denial' as ReceiptId,
+      decisionId: 'dec_01' as DecisionId,
+      kind: 'policy_denial' as const,
+      attemptId: 'att_fake' as AttemptId,
+      verdictSummary: 'policy_denied',
+      reasonCode: 'EGRESS_DENIED',
+      safeStructuredFacts: {},
+      materializedAt: '2026-08-19T18:40:06.000Z',
+    } as unknown as PolicyDenialReceipt;
+
+    assert.throws(() => ledger.appendReceipt(badDenial), InvalidReceiptStructureError);
+  });
+
+  // D60. alterar objeto retornado por snapshot não altera estado interno do Ledger
+  it('D60. alterar objeto retornado por snapshot não altera estado interno do Ledger', () => {
+    const ledger = createExecutionLedgerStore();
+    ledger.appendAttemptEvent({
+      type: 'AttemptCreated',
+      attemptId: 'att_01' as AttemptId,
+      decisionId: 'dec_01' as DecisionId,
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_rev_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_rev_01' as BindingRevisionId,
+      routeRevisionId: 'route_rev_01' as RouteRevisionId,
+      createdAt: '2026-08-19T18:40:00.000Z',
+    });
+
+    const snapshot = ledger.exportSnapshot();
+    assert.throws(() => {
+      ((snapshot.attemptEvents as unknown) as AttemptCreatedEvent[]).push({
+        type: 'AttemptCreated',
+        attemptId: 'att_injected' as AttemptId,
+        decisionId: 'dec_01' as DecisionId,
+        routeEvaluationId: 'eval_01' as RouteEvaluationId,
+        capabilityRevisionId: 'cap_rev_01' as CapabilityRevisionId,
+        bindingRevisionId: 'bind_rev_01' as BindingRevisionId,
+        routeRevisionId: 'route_rev_01' as RouteRevisionId,
+        createdAt: '2026-08-19T18:40:00.000Z',
+      });
+    });
+
+    assert.equal(ledger.listAttempts().length, 1);
   });
 });
