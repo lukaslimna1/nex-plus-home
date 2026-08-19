@@ -1,8 +1,8 @@
 /**
  * NEX+ · Policy Engine · Egress, Zero-Cost & ACL Boundary
- * Testes Determinísticos do Policy Engine — Escopo 0.5 (Bloco 0.5C)
+ * Testes Determinísticos do Policy Engine — Escopo 0.5 (Bloco 0.5C / Hardening)
  *
- * Suíte Completa: 36 Casos de Aceitação Obrigatórios.
+ * Suíte Completa: 36 Casos Base + 12 Novos Casos de Hardening (48 Testes).
  */
 
 import { describe, it } from 'node:test';
@@ -18,6 +18,7 @@ import type {
   AdapterRevisionRef,
   FactProvenance,
   TermsResolutionResult,
+  TermsResolutionContext,
 } from '../../capabilities/contracts';
 
 import type {
@@ -43,7 +44,11 @@ const defaultProvenance: FactProvenance = {
   observedAt: '2026-08-19T18:00:00.000Z',
 };
 
-// PolicyRevision fixture de teste
+const defaultContext: TermsResolutionContext = {
+  at: '2026-08-19T18:00:00.000Z',
+};
+
+// PolicyRevision fixture de teste (sem campo morto allowedEgressTopologies)
 const testPolicy: PolicyRevision = {
   policyKey: 'nex.policy.foundation.v1' as PolicyKey,
   policyRevisionId: 'rev_policy_fixture_01' as PolicyRevisionId,
@@ -219,7 +224,7 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
     };
     const termsResult: TermsResolutionResult = { status: 'no_terms' };
 
-    const output = evaluateZeroCostAxis(policyNoZeroCost, termsResult);
+    const output = evaluateZeroCostAxis(policyNoZeroCost, termsResult, defaultContext);
     assert.equal(output.decision.verdict, 'allow');
     assert.equal(output.decision.reasonCode, 'ZERO_COST_NOT_REQUIRED');
     assert.equal(output.runtimeRequirements.length, 0);
@@ -244,7 +249,7 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
       terms,
     };
 
-    const output = evaluateZeroCostAxis(testPolicy, termsResult);
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, defaultContext);
     assert.equal(output.decision.verdict, 'allow');
     assert.equal(output.decision.reasonCode, 'ZERO_COST_NO_EXTERNAL_CHARGE');
   });
@@ -268,7 +273,7 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
       terms,
     };
 
-    const output = evaluateZeroCostAxis(testPolicy, termsResult);
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, defaultContext);
     assert.equal(output.decision.verdict, 'allow');
     assert.equal(output.decision.reasonCode, 'ZERO_COST_RECURRING_FULL_FREE');
     assert.equal(output.runtimeRequirements.length, 0);
@@ -293,7 +298,7 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
       terms,
     };
 
-    const output = evaluateZeroCostAxis(testPolicy, termsResult);
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, defaultContext);
     assert.equal(output.decision.verdict, 'allow');
     assert.equal(output.decision.reasonCode, 'ZERO_COST_RECURRING_ALLOWANCE_PRINCIPLE');
     assert.deepEqual(output.runtimeRequirements, ['FREE_ALLOWANCE_AVAILABLE']);
@@ -310,7 +315,7 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
       billingStatus: 'known_none',
       billingComponents: [],
       freeEntitlementStatus: 'known_entitlements',
-      freeEntitlements: [{ type: 'trial', validityWindow: '14d' }],
+      freeEntitlements: [{ type: 'trial' }],
       effectiveFrom: '2026-08-01T00:00:00.000Z',
     };
     const termsResult: TermsResolutionResult = {
@@ -318,7 +323,7 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
       terms,
     };
 
-    const output = evaluateZeroCostAxis(testPolicy, termsResult);
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, defaultContext);
     assert.equal(output.decision.verdict, 'deny');
     assert.equal(output.decision.reasonCode, 'ZERO_COST_TRIAL_ONLY');
   });
@@ -342,7 +347,7 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
       terms,
     };
 
-    const output = evaluateZeroCostAxis(testPolicy, termsResult);
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, defaultContext);
     assert.equal(output.decision.verdict, 'deny');
     assert.equal(output.decision.reasonCode, 'ZERO_COST_PROMOTIONAL_ONLY');
   });
@@ -366,7 +371,7 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
       terms,
     };
 
-    const output = evaluateZeroCostAxis(testPolicy, termsResult);
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, defaultContext);
     assert.equal(output.decision.verdict, 'deny');
     assert.equal(output.decision.reasonCode, 'ZERO_COST_PAID_ONLY');
   });
@@ -390,7 +395,7 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
       terms,
     };
 
-    const output = evaluateZeroCostAxis(testPolicy, termsResult);
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, defaultContext);
     assert.equal(output.decision.verdict, 'deny');
     assert.equal(output.decision.reasonCode, 'ZERO_COST_PAID_ONLY');
   });
@@ -414,7 +419,7 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
       terms,
     };
 
-    const output = evaluateZeroCostAxis(testPolicy, termsResult);
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, defaultContext);
     assert.equal(output.decision.verdict, 'allow');
     assert.equal(output.decision.reasonCode, 'ZERO_COST_RECURRING_ALLOWANCE_PRINCIPLE');
     assert.deepEqual(output.runtimeRequirements, ['FREE_ALLOWANCE_AVAILABLE']);
@@ -439,7 +444,7 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
       terms,
     };
 
-    const output = evaluateZeroCostAxis(testPolicy, termsResult);
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, defaultContext);
     assert.equal(output.decision.verdict, 'allow');
     assert.equal(output.decision.reasonCode, 'ZERO_COST_RECURRING_FULL_FREE');
     assert.equal(output.runtimeRequirements.length, 0);
@@ -448,7 +453,7 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
   // 21. no_terms com Zero-Cost obrigatório = deny
   it('21. no_terms com Zero-Cost obrigatório = deny', () => {
     const termsResult: TermsResolutionResult = { status: 'no_terms' };
-    const output = evaluateZeroCostAxis(testPolicy, termsResult);
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, defaultContext);
     assert.equal(output.decision.verdict, 'deny');
     assert.equal(output.decision.reasonCode, 'ZERO_COST_NO_TERMS');
   });
@@ -456,7 +461,7 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
   // 22. no_applicable_terms = deny
   it('22. no_applicable_terms = deny', () => {
     const termsResult: TermsResolutionResult = { status: 'no_applicable_terms' };
-    const output = evaluateZeroCostAxis(testPolicy, termsResult);
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, defaultContext);
     assert.equal(output.decision.verdict, 'deny');
     assert.equal(output.decision.reasonCode, 'ZERO_COST_NO_APPLICABLE_TERMS');
   });
@@ -469,7 +474,7 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
       candidateTerms: [],
       reason: 'Missing dimension',
     };
-    const output = evaluateZeroCostAxis(testPolicy, termsResult);
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, defaultContext);
     assert.equal(output.decision.verdict, 'deny');
     assert.equal(output.decision.reasonCode, 'ZERO_COST_CONTEXT_INSUFFICIENT');
   });
@@ -481,7 +486,7 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
       conflictingTerms: [],
       reason: 'Conflict',
     };
-    const output = evaluateZeroCostAxis(testPolicy, termsResult);
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, defaultContext);
     assert.equal(output.decision.verdict, 'deny');
     assert.equal(output.decision.reasonCode, 'ZERO_COST_TERMS_CONFLICT');
   });
@@ -505,7 +510,7 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
       terms,
     };
 
-    const output = evaluateZeroCostAxis(testPolicy, termsResult);
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, defaultContext);
     assert.equal(output.decision.verdict, 'deny');
     assert.equal(output.decision.reasonCode, 'ZERO_COST_TERMS_UNKNOWN');
   });
@@ -537,6 +542,9 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
       policy: testPolicy,
       route,
       termsResult: { status: 'no_terms' },
+      context: defaultContext,
+      containsSecretMaterial: false,
+      evaluatedAt: '2026-08-19T18:00:00.000Z',
       sensitivity: 'LOCAL_ONLY',
     });
 
@@ -572,6 +580,9 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
       policy: testPolicy,
       route,
       termsResult: { status: 'no_terms' },
+      context: defaultContext,
+      containsSecretMaterial: false,
+      evaluatedAt: '2026-08-19T18:00:00.000Z',
       sensitivity: 'NORMAL',
     });
 
@@ -601,11 +612,13 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
       policy: testPolicy,
       route,
       termsResult: { status: 'no_terms' },
+      context: defaultContext,
+      containsSecretMaterial: false,
+      evaluatedAt: '2026-08-19T18:00:00.000Z',
       sensitivity: 'NORMAL',
     });
 
     assert.equal(decision.egressAxis.verdict, 'allow');
-    // PolicyDecision não possui campo de autorização humana
     assert.equal(((decision as unknown) as Record<string, unknown>).humanAuthorization, undefined);
     assert.equal(((decision as unknown) as Record<string, unknown>).authorized, undefined);
   });
@@ -633,11 +646,13 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
       domainEffect: 'none',
     };
 
-    // Sensibilidade LOCAL_ONLY bloqueia egress mesmo com humanAuth aprovada
     const decision = evaluatePolicy({
       policy: testPolicy,
       route,
       termsResult: { status: 'no_terms' },
+      context: defaultContext,
+      containsSecretMaterial: false,
+      evaluatedAt: '2026-08-19T18:00:00.000Z',
       sensitivity: 'LOCAL_ONLY',
     });
 
@@ -666,6 +681,9 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
       policy: testPolicy,
       route,
       termsResult: { status: 'no_terms' },
+      context: defaultContext,
+      containsSecretMaterial: false,
+      evaluatedAt: '2026-08-19T18:00:00.000Z',
     });
 
     assert.equal(decision.policyRevisionId, 'rev_policy_fixture_01');
@@ -693,6 +711,9 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
       policy: testPolicy,
       route,
       termsResult: { status: 'no_terms' },
+      context: defaultContext,
+      containsSecretMaterial: false,
+      evaluatedAt: '2026-08-19T18:00:00.000Z',
       sensitivity: 'LOCAL_ONLY',
     });
 
@@ -719,6 +740,9 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
         domainEffect: 'none',
       },
       termsResult: { status: 'no_terms' },
+      context: defaultContext,
+      containsSecretMaterial: false,
+      evaluatedAt: '2026-08-19T18:00:00.000Z',
     });
 
     const untyped = (decision as unknown) as Record<string, unknown>;
@@ -739,7 +763,7 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
       billingComponents: [],
       freeEntitlementStatus: 'known_entitlements',
       freeEntitlements: [
-        { type: 'trial', validityWindow: '30d' },
+        { type: 'trial' },
         { type: 'promotional_credit', quotaAmount: 100 },
       ],
       effectiveFrom: '2026-08-01T00:00:00.000Z',
@@ -749,7 +773,7 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
       terms,
     };
 
-    const output = evaluateZeroCostAxis(testPolicy, termsResult);
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, defaultContext);
     assert.equal(output.decision.verdict, 'deny');
   });
 
@@ -775,7 +799,7 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
       terms,
     };
 
-    const output = evaluateZeroCostAxis(testPolicy, termsResult);
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, defaultContext);
     assert.equal(output.decision.verdict, 'allow');
     assert.equal(output.decision.reasonCode, 'ZERO_COST_RECURRING_ALLOWANCE_PRINCIPLE');
     assert.deepEqual(output.runtimeRequirements, ['FREE_ALLOWANCE_AVAILABLE']);
@@ -823,5 +847,354 @@ describe('NEX+ L0 Policy Engine (Bloco 0.5C)', () => {
     const decision = evaluateEgressAxis(routeGatewayToCloud, 'LOCAL_ONLY');
     assert.equal(decision.verdict, 'deny');
     assert.equal(decision.reasonCode, 'EGRESS_LOCAL_ONLY_EXTERNAL_PROVIDER');
+  });
+
+  // ==========================================================================
+  // NOVOS TESTES OBRIGATÓRIOS (C37 A C48) - HARDENING 0.5C
+  // ==========================================================================
+
+  // C37. evaluatePolicy exige evaluatedAt explícito e não usa clock interno
+  it('C37. evaluatePolicy exige evaluatedAt explícito e não usa clock interno', () => {
+    const route: RouteRevision = {
+      routeKey: 'route.clock.test' as RouteKey,
+      routeRevisionId: 'rev_r_clock' as RouteRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      idempotencyProfile: { supportType: 'none' },
+      networkTopologyScopes: ['loopback'],
+      controlOwnership: 'operator_managed',
+      externalServiceNature: 'none',
+      crossesEgressBoundary: false,
+      domainEffect: 'none',
+    };
+
+    const explicitTimestamp = '2026-08-19T18:30:00.123Z';
+    const decision = evaluatePolicy({
+      policy: testPolicy,
+      route,
+      termsResult: { status: 'no_terms' },
+      context: { at: explicitTimestamp },
+      containsSecretMaterial: false,
+      evaluatedAt: explicitTimestamp,
+    });
+
+    assert.equal(decision.evaluatedAt, explicitTimestamp);
+  });
+
+  // C38. containsSecretMaterial é input obrigatório
+  it('C38. containsSecretMaterial é input obrigatório e força LOCAL_ONLY', () => {
+    const route: RouteRevision = {
+      routeKey: 'route.secret.test' as RouteKey,
+      routeRevisionId: 'rev_r_sec' as RouteRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      idempotencyProfile: { supportType: 'none' },
+      networkTopologyScopes: ['loopback'],
+      controlOwnership: 'operator_managed',
+      externalServiceNature: 'none',
+      crossesEgressBoundary: false,
+      domainEffect: 'none',
+    };
+
+    const decision = evaluatePolicy({
+      policy: testPolicy,
+      route,
+      termsResult: { status: 'no_terms' },
+      context: defaultContext,
+      containsSecretMaterial: true,
+      evaluatedAt: '2026-08-19T18:00:00.000Z',
+      sensitivity: 'NORMAL',
+    });
+
+    assert.equal(decision.containsSecretMaterial, true);
+    assert.equal(decision.effectiveSensitivity, 'LOCAL_ONLY');
+  });
+
+  // C39. PolicyRevision não possui allowedEgressTopologies morto
+  it('C39. PolicyRevision não possui allowedEgressTopologies morto', () => {
+    const untypedPolicy = (testPolicy as unknown) as Record<string, unknown>;
+    assert.equal(untypedPolicy.allowedEgressTopologies, undefined);
+  });
+
+  // C40. allowance enterprise não qualifica context standard
+  it('C40. allowance enterprise não qualifica context standard', () => {
+    const terms: RouteTermsRevision = {
+      termsKey: 'terms.tier.scoped' as RouteTermsKey,
+      termsRevisionId: 'rev_t_tier_scoped' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_1' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_components',
+      billingComponents: [{ type: 'metered_usage', amount: 0.01 }],
+      freeEntitlementStatus: 'known_entitlements',
+      freeEntitlements: [
+        {
+          type: 'recurring_free_allowance',
+          quotaAmount: 5000,
+          applicability: { accountTier: 'enterprise' },
+        },
+      ],
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+    const termsResult: TermsResolutionResult = {
+      status: 'single_applicable',
+      terms,
+    };
+
+    // Contexto standard não se qualifica para a allowance enterprise
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, {
+      at: '2026-08-19T18:00:00.000Z',
+      accountTier: 'standard',
+    });
+    assert.equal(output.decision.verdict, 'deny');
+    assert.equal(output.decision.reasonCode, 'ZERO_COST_PAID_ONLY');
+  });
+
+  // C41. allowance enterprise qualifica context enterprise
+  it('C41. allowance enterprise qualifica context enterprise', () => {
+    const terms: RouteTermsRevision = {
+      termsKey: 'terms.tier.scoped' as RouteTermsKey,
+      termsRevisionId: 'rev_t_tier_scoped' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_1' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_components',
+      billingComponents: [{ type: 'metered_usage', amount: 0.01 }],
+      freeEntitlementStatus: 'known_entitlements',
+      freeEntitlements: [
+        {
+          type: 'recurring_free_allowance',
+          quotaAmount: 5000,
+          applicability: { accountTier: 'enterprise' },
+        },
+      ],
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+    const termsResult: TermsResolutionResult = {
+      status: 'single_applicable',
+      terms,
+    };
+
+    // Contexto enterprise qualifica para a allowance
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, {
+      at: '2026-08-19T18:00:00.000Z',
+      accountTier: 'enterprise',
+    });
+    assert.equal(output.decision.verdict, 'allow');
+    assert.equal(output.decision.reasonCode, 'ZERO_COST_RECURRING_ALLOWANCE_PRINCIPLE');
+    assert.deepEqual(output.runtimeRequirements, ['FREE_ALLOWANCE_AVAILABLE']);
+  });
+
+  // C42. allowance com accountTier ausente → ZERO_COST_CONTEXT_INSUFFICIENT
+  it('C42. allowance com accountTier ausente → ZERO_COST_CONTEXT_INSUFFICIENT', () => {
+    const terms: RouteTermsRevision = {
+      termsKey: 'terms.tier.scoped' as RouteTermsKey,
+      termsRevisionId: 'rev_t_tier_scoped' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_1' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_components',
+      billingComponents: [{ type: 'metered_usage', amount: 0.01 }],
+      freeEntitlementStatus: 'known_entitlements',
+      freeEntitlements: [
+        {
+          type: 'recurring_free_allowance',
+          quotaAmount: 5000,
+          applicability: { accountTier: 'enterprise' },
+        },
+      ],
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+    const termsResult: TermsResolutionResult = {
+      status: 'single_applicable',
+      terms,
+    };
+
+    // Contexto sem accountTier: não podemos determinar applicability do item
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, {
+      at: '2026-08-19T18:00:00.000Z',
+    });
+    assert.equal(output.decision.verdict, 'deny');
+    assert.equal(output.decision.reasonCode, 'ZERO_COST_CONTEXT_INSUFFICIENT');
+  });
+
+  // C43. allowance expirada não qualifica
+  it('C43. allowance expirada não qualifica', () => {
+    const terms: RouteTermsRevision = {
+      termsKey: 'terms.exp.allow' as RouteTermsKey,
+      termsRevisionId: 'rev_t_exp_allow' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_1' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_components',
+      billingComponents: [{ type: 'metered_usage', amount: 0.01 }],
+      freeEntitlementStatus: 'known_entitlements',
+      freeEntitlements: [
+        {
+          type: 'recurring_free_allowance',
+          quotaAmount: 1000,
+          validUntil: '2026-06-30T23:59:59.000Z', // Expirada antes de agosto
+        },
+      ],
+      effectiveFrom: '2026-01-01T00:00:00.000Z',
+    };
+    const termsResult: TermsResolutionResult = {
+      status: 'single_applicable',
+      terms,
+    };
+
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, defaultContext);
+    assert.equal(output.decision.verdict, 'deny');
+    assert.equal(output.decision.reasonCode, 'ZERO_COST_PAID_ONLY');
+  });
+
+  // C44. allowance futura não qualifica antes de effectiveFrom
+  it('C44. allowance futura não qualifica antes de effectiveFrom', () => {
+    const terms: RouteTermsRevision = {
+      termsKey: 'terms.fut.allow' as RouteTermsKey,
+      termsRevisionId: 'rev_t_fut_allow' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_1' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_components',
+      billingComponents: [{ type: 'metered_usage', amount: 0.01 }],
+      freeEntitlementStatus: 'known_entitlements',
+      freeEntitlements: [
+        {
+          type: 'recurring_free_allowance',
+          quotaAmount: 1000,
+          effectiveFrom: '2026-09-01T00:00:00.000Z', // Em vigor apenas em setembro
+        },
+      ],
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+    const termsResult: TermsResolutionResult = {
+      status: 'single_applicable',
+      terms,
+    };
+
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, defaultContext);
+    assert.equal(output.decision.verdict, 'deny');
+    assert.equal(output.decision.reasonCode, 'ZERO_COST_PAID_ONLY');
+  });
+
+  // C45. billing component regional fora do contexto não é tratado como custo aplicável
+  it('C45. billing component regional fora do contexto não é tratado como custo aplicável', () => {
+    const terms: RouteTermsRevision = {
+      termsKey: 'terms.reg.comp' as RouteTermsKey,
+      termsRevisionId: 'rev_t_reg_comp' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_1' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_none',
+      billingComponents: [
+        {
+          type: 'fixed_subscription',
+          amount: 50,
+          applicability: { region: 'EU' }, // Cobrança apenas para EU
+        },
+      ],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+    const termsResult: TermsResolutionResult = {
+      status: 'single_applicable',
+      terms,
+    };
+
+    // Contexto com region: 'BR' descarta a cobrança da região EU
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, {
+      at: '2026-08-19T18:00:00.000Z',
+      region: 'BR',
+    });
+    assert.equal(output.decision.verdict, 'allow');
+    assert.equal(output.decision.reasonCode, 'ZERO_COST_NO_EXTERNAL_CHARGE');
+  });
+
+  // C46. billing known_none + entitlement unknown → ZERO_COST_NO_EXTERNAL_CHARGE
+  it('C46. billing known_none + entitlement unknown → ZERO_COST_NO_EXTERNAL_CHARGE', () => {
+    const terms: RouteTermsRevision = {
+      termsKey: 'terms.none_unk' as RouteTermsKey,
+      termsRevisionId: 'rev_t_none_unk' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_1' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_none',
+      billingComponents: [],
+      freeEntitlementStatus: 'unknown',
+      freeEntitlements: [],
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+    const termsResult: TermsResolutionResult = {
+      status: 'single_applicable',
+      terms,
+    };
+
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, defaultContext);
+    assert.equal(output.decision.verdict, 'allow');
+    assert.equal(output.decision.reasonCode, 'ZERO_COST_NO_EXTERNAL_CHARGE');
+  });
+
+  // C47. billing pago + entitlement unknown → deny
+  it('C47. billing pago + entitlement unknown → deny', () => {
+    const terms: RouteTermsRevision = {
+      termsKey: 'terms.paid_unk' as RouteTermsKey,
+      termsRevisionId: 'rev_t_paid_unk' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_1' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_components',
+      billingComponents: [{ type: 'metered_usage', amount: 0.05 }],
+      freeEntitlementStatus: 'unknown',
+      freeEntitlements: [],
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+    const termsResult: TermsResolutionResult = {
+      status: 'single_applicable',
+      terms,
+    };
+
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, defaultContext);
+    assert.equal(output.decision.verdict, 'deny');
+    assert.equal(output.decision.reasonCode, 'ZERO_COST_TERMS_UNKNOWN');
+  });
+
+  // C48. promotional credit fora do seu scope não interfere no resultado
+  it('C48. promotional credit fora do seu scope não interfere no resultado', () => {
+    const terms: RouteTermsRevision = {
+      termsKey: 'terms.promo_scoped' as RouteTermsKey,
+      termsRevisionId: 'rev_t_promo_scoped' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_1' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_none',
+      billingComponents: [],
+      freeEntitlementStatus: 'known_entitlements',
+      freeEntitlements: [
+        {
+          type: 'promotional_credit',
+          quotaAmount: 100,
+          applicability: { region: 'US' }, // Promoção restrita a US
+        },
+      ],
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+    const termsResult: TermsResolutionResult = {
+      status: 'single_applicable',
+      terms,
+    };
+
+    // Para region: 'BR', a promoção US é não aplicável e não contamina o status known_none
+    const output = evaluateZeroCostAxis(testPolicy, termsResult, {
+      at: '2026-08-19T18:00:00.000Z',
+      region: 'BR',
+    });
+    assert.equal(output.decision.verdict, 'allow');
+    assert.equal(output.decision.reasonCode, 'ZERO_COST_NO_EXTERNAL_CHARGE');
   });
 });

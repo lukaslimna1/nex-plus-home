@@ -67,7 +67,6 @@ export interface PolicyRevision {
   readonly description?: string;
   readonly defaultSensitivity: SensitivityClass;
   readonly zeroCostRequired: boolean;
-  readonly allowedEgressTopologies?: readonly NetworkTopologyScope[];
 }
 
 // ============================================================================

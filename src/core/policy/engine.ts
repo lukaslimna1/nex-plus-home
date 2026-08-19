@@ -4,9 +4,16 @@
  *
  * Plano de Autoridade (L0).
  * Funções puras, avaliação determinística por eixos, ausência de efeitos colaterais ou seleção de rota.
+ * Sem consulta a clock interno (evaluatedAt explícito) e com tratamento estrito de sensibilidade e termos com escopo.
  */
 
-import type { RouteRevision, TermsResolutionResult } from '../capabilities/contracts';
+import type {
+  RouteRevision,
+  TermsResolutionResult,
+  TermsResolutionContext,
+} from '../capabilities/contracts';
+
+import { resolveScopedTermsFacts } from '../capabilities/registry';
 
 import type {
   PolicyRevision,
@@ -135,15 +142,18 @@ export interface ZeroCostEvaluationOutput {
 }
 
 /**
- * Avalia o eixo Zero-Cost para a Policy e os termos resolvidos da rota:
+ * Avalia o eixo Zero-Cost para a Policy e os termos resolvidos no contexto:
+ * - Utiliza resolveScopedTermsFacts() para filtrar exclusivamente fatos vigentes e aplicáveis ao contexto.
  * - Não existe silent paid fallback.
  * - Trial e promotional_credit não contam como gratuidade recorrente qualificada.
  * - Subscrições pagas não contam como gratuidade intrínseca.
+ * - Ausência de cobrança externa comprovada (billingStatus known_none e 0 componentes aplicáveis) é suficiente.
  * - Incerteza / conflito de termos gera negação fail-closed.
  */
 export function evaluateZeroCostAxis(
   policy: PolicyRevision,
   termsResult: TermsResolutionResult,
+  context: TermsResolutionContext,
 ): ZeroCostEvaluationOutput {
   if (!policy.zeroCostRequired) {
     return {
@@ -155,53 +165,40 @@ export function evaluateZeroCostAxis(
     };
   }
 
+  const scoped = resolveScopedTermsFacts(termsResult, context);
+
   // Avaliação de estados incompletos / de conflito fail-closed
-  if (termsResult.status === 'no_terms') {
+  if (scoped.status === 'no_terms') {
     return {
       decision: { verdict: 'deny', reasonCode: 'ZERO_COST_NO_TERMS' },
       runtimeRequirements: [],
     };
   }
 
-  if (termsResult.status === 'no_applicable_terms') {
+  if (scoped.status === 'no_applicable_terms') {
     return {
       decision: { verdict: 'deny', reasonCode: 'ZERO_COST_NO_APPLICABLE_TERMS' },
       runtimeRequirements: [],
     };
   }
 
-  if (termsResult.status === 'insufficient_context') {
+  if (scoped.status === 'insufficient_context') {
     return {
       decision: { verdict: 'deny', reasonCode: 'ZERO_COST_CONTEXT_INSUFFICIENT' },
       runtimeRequirements: [],
     };
   }
 
-  if (termsResult.status === 'unresolved_conflict') {
+  if (scoped.status === 'unresolved_conflict') {
     return {
       decision: { verdict: 'deny', reasonCode: 'ZERO_COST_TERMS_CONFLICT' },
       runtimeRequirements: [],
     };
   }
 
-  // Termos aplicáveis (single_applicable ou composable_terms)
-  const termsList =
-    termsResult.status === 'single_applicable' ? [termsResult.terms] : termsResult.terms;
-
-  // Se algum termo possuir status de faturamento ou de benefício desconhecido
-  const hasUnknownState = termsList.some(
-    (t) => t.billingStatus === 'unknown' || t.freeEntitlementStatus === 'unknown',
-  );
-  if (hasUnknownState) {
-    return {
-      decision: { verdict: 'deny', reasonCode: 'ZERO_COST_TERMS_UNKNOWN' },
-      runtimeRequirements: [],
-    };
-  }
-
-  // 1. Gratuidade integral recorrente
-  const hasRecurringFullFree = termsList.some((t) =>
-    t.freeEntitlements.some((e) => e.type === 'recurring_full_free'),
+  // 1. Gratuidade integral recorrente aplicável
+  const hasRecurringFullFree = scoped.applicableFreeEntitlements.some(
+    (e) => e.type === 'recurring_full_free',
   );
   if (hasRecurringFullFree) {
     return {
@@ -213,9 +210,9 @@ export function evaluateZeroCostAxis(
     };
   }
 
-  // 2. Allowance gratuita recorrente (compatível em princípio com requisito para 0.5E)
-  const hasRecurringAllowance = termsList.some((t) =>
-    t.freeEntitlements.some((e) => e.type === 'recurring_free_allowance'),
+  // 2. Allowance gratuita recorrente aplicável (compatível em princípio com requisito para 0.5E)
+  const hasRecurringAllowance = scoped.applicableFreeEntitlements.some(
+    (e) => e.type === 'recurring_free_allowance',
   );
   if (hasRecurringAllowance) {
     return {
@@ -227,9 +224,9 @@ export function evaluateZeroCostAxis(
     };
   }
 
-  // 3. Benefícios não qualificadores isolados (promotional credit ou trial)
-  const hasPromo = termsList.some((t) =>
-    t.freeEntitlements.some((e) => e.type === 'promotional_credit'),
+  // 3. Benefícios não qualificadores isolados aplicáveis (promotional credit ou trial)
+  const hasPromo = scoped.applicableFreeEntitlements.some(
+    (e) => e.type === 'promotional_credit',
   );
   if (hasPromo) {
     return {
@@ -241,8 +238,8 @@ export function evaluateZeroCostAxis(
     };
   }
 
-  const hasTrial = termsList.some((t) =>
-    t.freeEntitlements.some((e) => e.type === 'trial'),
+  const hasTrial = scoped.applicableFreeEntitlements.some(
+    (e) => e.type === 'trial',
   );
   if (hasTrial) {
     return {
@@ -255,10 +252,8 @@ export function evaluateZeroCostAxis(
   }
 
   // 4. Ausência de cobrança externa comprovada (billingStatus known_none, 0 componentes e sem benefícios temporários)
-  const allKnownNone = termsList.every(
-    (t) => t.billingStatus === 'known_none' && t.billingComponents.length === 0,
-  );
-  if (allKnownNone) {
+  // Nuance de L0: se billingStatus é known_none e não há cobranças aplicáveis, é Zero-Cost mesmo se freeEntitlementStatus for unknown
+  if (scoped.billingStatus === 'known_none' && scoped.applicableBillingComponents.length === 0) {
     return {
       decision: {
         verdict: 'allow',
@@ -268,7 +263,29 @@ export function evaluateZeroCostAxis(
     };
   }
 
-  // 5. Billing pago (metered, subscription, flat, etc.)
+  // 5. Billing status desconhecido
+  if (scoped.billingStatus === 'unknown') {
+    return {
+      decision: {
+        verdict: 'deny',
+        reasonCode: 'ZERO_COST_TERMS_UNKNOWN',
+      },
+      runtimeRequirements: [],
+    };
+  }
+
+  // 6. Se existe billing pago conhecido e freeEntitlementStatus for unknown
+  if (scoped.freeEntitlementStatus === 'unknown') {
+    return {
+      decision: {
+        verdict: 'deny',
+        reasonCode: 'ZERO_COST_TERMS_UNKNOWN',
+      },
+      runtimeRequirements: [],
+    };
+  }
+
+  // 7. Billing pago sem entitlement qualificador aplicável
   return {
     decision: {
       verdict: 'deny',
@@ -286,39 +303,35 @@ export interface PolicyEvaluationParams {
   readonly policy: PolicyRevision;
   readonly route: RouteRevision;
   readonly termsResult: TermsResolutionResult;
+  readonly context: TermsResolutionContext;
+  readonly containsSecretMaterial: boolean;
+  readonly evaluatedAt: string;
   readonly sensitivity?: SensitivityClass;
-  readonly containsSecretMaterial?: boolean;
-  readonly evaluatedAt?: string;
 }
 
 /**
  * Avalia deterministicamente se uma RouteRevision candidata satisfaz uma PolicyRevision:
+ * - Exige inputs explícitos (evaluatedAt, containsSecretMaterial) sem consulta a clock interno.
  * - Computa sensibilidade efetiva.
  * - Avalia eixo de Egress.
- * - Avalia eixo de Zero-Cost.
+ * - Avalia eixo de Zero-Cost consumindo a projeção de fatos resolvidos do contexto.
  * Retorna uma PolicyDecision imutável e factual com reason codes estáveis por eixo.
  */
-export function evaluatePolicy(params: {
-  readonly policy: PolicyRevision;
-  readonly route: RouteRevision;
-  readonly termsResult: TermsResolutionResult;
-  readonly sensitivity?: SensitivityClass;
-  readonly containsSecretMaterial?: boolean;
-  readonly evaluatedAt?: string;
-}): PolicyDecision {
+export function evaluatePolicy(params: PolicyEvaluationParams): PolicyDecision {
   const {
     policy,
     route,
     termsResult,
+    context,
+    containsSecretMaterial,
+    evaluatedAt,
     sensitivity = policy.defaultSensitivity,
-    containsSecretMaterial = false,
-    evaluatedAt = new Date().toISOString(),
   } = params;
 
   const effectiveSensitivity = computeEffectiveSensitivity(sensitivity, containsSecretMaterial);
 
   const egressAxis = evaluateEgressAxis(route, effectiveSensitivity);
-  const zeroCostResult = evaluateZeroCostAxis(policy, termsResult);
+  const zeroCostResult = evaluateZeroCostAxis(policy, termsResult, context);
 
   return {
     policyRevisionId: policy.policyRevisionId,

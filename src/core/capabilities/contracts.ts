@@ -179,13 +179,24 @@ export type BillingComponentType =
   | 'unknown'
   | (string & {});
 
+export interface TermsApplicability {
+  readonly endpoint?: string;
+  readonly region?: string;
+  readonly accountTier?: string;
+  readonly credentialProfileRef?: string;
+  readonly requestMode?: string;
+  readonly routeMode?: string;
+}
+
 export interface BillingComponent {
   readonly type: BillingComponentType;
   readonly amount?: number;
   readonly unit?: string;
   readonly currency?: string;
   readonly period?: string;
-  readonly applicability?: string;
+  readonly applicability?: TermsApplicability;
+  readonly effectiveFrom?: string;
+  readonly validUntil?: string;
   readonly provenance?: FactProvenance;
 }
 
@@ -204,19 +215,26 @@ export interface FreeEntitlement {
   readonly quotaAmount?: number;
   readonly unit?: string;
   readonly renewalPeriod?: string;
-  readonly validityWindow?: string;
-  readonly applicabilityScope?: string;
+  readonly applicability?: TermsApplicability;
+  readonly effectiveFrom?: string;
+  readonly validUntil?: string;
   readonly provenance?: FactProvenance;
   readonly verificationStatus?: VerificationStatus;
 }
 
-export interface TermsApplicability {
-  readonly endpoint?: string;
-  readonly region?: string;
-  readonly accountTier?: string;
-  readonly credentialProfileRef?: string;
-  readonly requestMode?: string;
-  readonly routeMode?: string;
+export interface ScopedTermsFacts {
+  readonly status:
+    | 'resolved'
+    | 'no_terms'
+    | 'no_applicable_terms'
+    | 'insufficient_context'
+    | 'unresolved_conflict';
+  readonly billingStatus?: BillingStatus;
+  readonly freeEntitlementStatus?: FreeEntitlementStatus;
+  readonly applicableBillingComponents: readonly BillingComponent[];
+  readonly applicableFreeEntitlements: readonly FreeEntitlement[];
+  readonly missingDimensions?: readonly string[];
+  readonly reason?: string;
 }
 
 export interface PrivacyDataTerms {

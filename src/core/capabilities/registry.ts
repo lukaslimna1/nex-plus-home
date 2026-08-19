@@ -19,6 +19,10 @@ import type {
   RouteTermsRevisionId,
   TermsResolutionContext,
   TermsResolutionResult,
+  ScopedTermsFacts,
+  BillingComponent,
+  FreeEntitlement,
+  TermsApplicability,
 } from './contracts';
 
 // ============================================================================
@@ -432,6 +436,164 @@ export function resolveTermsForRoute(
   return {
     status: 'composable_terms',
     terms: applicableTerms,
+  };
+}
+
+/**
+ * Resolve deterministicamente a projeção de componentes de cobrança e entitlements aplicáveis
+ * ao contexto factual específico (at, region, accountTier, etc.).
+ * Se algum item possuir condição material dependente de dimensão ausente no contexto,
+ * retorna 'insufficient_context' em vez de presumir não-aplicabilidade.
+ */
+export function resolveScopedTermsFacts(
+  termsResult: TermsResolutionResult,
+  context: TermsResolutionContext,
+): ScopedTermsFacts {
+  if (termsResult.status === 'no_terms') {
+    return {
+      status: 'no_terms',
+      applicableBillingComponents: [],
+      applicableFreeEntitlements: [],
+    };
+  }
+
+  if (termsResult.status === 'no_applicable_terms') {
+    return {
+      status: 'no_applicable_terms',
+      applicableBillingComponents: [],
+      applicableFreeEntitlements: [],
+    };
+  }
+
+  if (termsResult.status === 'insufficient_context') {
+    return {
+      status: 'insufficient_context',
+      applicableBillingComponents: [],
+      applicableFreeEntitlements: [],
+      missingDimensions: termsResult.missingDimensions,
+      reason: termsResult.reason,
+    };
+  }
+
+  if (termsResult.status === 'unresolved_conflict') {
+    return {
+      status: 'unresolved_conflict',
+      applicableBillingComponents: [],
+      applicableFreeEntitlements: [],
+      reason: termsResult.reason,
+    };
+  }
+
+  // termsResult é single_applicable ou composable_terms
+  const termsList =
+    termsResult.status === 'single_applicable' ? [termsResult.terms] : termsResult.terms;
+
+  const missingDimensionsSet = new Set<string>();
+  const applicableBillingComponents: BillingComponent[] = [];
+  const applicableFreeEntitlements: FreeEntitlement[] = [];
+  let hasInsufficientItem = false;
+
+  function evaluateItemApplicability(item: {
+    readonly applicability?: TermsApplicability;
+    readonly effectiveFrom?: string;
+    readonly validUntil?: string;
+  }): 'applicable' | 'not_applicable' | { readonly status: 'insufficient'; readonly missing: readonly string[] } {
+    // 1. Vigência temporal do item
+    if (item.effectiveFrom && item.effectiveFrom > context.at) {
+      return 'not_applicable';
+    }
+    if (item.validUntil && item.validUntil < context.at) {
+      return 'not_applicable';
+    }
+
+    // 2. Sem applicability específica -> aplicável
+    if (!item.applicability) {
+      return 'applicable';
+    }
+
+    const app = item.applicability;
+    const missing: string[] = [];
+    let mismatch = false;
+
+    const dimensions: (keyof TermsApplicability)[] = [
+      'endpoint',
+      'region',
+      'accountTier',
+      'credentialProfileRef',
+      'requestMode',
+      'routeMode',
+    ];
+
+    for (const dim of dimensions) {
+      const expectedVal = app[dim];
+      if (expectedVal !== undefined) {
+        const actualVal = context[dim as keyof TermsResolutionContext];
+        if (actualVal === undefined) {
+          missing.push(dim);
+        } else if (actualVal !== expectedVal) {
+          mismatch = true;
+          break;
+        }
+      }
+    }
+
+    if (mismatch) {
+      return 'not_applicable';
+    }
+
+    if (missing.length > 0) {
+      return { status: 'insufficient', missing };
+    }
+
+    return 'applicable';
+  }
+
+  for (const term of termsList) {
+    for (const component of term.billingComponents) {
+      const res = evaluateItemApplicability(component);
+      if (res === 'applicable') {
+        applicableBillingComponents.push(component);
+      } else if (typeof res === 'object' && res.status === 'insufficient') {
+        hasInsufficientItem = true;
+        for (const m of res.missing) {
+          missingDimensionsSet.add(m);
+        }
+      }
+    }
+
+    for (const entitlement of term.freeEntitlements) {
+      const res = evaluateItemApplicability(entitlement);
+      if (res === 'applicable') {
+        applicableFreeEntitlements.push(entitlement);
+      } else if (typeof res === 'object' && res.status === 'insufficient') {
+        hasInsufficientItem = true;
+        for (const m of res.missing) {
+          missingDimensionsSet.add(m);
+        }
+      }
+    }
+  }
+
+  if (hasInsufficientItem) {
+    const missing = Array.from(missingDimensionsSet);
+    return {
+      status: 'insufficient_context',
+      applicableBillingComponents: [],
+      applicableFreeEntitlements: [],
+      missingDimensions: missing,
+      reason: `Scoped item applicability is missing required dimensions [${missing.join(', ')}].`,
+    };
+  }
+
+  const billingStatus = termsList[0]?.billingStatus ?? 'known_none';
+  const freeEntitlementStatus = termsList[0]?.freeEntitlementStatus ?? 'known_none';
+
+  return {
+    status: 'resolved',
+    billingStatus,
+    freeEntitlementStatus,
+    applicableBillingComponents,
+    applicableFreeEntitlements,
   };
 }
 

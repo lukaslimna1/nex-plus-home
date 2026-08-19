@@ -501,7 +501,7 @@ describe('NEX+ L0 Capability Registry & Route/Terms Ledger (Bloco 0.5B / B3)', (
           type: 'promotional_credit',
           quotaAmount: 50,
           unit: 'USD',
-          validityWindow: '2026-12-31T23:59:59.000Z',
+          validUntil: '2026-12-31T23:59:59.000Z',
         },
       ],
       effectiveFrom: '2026-08-01T00:00:00.000Z',

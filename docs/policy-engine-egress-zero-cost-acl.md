@@ -68,7 +68,7 @@ Quando `zeroCostRequired = true`:
 
 ## 6. PolicyRevision e PolicyDecision
 
-- **`PolicyRevision`**: Identidade imutável (`PolicyKey`, `PolicyRevisionId`, `supersedesRevisionIds`, `defaultSensitivity`, `zeroCostRequired`, `allowedEgressTopologies`).
+- **`PolicyRevision`**: Identidade imutável (`PolicyKey`, `PolicyRevisionId`, `supersedesRevisionIds`, `defaultSensitivity`, `zeroCostRequired`).
 - **`PolicyDecision`**: Estrutura factual imutável gerada na avaliação contendo:
   - `policyRevisionId`, `routeRevisionId`;
   - `effectiveSensitivity`, `containsSecretMaterial`;
