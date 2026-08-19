@@ -2,7 +2,7 @@
  * NEX+ · Capability Registry & Route/Terms Ledger
  * Testes Fatuais e Validações Determinísticas de Aceitação — Escopo 0.5 (Bloco 0.5B / B3)
  *
- * Execução com Node Test Runner nativo (sem novas dependências).
+ * Suíte Completa: 22 Casos de Aceitação Base + 16 Casos de Hardening e Resolução.
  */
 
 import { describe, it } from 'node:test';
@@ -22,19 +22,20 @@ import type {
   RouteTermsRevision,
   RouteTermsRevisionId,
   AdapterRevisionRef,
-  NativeContractRevisionRef,
   FactProvenance,
   RouteObservation,
   MaterialFactSnapshot,
+  TermsResolutionContext,
 } from '../contracts';
 
 import {
   createCapabilityRegistry,
+  validateSupersessionChain,
   SelfSupersessionError,
   SupersessionCycleError,
   CrossIdentitySupersessionError,
-  InvalidBindingReferenceError,
   IncoherentEntitlementStateError,
+  IncoherentBillingStateError,
 } from '../registry';
 
 // Fixture de Provenance padrão para testes
@@ -43,6 +44,10 @@ const defaultProvenance: FactProvenance = {
   acquisitionBasis: 'declared',
   verificationStatus: 'corroborated',
   observedAt: '2026-08-19T18:00:00.000Z',
+};
+
+const defaultContext: TermsResolutionContext = {
+  at: '2026-08-19T18:00:00.000Z',
 };
 
 describe('NEX+ L0 Capability Registry & Route/Terms Ledger (Bloco 0.5B / B3)', () => {
@@ -200,7 +205,7 @@ describe('NEX+ L0 Capability Registry & Route/Terms Ledger (Bloco 0.5B / B3)', (
     };
     const c3Cycle: CapabilityRevision = {
       capabilityKey: 'test.cycle.cap' as CapabilityKey,
-      capabilityRevisionId: 'rev_cap_cyc_1' as CapabilityRevisionId, // tentativa de reintroduzir ou ciclo
+      capabilityRevisionId: 'rev_cap_cyc_1' as CapabilityRevisionId,
       lifecycle: 'active',
       supersedesRevisionIds: ['rev_cap_cyc_2' as CapabilityRevisionId],
       title: 'C1 again',
@@ -233,7 +238,7 @@ describe('NEX+ L0 Capability Registry & Route/Terms Ledger (Bloco 0.5B / B3)', (
       capabilityKey: 'test.cap.b' as CapabilityKey,
       capabilityRevisionId: 'rev_cap_b_v1' as CapabilityRevisionId,
       lifecycle: 'active',
-      supersedesRevisionIds: ['rev_cap_a_v1' as CapabilityRevisionId], // Cap B tentando superseder Cap A
+      supersedesRevisionIds: ['rev_cap_a_v1' as CapabilityRevisionId],
       title: 'Cap B Invalid',
       description: 'Cross-identity attempt',
       inputSchema: { type: 'object' },
@@ -357,7 +362,6 @@ describe('NEX+ L0 Capability Registry & Route/Terms Ledger (Bloco 0.5B / B3)', (
     registry.registerCapabilityRevision(cap);
     registry.registerRouteRevision(route);
 
-    // Sem binding canônico registrado explicitamente, não há rota associada
     const routes = registry.getRoutesForCapability('rev_cap_unbound' as CapabilityRevisionId);
     assert.equal(routes.length, 0);
   });
@@ -434,7 +438,7 @@ describe('NEX+ L0 Capability Registry & Route/Terms Ledger (Bloco 0.5B / B3)', (
       controlOwnership: 'third_party',
       externalServiceNature: 'non_ai_third_party',
       crossesEgressBoundary: true,
-      domainEffect: 'none', // HTTP GET + access log + billing consumption -> DomainEffect = none
+      domainEffect: 'none',
     };
 
     assert.equal(routeReadOnly.domainEffect, 'none');
@@ -465,7 +469,6 @@ describe('NEX+ L0 Capability Registry & Route/Terms Ledger (Bloco 0.5B / B3)', (
     };
 
     assert.equal(routeKeyed.idempotencyProfile.supportType, 'keyed');
-    // IdempotencyProfile não tem método canRetry e não autoriza retry em L0/0.5B
     assert.equal(((routeKeyed.idempotencyProfile as unknown) as Record<string, unknown>).canRetry, undefined);
   });
 
@@ -531,7 +534,6 @@ describe('NEX+ L0 Capability Registry & Route/Terms Ledger (Bloco 0.5B / B3)', (
     };
     registry.registerRouteRevision(route);
 
-    // Terms com known_none com lista vazia -> OK
     const termsKnownNone: RouteTermsRevision = {
       termsKey: 'terms.known_none' as RouteTermsKey,
       termsRevisionId: 'rev_terms_none' as RouteTermsRevisionId,
@@ -546,7 +548,6 @@ describe('NEX+ L0 Capability Registry & Route/Terms Ledger (Bloco 0.5B / B3)', (
     };
     registry.registerTermsRevision(termsKnownNone);
 
-    // Incoerência: known_none com entitlements presentes lança erro
     const invalidTermsNone: RouteTermsRevision = {
       termsKey: 'terms.invalid_none' as RouteTermsKey,
       termsRevisionId: 'rev_terms_inv_none' as RouteTermsRevisionId,
@@ -642,7 +643,7 @@ describe('NEX+ L0 Capability Registry & Route/Terms Ledger (Bloco 0.5B / B3)', (
     registry.registerTermsRevision(tBase);
     registry.registerTermsRevision(tOverage);
 
-    const result = registry.getTermsForRoute('rev_route_comp' as RouteRevisionId);
+    const result = registry.getTermsForRoute('rev_route_comp' as RouteRevisionId, defaultContext);
     assert.equal(result.status, 'composable_terms');
     if (result.status === 'composable_terms') {
       assert.equal(result.terms.length, 2);
@@ -698,7 +699,7 @@ describe('NEX+ L0 Capability Registry & Route/Terms Ledger (Bloco 0.5B / B3)', (
     registry.registerTermsRevision(tOptOutTrue);
     registry.registerTermsRevision(tOptOutFalse);
 
-    const result = registry.getTermsForRoute('rev_route_conf' as RouteRevisionId);
+    const result = registry.getTermsForRoute('rev_route_conf' as RouteRevisionId, defaultContext);
     assert.equal(result.status, 'unresolved_conflict');
     if (result.status === 'unresolved_conflict') {
       assert.equal(result.conflictingTerms.length, 2);
@@ -724,7 +725,6 @@ describe('NEX+ L0 Capability Registry & Route/Terms Ledger (Bloco 0.5B / B3)', (
     };
     registry.registerRouteRevision(route);
 
-    // Registrando em ordem inversa ou com timestamps diferentes
     const tOld: RouteTermsRevision = {
       termsKey: 'terms.order.old' as RouteTermsKey,
       termsRevisionId: 'rev_terms_old' as RouteTermsRevisionId,
@@ -743,7 +743,7 @@ describe('NEX+ L0 Capability Registry & Route/Terms Ledger (Bloco 0.5B / B3)', (
       routeRevisionId: 'rev_route_order' as RouteRevisionId,
       supersedesRevisionIds: [],
       provenance: defaultProvenance,
-      billingStatus: 'known_components', // Contradição fática com tOld
+      billingStatus: 'known_components',
       billingComponents: [{ type: 'fixed_subscription', amount: 50 }],
       freeEntitlementStatus: 'known_none',
       freeEntitlements: [],
@@ -753,8 +753,7 @@ describe('NEX+ L0 Capability Registry & Route/Terms Ledger (Bloco 0.5B / B3)', (
     registry.registerTermsRevision(tOld);
     registry.registerTermsRevision(tNew);
 
-    const result = registry.getTermsForRoute('rev_route_order' as RouteRevisionId);
-    // Não pode escolher tNew só porque tem data maior
+    const result = registry.getTermsForRoute('rev_route_order' as RouteRevisionId, defaultContext);
     assert.equal(result.status, 'unresolved_conflict');
   });
 
@@ -771,7 +770,6 @@ describe('NEX+ L0 Capability Registry & Route/Terms Ledger (Bloco 0.5B / B3)', (
 
     assert.equal(liveObservation.health, 'healthy');
     assert.equal(liveObservation.quotaRemaining, 950);
-    // RouteObservation é volátil de runtime e não afeta RouteRevision imutável
   });
 
   // 21. Material snapshot preserva apenas fatos que realmente foram declarados materiais
@@ -785,7 +783,6 @@ describe('NEX+ L0 Capability Registry & Route/Terms Ledger (Bloco 0.5B / B3)', (
 
     assert.equal(snapshot.observedQuotaRemaining, 950);
     assert.equal(snapshot.observedHealth, 'healthy');
-    // Não clonou 20 métricas irrelevantes de telemetria
   });
 
   // 22. Revisions antigas permanecem consultáveis depois de supersession
@@ -821,9 +818,770 @@ describe('NEX+ L0 Capability Registry & Route/Terms Ledger (Bloco 0.5B / B3)', (
     assert.equal(heads.length, 1);
     assert.equal(heads[0].capabilityRevisionId, 'rev_cap_new_v2');
 
-    // Consulta histórica pontual de V1 funciona perfeitamente
     const historicalC1 = registry.getCapabilityRevision('rev_cap_old_v1' as CapabilityRevisionId);
     assert.ok(historicalC1);
     assert.equal(historicalC1.title, 'V1 Original');
+  });
+
+  // ==========================================================================
+  // NOVOS TESTES OBRIGATÓRIOS (CORREÇÕES 1 A 5 - HARDENING B2/B3)
+  // ==========================================================================
+
+  // N1. Terms BR não aplica em contexto US
+  it('N1. Terms BR não aplica em contexto US', () => {
+    const registry = createCapabilityRegistry();
+    const route: RouteRevision = {
+      routeKey: 'route.geo.test' as RouteKey,
+      routeRevisionId: 'rev_r_geo' as RouteRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      idempotencyProfile: { supportType: 'none' },
+      networkTopologyScopes: ['wan'],
+      controlOwnership: 'third_party',
+      externalServiceNature: 'none',
+      crossesEgressBoundary: true,
+      domainEffect: 'none',
+    };
+    registry.registerRouteRevision(route);
+
+    const tBR: RouteTermsRevision = {
+      termsKey: 'terms.br.only' as RouteTermsKey,
+      termsRevisionId: 'rev_terms_br_only' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_geo' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      applicability: { region: 'BR' },
+      provenance: defaultProvenance,
+      billingStatus: 'known_none',
+      billingComponents: [],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+    registry.registerTermsRevision(tBR);
+
+    const result = registry.getTermsForRoute('rev_r_geo' as RouteRevisionId, {
+      at: '2026-08-19T18:00:00.000Z',
+      region: 'US',
+    });
+    assert.equal(result.status, 'no_applicable_terms');
+  });
+
+  // N2. Terms BR aplica em contexto BR
+  it('N2. Terms BR aplica em contexto BR', () => {
+    const registry = createCapabilityRegistry();
+    const route: RouteRevision = {
+      routeKey: 'route.geo.br' as RouteKey,
+      routeRevisionId: 'rev_r_geo_br' as RouteRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      idempotencyProfile: { supportType: 'none' },
+      networkTopologyScopes: ['wan'],
+      controlOwnership: 'third_party',
+      externalServiceNature: 'none',
+      crossesEgressBoundary: true,
+      domainEffect: 'none',
+    };
+    registry.registerRouteRevision(route);
+
+    const tBR: RouteTermsRevision = {
+      termsKey: 'terms.br.valid' as RouteTermsKey,
+      termsRevisionId: 'rev_terms_br_valid' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_geo_br' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      applicability: { region: 'BR' },
+      provenance: defaultProvenance,
+      billingStatus: 'known_none',
+      billingComponents: [],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+    registry.registerTermsRevision(tBR);
+
+    const result = registry.getTermsForRoute('rev_r_geo_br' as RouteRevisionId, {
+      at: '2026-08-19T18:00:00.000Z',
+      region: 'BR',
+    });
+    assert.equal(result.status, 'single_applicable');
+    if (result.status === 'single_applicable') {
+      assert.equal(result.terms.termsRevisionId, 'rev_terms_br_valid');
+    }
+  });
+
+  // N3. Terms futuro não remove Terms atual antes de effectiveFrom
+  it('N3. Terms futuro não remove Terms atual antes de effectiveFrom', () => {
+    const registry = createCapabilityRegistry();
+    const route: RouteRevision = {
+      routeKey: 'route.future.test' as RouteKey,
+      routeRevisionId: 'rev_r_future' as RouteRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      idempotencyProfile: { supportType: 'none' },
+      networkTopologyScopes: ['wan'],
+      controlOwnership: 'third_party',
+      externalServiceNature: 'none',
+      crossesEgressBoundary: true,
+      domainEffect: 'none',
+    };
+    registry.registerRouteRevision(route);
+
+    const tCurrent: RouteTermsRevision = {
+      termsKey: 'terms.price.active' as RouteTermsKey,
+      termsRevisionId: 'rev_terms_current' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_future' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_none',
+      billingComponents: [],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+    const tFuture: RouteTermsRevision = {
+      termsKey: 'terms.price.active' as RouteTermsKey,
+      termsRevisionId: 'rev_terms_future' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_future' as RouteRevisionId,
+      supersedesRevisionIds: ['rev_terms_current' as RouteTermsRevisionId],
+      provenance: defaultProvenance,
+      billingStatus: 'known_components',
+      billingComponents: [{ type: 'fixed_subscription', amount: 99 }],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      effectiveFrom: '2026-09-01T00:00:00.000Z', // Entra em vigor apenas em setembro
+    };
+
+    registry.registerTermsRevision(tCurrent);
+    registry.registerTermsRevision(tFuture);
+
+    // Avaliação em agosto: tCurrent ainda é o aplicável
+    const resultAugust = registry.getTermsForRoute('rev_r_future' as RouteRevisionId, {
+      at: '2026-08-19T18:00:00.000Z',
+    });
+    assert.equal(resultAugust.status, 'single_applicable');
+    if (resultAugust.status === 'single_applicable') {
+      assert.equal(resultAugust.terms.termsRevisionId, 'rev_terms_current');
+    }
+
+    // Avaliação em setembro: tFuture assume como aplicável
+    const resultSeptember = registry.getTermsForRoute('rev_r_future' as RouteRevisionId, {
+      at: '2026-09-05T00:00:00.000Z',
+    });
+    assert.equal(resultSeptember.status, 'single_applicable');
+    if (resultSeptember.status === 'single_applicable') {
+      assert.equal(resultSeptember.terms.termsRevisionId, 'rev_terms_future');
+    }
+  });
+
+  // N4. Terms expirado não é aplicável depois de validUntil
+  it('N4. Terms expirado não é aplicável depois de validUntil', () => {
+    const registry = createCapabilityRegistry();
+    const route: RouteRevision = {
+      routeKey: 'route.expired.test' as RouteKey,
+      routeRevisionId: 'rev_r_exp' as RouteRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      idempotencyProfile: { supportType: 'none' },
+      networkTopologyScopes: ['wan'],
+      controlOwnership: 'third_party',
+      externalServiceNature: 'none',
+      crossesEgressBoundary: true,
+      domainEffect: 'none',
+    };
+    registry.registerRouteRevision(route);
+
+    const tExpired: RouteTermsRevision = {
+      termsKey: 'terms.expired' as RouteTermsKey,
+      termsRevisionId: 'rev_terms_exp' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_exp' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_none',
+      billingComponents: [],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      effectiveFrom: '2026-01-01T00:00:00.000Z',
+      validUntil: '2026-06-30T23:59:59.000Z',
+    };
+    registry.registerTermsRevision(tExpired);
+
+    const result = registry.getTermsForRoute('rev_r_exp' as RouteRevisionId, {
+      at: '2026-08-19T18:00:00.000Z',
+    });
+    assert.equal(result.status, 'no_applicable_terms');
+  });
+
+  // N5. Terms que exige accountTier com contexto sem accountTier resulta em insufficient_context
+  it('N5. Terms que exige accountTier com contexto sem accountTier resulta em insufficient_context', () => {
+    const registry = createCapabilityRegistry();
+    const route: RouteRevision = {
+      routeKey: 'route.tier.test' as RouteKey,
+      routeRevisionId: 'rev_r_tier' as RouteRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      idempotencyProfile: { supportType: 'none' },
+      networkTopologyScopes: ['wan'],
+      controlOwnership: 'third_party',
+      externalServiceNature: 'none',
+      crossesEgressBoundary: true,
+      domainEffect: 'none',
+    };
+    registry.registerRouteRevision(route);
+
+    const tTier: RouteTermsRevision = {
+      termsKey: 'terms.tier.ent' as RouteTermsKey,
+      termsRevisionId: 'rev_terms_tier_ent' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_tier' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      applicability: { accountTier: 'Enterprise' },
+      provenance: defaultProvenance,
+      billingStatus: 'known_none',
+      billingComponents: [],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+    registry.registerTermsRevision(tTier);
+
+    const result = registry.getTermsForRoute('rev_r_tier' as RouteRevisionId, {
+      at: '2026-08-19T18:00:00.000Z',
+      // accountTier ausente no contexto factual
+    });
+    assert.equal(result.status, 'insufficient_context');
+    if (result.status === 'insufficient_context') {
+      assert.deepEqual(result.missingDimensions, ['accountTier']);
+    }
+  });
+
+  // N6. Dois Terms com scopes disjuntos NÃO viram unresolved_conflict
+  it('N6. Dois Terms com scopes disjuntos NÃO viram unresolved_conflict', () => {
+    const registry = createCapabilityRegistry();
+    const route: RouteRevision = {
+      routeKey: 'route.disjoint.test' as RouteKey,
+      routeRevisionId: 'rev_r_disjoint' as RouteRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      idempotencyProfile: { supportType: 'none' },
+      networkTopologyScopes: ['wan'],
+      controlOwnership: 'third_party',
+      externalServiceNature: 'none',
+      crossesEgressBoundary: true,
+      domainEffect: 'none',
+    };
+    registry.registerRouteRevision(route);
+
+    const tBR: RouteTermsRevision = {
+      termsKey: 'terms.disjoint.br' as RouteTermsKey,
+      termsRevisionId: 'rev_terms_dj_br' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_disjoint' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      applicability: { region: 'BR' },
+      provenance: defaultProvenance,
+      billingStatus: 'known_none',
+      billingComponents: [],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+    const tUS: RouteTermsRevision = {
+      termsKey: 'terms.disjoint.us' as RouteTermsKey,
+      termsRevisionId: 'rev_terms_dj_us' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_disjoint' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      applicability: { region: 'US' },
+      provenance: defaultProvenance,
+      billingStatus: 'known_components',
+      billingComponents: [{ type: 'fixed_subscription', amount: 200 }],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+
+    registry.registerTermsRevision(tBR);
+    registry.registerTermsRevision(tUS);
+
+    const resultBR = registry.getTermsForRoute('rev_r_disjoint' as RouteRevisionId, {
+      at: '2026-08-19T18:00:00.000Z',
+      region: 'BR',
+    });
+    assert.equal(resultBR.status, 'single_applicable');
+    if (resultBR.status === 'single_applicable') {
+      assert.equal(resultBR.terms.termsRevisionId, 'rev_terms_dj_br');
+    }
+  });
+
+  // N7. trainingUsage true × false no mesmo scope gera unresolved_conflict
+  it('N7. trainingUsage true × false no mesmo scope gera unresolved_conflict', () => {
+    const registry = createCapabilityRegistry();
+    const route: RouteRevision = {
+      routeKey: 'route.privacy.conflict' as RouteKey,
+      routeRevisionId: 'rev_r_priv_conf' as RouteRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      idempotencyProfile: { supportType: 'none' },
+      networkTopologyScopes: ['wan'],
+      controlOwnership: 'third_party',
+      externalServiceNature: 'ai_third_party',
+      crossesEgressBoundary: true,
+      domainEffect: 'none',
+    };
+    registry.registerRouteRevision(route);
+
+    const t1: RouteTermsRevision = {
+      termsKey: 'terms.priv.1' as RouteTermsKey,
+      termsRevisionId: 'rev_terms_priv_1' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_priv_conf' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_none',
+      billingComponents: [],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      privacyDataTerms: { trainingUsage: true },
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+    const t2: RouteTermsRevision = {
+      termsKey: 'terms.priv.2' as RouteTermsKey,
+      termsRevisionId: 'rev_terms_priv_2' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_priv_conf' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_none',
+      billingComponents: [],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      privacyDataTerms: { trainingUsage: false },
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+
+    registry.registerTermsRevision(t1);
+    registry.registerTermsRevision(t2);
+
+    const result = registry.getTermsForRoute('rev_r_priv_conf' as RouteRevisionId, defaultContext);
+    assert.equal(result.status, 'unresolved_conflict');
+  });
+
+  // N8. ZDR true × false no mesmo scope gera unresolved_conflict
+  it('N8. ZDR true × false no mesmo scope gera unresolved_conflict', () => {
+    const registry = createCapabilityRegistry();
+    const route: RouteRevision = {
+      routeKey: 'route.zdr.conflict' as RouteKey,
+      routeRevisionId: 'rev_r_zdr_conf' as RouteRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      idempotencyProfile: { supportType: 'none' },
+      networkTopologyScopes: ['wan'],
+      controlOwnership: 'third_party',
+      externalServiceNature: 'ai_third_party',
+      crossesEgressBoundary: true,
+      domainEffect: 'none',
+    };
+    registry.registerRouteRevision(route);
+
+    const t1: RouteTermsRevision = {
+      termsKey: 'terms.zdr.1' as RouteTermsKey,
+      termsRevisionId: 'rev_terms_zdr_1' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_zdr_conf' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_none',
+      billingComponents: [],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      privacyDataTerms: { zeroDataRetentionGuaranteed: true },
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+    const t2: RouteTermsRevision = {
+      termsKey: 'terms.zdr.2' as RouteTermsKey,
+      termsRevisionId: 'rev_terms_zdr_2' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_zdr_conf' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_none',
+      billingComponents: [],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      privacyDataTerms: { zeroDataRetentionGuaranteed: false },
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+
+    registry.registerTermsRevision(t1);
+    registry.registerTermsRevision(t2);
+
+    const result = registry.getTermsForRoute('rev_r_zdr_conf' as RouteRevisionId, defaultContext);
+    assert.equal(result.status, 'unresolved_conflict');
+  });
+
+  // N9. retentionDays incompatíveis no mesmo scope gera unresolved_conflict
+  it('N9. retentionDays incompatíveis no mesmo scope gera unresolved_conflict', () => {
+    const registry = createCapabilityRegistry();
+    const route: RouteRevision = {
+      routeKey: 'route.retention.conflict' as RouteKey,
+      routeRevisionId: 'rev_r_ret_conf' as RouteRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      idempotencyProfile: { supportType: 'none' },
+      networkTopologyScopes: ['wan'],
+      controlOwnership: 'third_party',
+      externalServiceNature: 'ai_third_party',
+      crossesEgressBoundary: true,
+      domainEffect: 'none',
+    };
+    registry.registerRouteRevision(route);
+
+    const t1: RouteTermsRevision = {
+      termsKey: 'terms.ret.1' as RouteTermsKey,
+      termsRevisionId: 'rev_terms_ret_1' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_ret_conf' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_none',
+      billingComponents: [],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      privacyDataTerms: { retentionDays: 30 },
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+    const t2: RouteTermsRevision = {
+      termsKey: 'terms.ret.2' as RouteTermsKey,
+      termsRevisionId: 'rev_terms_ret_2' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_ret_conf' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_none',
+      billingComponents: [],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      privacyDataTerms: { retentionDays: 0 },
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+
+    registry.registerTermsRevision(t1);
+    registry.registerTermsRevision(t2);
+
+    const result = registry.getTermsForRoute('rev_r_ret_conf' as RouteRevisionId, defaultContext);
+    assert.equal(result.status, 'unresolved_conflict');
+  });
+
+  // N10. billing known_none + components é rejeitado
+  it('N10. billing known_none + components é rejeitado', () => {
+    const registry = createCapabilityRegistry();
+    const route: RouteRevision = {
+      routeKey: 'route.incoherent.billing1' as RouteKey,
+      routeRevisionId: 'rev_r_inc_b1' as RouteRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      idempotencyProfile: { supportType: 'none' },
+      networkTopologyScopes: ['loopback'],
+      controlOwnership: 'operator_managed',
+      externalServiceNature: 'none',
+      crossesEgressBoundary: false,
+      domainEffect: 'none',
+    };
+    registry.registerRouteRevision(route);
+
+    const invalidTerms: RouteTermsRevision = {
+      termsKey: 'terms.inc.b1' as RouteTermsKey,
+      termsRevisionId: 'rev_terms_inc_b1' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_inc_b1' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_none',
+      billingComponents: [{ type: 'fixed_subscription', amount: 50 }],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+
+    assert.throws(() => registry.registerTermsRevision(invalidTerms), IncoherentBillingStateError);
+  });
+
+  // N11. billing known_components + lista vazia é rejeitado
+  it('N11. billing known_components + lista vazia é rejeitado', () => {
+    const registry = createCapabilityRegistry();
+    const route: RouteRevision = {
+      routeKey: 'route.incoherent.billing2' as RouteKey,
+      routeRevisionId: 'rev_r_inc_b2' as RouteRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      idempotencyProfile: { supportType: 'none' },
+      networkTopologyScopes: ['loopback'],
+      controlOwnership: 'operator_managed',
+      externalServiceNature: 'none',
+      crossesEgressBoundary: false,
+      domainEffect: 'none',
+    };
+    registry.registerRouteRevision(route);
+
+    const invalidTerms: RouteTermsRevision = {
+      termsKey: 'terms.inc.b2' as RouteTermsKey,
+      termsRevisionId: 'rev_terms_inc_b2' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_inc_b2' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_components',
+      billingComponents: [],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+
+    assert.throws(() => registry.registerTermsRevision(invalidTerms), IncoherentBillingStateError);
+  });
+
+  // N12. billing unknown + componentes conhecidos é rejeitado
+  it('N12. billing unknown + componentes conhecidos é rejeitado', () => {
+    const registry = createCapabilityRegistry();
+    const route: RouteRevision = {
+      routeKey: 'route.incoherent.billing3' as RouteKey,
+      routeRevisionId: 'rev_r_inc_b3' as RouteRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      idempotencyProfile: { supportType: 'none' },
+      networkTopologyScopes: ['loopback'],
+      controlOwnership: 'operator_managed',
+      externalServiceNature: 'none',
+      crossesEgressBoundary: false,
+      domainEffect: 'none',
+    };
+    registry.registerRouteRevision(route);
+
+    const invalidTerms: RouteTermsRevision = {
+      termsKey: 'terms.inc.b3' as RouteTermsKey,
+      termsRevisionId: 'rev_terms_inc_b3' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_inc_b3' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'unknown',
+      billingComponents: [{ type: 'metered_usage', amount: 1 }],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+
+    assert.throws(() => registry.registerTermsRevision(invalidTerms), IncoherentBillingStateError);
+  });
+
+  // N13. entitlement unknown + itens conhecidos é rejeitado
+  it('N13. entitlement unknown + itens conhecidos é rejeitado', () => {
+    const registry = createCapabilityRegistry();
+    const route: RouteRevision = {
+      routeKey: 'route.incoherent.ent1' as RouteKey,
+      routeRevisionId: 'rev_r_inc_e1' as RouteRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      idempotencyProfile: { supportType: 'none' },
+      networkTopologyScopes: ['loopback'],
+      controlOwnership: 'operator_managed',
+      externalServiceNature: 'none',
+      crossesEgressBoundary: false,
+      domainEffect: 'none',
+    };
+    registry.registerRouteRevision(route);
+
+    const invalidTerms: RouteTermsRevision = {
+      termsKey: 'terms.inc.e1' as RouteTermsKey,
+      termsRevisionId: 'rev_terms_inc_e1' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_inc_e1' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_none',
+      billingComponents: [],
+      freeEntitlementStatus: 'unknown',
+      freeEntitlements: [{ type: 'recurring_free_allowance', quotaAmount: 100 }],
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+
+    assert.throws(() => registry.registerTermsRevision(invalidTerms), IncoherentEntitlementStateError);
+  });
+
+  // N14. Ciclo real lança especificamente SupersessionCycleError
+  it('N14. Ciclo real lança especificamente SupersessionCycleError', () => {
+    const c1 = {
+      id: 'rev_cyc_a',
+      identityKey: 'cap_cyc_test',
+      supersedesRevisionIds: ['rev_cyc_b'],
+    };
+    const c2 = {
+      id: 'rev_cyc_b',
+      identityKey: 'cap_cyc_test',
+      supersedesRevisionIds: ['rev_cyc_a'],
+    };
+
+    assert.throws(() => validateSupersessionChain([c1, c2]), (err: unknown) => {
+      assert.ok(err instanceof SupersessionCycleError);
+      assert.deepEqual(err.cyclePath, ['rev_cyc_a', 'rev_cyc_b', 'rev_cyc_a']);
+      return true;
+    });
+  });
+
+  // N15. Binding B1 é supersedido por B2. Consulta histórica retorna ambos, consulta de heads retorna somente B2
+  it('N15. Binding B1 é supersedido por B2. Consulta histórica retorna ambos, consulta de heads retorna somente B2', () => {
+    const registry = createCapabilityRegistry();
+    const cap: CapabilityRevision = {
+      capabilityKey: 'test.bind.heads.cap' as CapabilityKey,
+      capabilityRevisionId: 'rev_cap_bh' as CapabilityRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      title: 'Cap',
+      description: 'Binding heads test',
+      inputSchema: { type: 'object' },
+      outputSchema: { type: 'object' },
+      domainEffect: 'none',
+    };
+    const route: RouteRevision = {
+      routeKey: 'test.bind.heads.route' as RouteKey,
+      routeRevisionId: 'rev_route_bh' as RouteRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      idempotencyProfile: { supportType: 'none' },
+      networkTopologyScopes: ['loopback'],
+      controlOwnership: 'operator_managed',
+      externalServiceNature: 'none',
+      crossesEgressBoundary: false,
+      domainEffect: 'none',
+    };
+
+    const b1: CapabilityRouteBindingRevision = {
+      bindingKey: 'bind.bh' as BindingKey,
+      bindingRevisionId: 'rev_b1' as BindingRevisionId,
+      capabilityRevisionId: 'rev_cap_bh' as CapabilityRevisionId,
+      routeRevisionId: 'rev_route_bh' as RouteRevisionId,
+      adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      domainEffectAtested: 'none',
+      compatibilityProvenance: defaultProvenance,
+      supersedesRevisionIds: [],
+    };
+    const b2: CapabilityRouteBindingRevision = {
+      bindingKey: 'bind.bh' as BindingKey,
+      bindingRevisionId: 'rev_b2' as BindingRevisionId,
+      capabilityRevisionId: 'rev_cap_bh' as CapabilityRevisionId,
+      routeRevisionId: 'rev_route_bh' as RouteRevisionId,
+      adapterRevisionRef: 'adapter_v2' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      domainEffectAtested: 'none',
+      compatibilityProvenance: defaultProvenance,
+      supersedesRevisionIds: ['rev_b1' as BindingRevisionId],
+    };
+
+    registry.registerCapabilityRevision(cap);
+    registry.registerRouteRevision(route);
+    registry.registerBindingRevision(b1);
+    registry.registerBindingRevision(b2);
+
+    // Consulta histórica: ambos retornados
+    const allBindings = registry.getBindingsForCapability('rev_cap_bh' as CapabilityRevisionId);
+    assert.equal(allBindings.length, 2);
+
+    // Consulta de heads: somente B2 retornado
+    const headBindings = registry.getBindingHeadsForCapability('rev_cap_bh' as CapabilityRevisionId);
+    assert.equal(headBindings.length, 1);
+    assert.equal(headBindings[0].bindingRevisionId, 'rev_b2');
+  });
+
+  // N16. getRoutesForCapability não usa Binding supersedido
+  it('N16. getRoutesForCapability não usa Binding supersedido', () => {
+    const registry = createCapabilityRegistry();
+    const cap: CapabilityRevision = {
+      capabilityKey: 'test.cap.route_switch' as CapabilityKey,
+      capabilityRevisionId: 'rev_cap_rs' as CapabilityRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      title: 'Cap Route Switch',
+      description: 'Test active route resolution',
+      inputSchema: { type: 'object' },
+      outputSchema: { type: 'object' },
+      domainEffect: 'none',
+    };
+    const rOld: RouteRevision = {
+      routeKey: 'route.old' as RouteKey,
+      routeRevisionId: 'rev_r_old' as RouteRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      idempotencyProfile: { supportType: 'none' },
+      networkTopologyScopes: ['loopback'],
+      controlOwnership: 'operator_managed',
+      externalServiceNature: 'none',
+      crossesEgressBoundary: false,
+      domainEffect: 'none',
+    };
+    const rNew: RouteRevision = {
+      routeKey: 'route.new' as RouteKey,
+      routeRevisionId: 'rev_r_new' as RouteRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      adapterRevisionRef: 'adapter_v2' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      idempotencyProfile: { supportType: 'none' },
+      networkTopologyScopes: ['loopback'],
+      controlOwnership: 'operator_managed',
+      externalServiceNature: 'none',
+      crossesEgressBoundary: false,
+      domainEffect: 'none',
+    };
+
+    const b1Old: CapabilityRouteBindingRevision = {
+      bindingKey: 'bind.sw' as BindingKey,
+      bindingRevisionId: 'rev_b_sw_1' as BindingRevisionId,
+      capabilityRevisionId: 'rev_cap_rs' as CapabilityRevisionId,
+      routeRevisionId: 'rev_r_old' as RouteRevisionId,
+      adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      domainEffectAtested: 'none',
+      compatibilityProvenance: defaultProvenance,
+      supersedesRevisionIds: [],
+    };
+    const b2New: CapabilityRouteBindingRevision = {
+      bindingKey: 'bind.sw' as BindingKey,
+      bindingRevisionId: 'rev_b_sw_2' as BindingRevisionId,
+      capabilityRevisionId: 'rev_cap_rs' as CapabilityRevisionId,
+      routeRevisionId: 'rev_r_new' as RouteRevisionId,
+      adapterRevisionRef: 'adapter_v2' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      domainEffectAtested: 'none',
+      compatibilityProvenance: defaultProvenance,
+      supersedesRevisionIds: ['rev_b_sw_1' as BindingRevisionId],
+    };
+
+    registry.registerCapabilityRevision(cap);
+    registry.registerRouteRevision(rOld);
+    registry.registerRouteRevision(rNew);
+    registry.registerBindingRevision(b1Old);
+    registry.registerBindingRevision(b2New);
+
+    // getRoutesForCapability usa somente heads: deve retornar somente rNew
+    const activeRoutes = registry.getRoutesForCapability('rev_cap_rs' as CapabilityRevisionId);
+    assert.equal(activeRoutes.length, 1);
+    assert.equal(activeRoutes[0].routeRevisionId, 'rev_r_new');
   });
 });

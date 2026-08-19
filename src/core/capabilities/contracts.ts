@@ -268,3 +268,34 @@ export interface MaterialFactSnapshot {
   readonly snapshotTimestamp: string;
   readonly provenance: FactProvenance;
 }
+
+// ============================================================================
+// 11. TERMS RESOLUTION & CONTEXT
+// ============================================================================
+
+export interface TermsResolutionContext {
+  readonly at: string; // ISO 8601 UTC timestamp de avaliação
+  readonly endpoint?: string;
+  readonly region?: string;
+  readonly accountTier?: string;
+  readonly credentialProfileRef?: string;
+  readonly requestMode?: string;
+  readonly routeMode?: string;
+}
+
+export type TermsResolutionResult =
+  | { readonly status: 'no_terms' }
+  | { readonly status: 'no_applicable_terms' }
+  | {
+      readonly status: 'insufficient_context';
+      readonly missingDimensions: readonly string[];
+      readonly candidateTerms: readonly RouteTermsRevision[];
+      readonly reason: string;
+    }
+  | { readonly status: 'single_applicable'; readonly terms: RouteTermsRevision }
+  | { readonly status: 'composable_terms'; readonly terms: readonly RouteTermsRevision[] }
+  | {
+      readonly status: 'unresolved_conflict';
+      readonly conflictingTerms: readonly RouteTermsRevision[];
+      readonly reason: string;
+    };

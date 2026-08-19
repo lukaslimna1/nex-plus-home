@@ -3,7 +3,7 @@
  * Implementação Factual do Registry em Memória — Escopo 0.5 (Bloco 0.5B)
  *
  * Plano de Autoridade (L0).
- * Funções puras, validação de invariantes, ausência de heurísticas temporais.
+ * Funções puras, validação de invariantes, vigência temporal e resolução determinística de termos.
  */
 
 import type {
@@ -17,6 +17,8 @@ import type {
   RouteRevisionId,
   RouteTermsRevision,
   RouteTermsRevisionId,
+  TermsResolutionContext,
+  TermsResolutionResult,
 } from './contracts';
 
 // ============================================================================
@@ -100,6 +102,17 @@ export class IncoherentEntitlementStateError extends Error {
   constructor(termsRevisionId: string, detail: string) {
     super(`[L0 Registry Error] Incoherent FreeEntitlement state in Terms '${termsRevisionId}': ${detail}.`);
     this.name = 'IncoherentEntitlementStateError';
+    this.termsRevisionId = termsRevisionId;
+    this.detail = detail;
+  }
+}
+
+export class IncoherentBillingStateError extends Error {
+  readonly termsRevisionId: string;
+  readonly detail: string;
+  constructor(termsRevisionId: string, detail: string) {
+    super(`[L0 Registry Error] Incoherent BillingStatus state in Terms '${termsRevisionId}': ${detail}.`);
+    this.name = 'IncoherentBillingStateError';
     this.termsRevisionId = termsRevisionId;
     this.detail = detail;
   }
@@ -199,84 +212,216 @@ export function getHeads<T extends { readonly id: string; readonly supersedesRev
 // 3. RESOLUÇÃO DE TERMOS & TRATAMENTO DE CONFLITOS FACTUAIS
 // ============================================================================
 
-export type TermsResolutionResult =
-  | { readonly status: 'no_terms' }
-  | { readonly status: 'single_applicable'; readonly terms: RouteTermsRevision }
-  | { readonly status: 'composable_terms'; readonly terms: readonly RouteTermsRevision[] }
-  | {
-      readonly status: 'unresolved_conflict';
-      readonly conflictingTerms: readonly RouteTermsRevision[];
-      readonly reason: string;
-    };
-
 /**
- * Resolve deterministicamente os termos para uma RouteRevision.
- * Se múltiplos heads de termos coexistirem:
- * - Se forem aditivos e compatíveis -> `composable_terms`
- * - Se houver contradição fática de escopo/termos sem supersession -> `unresolved_conflict`
+ * Resolve deterministicamente os termos para uma RouteRevision sob um contexto factual e temporal:
+ * 1. Avalia a vigência temporal (effectiveFrom <= at <= validUntil).
+ * 2. Determina os heads ativos naquele instante temporal.
+ * 3. Valida a aplicabilidade das condições declaradas em TermsApplicability.
+ * 4. Detecta contradições materiais entre termos simultaneamente aplicáveis (BillingStatus, Entitlements, Privacy, Tarifas).
  * NUNCA escolhe vencedor por timestamp, SemVer ou ordem de inserção.
  */
 export function resolveTermsForRoute(
   routeRevisionId: RouteRevisionId,
   allTerms: readonly RouteTermsRevision[],
+  context: TermsResolutionContext,
 ): TermsResolutionResult {
   const termsForRoute = allTerms.filter((t) => t.routeRevisionId === routeRevisionId);
   if (termsForRoute.length === 0) {
     return { status: 'no_terms' };
   }
 
-  // Obter heads não supersedidos de termos
+  // 1. Filtrar termos temporalmente ativos no timestamp context.at
+  const activeTerms = termsForRoute.filter(
+    (t) => t.effectiveFrom <= context.at && (!t.validUntil || context.at <= t.validUntil),
+  );
+
+  if (activeTerms.length === 0) {
+    return { status: 'no_applicable_terms' };
+  }
+
+  // 2. Determinar os heads vigentes entre os termos temporalmente ativos
   const headTerms = getHeads(
-    termsForRoute.map((t) => ({
+    activeTerms.map((t) => ({
       ...t,
       id: t.termsRevisionId as string,
       supersedesRevisionIds: t.supersedesRevisionIds as readonly string[],
     })),
-  );
+  ).map((h) => activeTerms.find((t) => t.termsRevisionId === h.id)!);
 
   if (headTerms.length === 0) {
-    return { status: 'no_terms' };
+    return { status: 'no_applicable_terms' };
   }
 
-  if (headTerms.length === 1) {
+  // 3. Avaliar TermsApplicability para cada head
+  const applicableTerms: RouteTermsRevision[] = [];
+  const insufficientTerms: { term: RouteTermsRevision; missing: string[] }[] = [];
+
+  for (const term of headTerms) {
+    if (!term.applicability) {
+      applicableTerms.push(term);
+      continue;
+    }
+
+    const app = term.applicability;
+    const missing: string[] = [];
+    let mismatch = false;
+
+    const dimensions: (keyof typeof app)[] = [
+      'endpoint',
+      'region',
+      'accountTier',
+      'credentialProfileRef',
+      'requestMode',
+      'routeMode',
+    ];
+
+    for (const dim of dimensions) {
+      const expectedVal = app[dim];
+      if (expectedVal !== undefined) {
+        const actualVal = context[dim as keyof TermsResolutionContext];
+        if (actualVal === undefined) {
+          missing.push(dim);
+        } else if (actualVal !== expectedVal) {
+          mismatch = true;
+          break;
+        }
+      }
+    }
+
+    if (mismatch) {
+      // Condição não satisfeita pelo contexto factual
+      continue;
+    }
+
+    if (missing.length > 0) {
+      insufficientTerms.push({ term, missing });
+    } else {
+      applicableTerms.push(term);
+    }
+  }
+
+  // Se houver termos com contexto insuficiente e nenhum outro termo aplicável resolvido
+  if (insufficientTerms.length > 0 && applicableTerms.length === 0) {
+    const missingDimensions = Array.from(new Set(insufficientTerms.flatMap((i) => i.missing)));
     return {
-      status: 'single_applicable',
-      terms: termsForRoute.find((t) => t.termsRevisionId === headTerms[0].id)!,
+      status: 'insufficient_context',
+      missingDimensions,
+      candidateTerms: insufficientTerms.map((i) => i.term),
+      reason: `Context is missing required dimensions [${missingDimensions.join(', ')}] to evaluate TermsApplicability.`,
     };
   }
 
-  // Múltiplos heads coexistindo: verificar se são compatíveis/componíveis ou conflitantes
-  const matchingTerms = headTerms.map(
-    (h) => termsForRoute.find((t) => t.termsRevisionId === h.id)!,
-  );
+  if (applicableTerms.length === 0) {
+    return { status: 'no_applicable_terms' };
+  }
 
-  // Verificar se há conflito factual de privacidade ou cobrança contraditória
-  for (let i = 0; i < matchingTerms.length; i++) {
-    for (let j = i + 1; j < matchingTerms.length; j++) {
-      const t1 = matchingTerms[i];
-      const t2 = matchingTerms[j];
+  if (applicableTerms.length === 1) {
+    return {
+      status: 'single_applicable',
+      terms: applicableTerms[0],
+    };
+  }
 
-      // Se ambos definem status de billing contraditórios
+  // 4. Múltiplos heads aplicáveis: verificar contradições materiais
+  for (let i = 0; i < applicableTerms.length; i++) {
+    for (let j = i + 1; j < applicableTerms.length; j++) {
+      const t1 = applicableTerms[i];
+      const t2 = applicableTerms[j];
+
+      // A) BillingStatus
       if (t1.billingStatus !== t2.billingStatus) {
         return {
           status: 'unresolved_conflict',
-          conflictingTerms: matchingTerms,
+          conflictingTerms: applicableTerms,
           reason: `Contradictory BillingStatus between terms '${t1.termsRevisionId}' (${t1.billingStatus}) and '${t2.termsRevisionId}' (${t2.billingStatus}).`,
         };
       }
 
-      // Se ambos definem termos de privacidade incompatíveis
+      // B) FreeEntitlementStatus
+      if (t1.freeEntitlementStatus !== t2.freeEntitlementStatus) {
+        return {
+          status: 'unresolved_conflict',
+          conflictingTerms: applicableTerms,
+          reason: `Contradictory FreeEntitlementStatus between terms '${t1.termsRevisionId}' (${t1.freeEntitlementStatus}) and '${t2.termsRevisionId}' (${t2.freeEntitlementStatus}).`,
+        };
+      }
+
+      // C) PrivacyDataTerms
       if (t1.privacyDataTerms && t2.privacyDataTerms) {
+        const p1 = t1.privacyDataTerms;
+        const p2 = t2.privacyDataTerms;
+
+        if (p1.retentionDays !== undefined && p2.retentionDays !== undefined && p1.retentionDays !== p2.retentionDays) {
+          return {
+            status: 'unresolved_conflict',
+            conflictingTerms: applicableTerms,
+            reason: `Contradictory retentionDays between terms '${t1.termsRevisionId}' (${p1.retentionDays}) and '${t2.termsRevisionId}' (${p2.retentionDays}).`,
+          };
+        }
+
+        if (p1.trainingUsage !== undefined && p2.trainingUsage !== undefined && p1.trainingUsage !== p2.trainingUsage) {
+          return {
+            status: 'unresolved_conflict',
+            conflictingTerms: applicableTerms,
+            reason: `Contradictory trainingUsage between terms '${t1.termsRevisionId}' (${p1.trainingUsage}) and '${t2.termsRevisionId}' (${p2.trainingUsage}).`,
+          };
+        }
+
         if (
-          t1.privacyDataTerms.trainingOptOutGuaranteed !== undefined &&
-          t2.privacyDataTerms.trainingOptOutGuaranteed !== undefined &&
-          t1.privacyDataTerms.trainingOptOutGuaranteed !== t2.privacyDataTerms.trainingOptOutGuaranteed
+          p1.trainingOptOutGuaranteed !== undefined &&
+          p2.trainingOptOutGuaranteed !== undefined &&
+          p1.trainingOptOutGuaranteed !== p2.trainingOptOutGuaranteed
         ) {
           return {
             status: 'unresolved_conflict',
-            conflictingTerms: matchingTerms,
-            reason: `Contradictory trainingOptOutGuaranteed between terms '${t1.termsRevisionId}' and '${t2.termsRevisionId}'.`,
+            conflictingTerms: applicableTerms,
+            reason: `Contradictory trainingOptOutGuaranteed between terms '${t1.termsRevisionId}' (${p1.trainingOptOutGuaranteed}) and '${t2.termsRevisionId}' (${p2.trainingOptOutGuaranteed}).`,
           };
+        }
+
+        if (
+          p1.zeroDataRetentionGuaranteed !== undefined &&
+          p2.zeroDataRetentionGuaranteed !== undefined &&
+          p1.zeroDataRetentionGuaranteed !== p2.zeroDataRetentionGuaranteed
+        ) {
+          return {
+            status: 'unresolved_conflict',
+            conflictingTerms: applicableTerms,
+            reason: `Contradictory zeroDataRetentionGuaranteed between terms '${t1.termsRevisionId}' (${p1.zeroDataRetentionGuaranteed}) and '${t2.termsRevisionId}' (${p2.zeroDataRetentionGuaranteed}).`,
+          };
+        }
+
+        if (
+          p1.residencyRegion !== undefined &&
+          p2.residencyRegion !== undefined &&
+          p1.residencyRegion !== p2.residencyRegion
+        ) {
+          return {
+            status: 'unresolved_conflict',
+            conflictingTerms: applicableTerms,
+            reason: `Contradictory residencyRegion between terms '${t1.termsRevisionId}' (${p1.residencyRegion}) and '${t2.termsRevisionId}' (${p2.residencyRegion}).`,
+          };
+        }
+      }
+
+      // D) Incompatible BillingComponents with identical dimension but different rates
+      for (const c1 of t1.billingComponents) {
+        for (const c2 of t2.billingComponents) {
+          if (
+            c1.type === c2.type &&
+            c1.unit === c2.unit &&
+            c1.currency === c2.currency &&
+            c1.period === c2.period &&
+            c1.applicability === c2.applicability
+          ) {
+            if (c1.amount !== undefined && c2.amount !== undefined && c1.amount !== c2.amount) {
+              return {
+                status: 'unresolved_conflict',
+                conflictingTerms: applicableTerms,
+                reason: `Contradictory rate/amount for billing component '${c1.type}' between '${t1.termsRevisionId}' (${c1.amount}) and '${t2.termsRevisionId}' (${c2.amount}).`,
+              };
+            }
+          }
         }
       }
     }
@@ -285,7 +430,7 @@ export function resolveTermsForRoute(
   // Fatos aditivos compatíveis
   return {
     status: 'composable_terms',
-    terms: matchingTerms,
+    terms: applicableTerms,
   };
 }
 
@@ -319,12 +464,14 @@ export interface CapabilityRegistry {
   registerBindingRevision(rev: CapabilityRouteBindingRevision): void;
   getBindingRevision(id: BindingRevisionId): CapabilityRouteBindingRevision | undefined;
   getBindingsForCapability(capabilityRevisionId: CapabilityRevisionId): readonly CapabilityRouteBindingRevision[];
+  getBindingHeadsForCapability(capabilityRevisionId: CapabilityRevisionId): readonly CapabilityRouteBindingRevision[];
   getBindingsForRoute(routeRevisionId: RouteRevisionId): readonly CapabilityRouteBindingRevision[];
+  getBindingHeadsForRoute(routeRevisionId: RouteRevisionId): readonly CapabilityRouteBindingRevision[];
   getRoutesForCapability(capabilityRevisionId: CapabilityRevisionId): readonly RouteRevision[];
 
   // Terms
   registerTermsRevision(rev: RouteTermsRevision): void;
-  getTermsForRoute(routeRevisionId: RouteRevisionId): TermsResolutionResult;
+  getTermsForRoute(routeRevisionId: RouteRevisionId, context: TermsResolutionContext): TermsResolutionResult;
   listTermsRevisions(routeRevisionId?: RouteRevisionId): readonly RouteTermsRevision[];
 
   // Snapshot completo
@@ -425,6 +572,26 @@ export function createCapabilityRegistry(initialData?: Partial<CapabilityRegistr
       throw new InvalidTermsReferenceError(rev.termsRevisionId as string, rev.routeRevisionId as string);
     }
 
+    // Validar coerência de BillingStatus
+    if (rev.billingStatus === 'known_none' && rev.billingComponents.length > 0) {
+      throw new IncoherentBillingStateError(
+        rev.termsRevisionId as string,
+        "billingStatus is 'known_none' but billingComponents array contains items",
+      );
+    }
+    if (rev.billingStatus === 'known_components' && rev.billingComponents.length === 0) {
+      throw new IncoherentBillingStateError(
+        rev.termsRevisionId as string,
+        "billingStatus is 'known_components' but billingComponents array is empty",
+      );
+    }
+    if (rev.billingStatus === 'unknown' && rev.billingComponents.length > 0) {
+      throw new IncoherentBillingStateError(
+        rev.termsRevisionId as string,
+        "billingStatus is 'unknown' but billingComponents array contains items",
+      );
+    }
+
     // Validar coerência de FreeEntitlementStatus
     if (rev.freeEntitlementStatus === 'known_none' && rev.freeEntitlements.length > 0) {
       throw new IncoherentEntitlementStateError(
@@ -436,6 +603,12 @@ export function createCapabilityRegistry(initialData?: Partial<CapabilityRegistr
       throw new IncoherentEntitlementStateError(
         rev.termsRevisionId as string,
         "freeEntitlementStatus is 'known_entitlements' but freeEntitlements array is empty",
+      );
+    }
+    if (rev.freeEntitlementStatus === 'unknown' && rev.freeEntitlements.length > 0) {
+      throw new IncoherentEntitlementStateError(
+        rev.termsRevisionId as string,
+        "freeEntitlementStatus is 'unknown' but freeEntitlements array contains items",
       );
     }
 
@@ -533,15 +706,38 @@ export function createCapabilityRegistry(initialData?: Partial<CapabilityRegistr
         (b) => b.capabilityRevisionId === capabilityRevisionId,
       );
     },
+    getBindingHeadsForCapability(capabilityRevisionId: CapabilityRevisionId) {
+      const all = this.getBindingsForCapability(capabilityRevisionId);
+      const heads = getHeads(
+        all.map((b) => ({
+          ...b,
+          id: b.bindingRevisionId as string,
+          supersedesRevisionIds: b.supersedesRevisionIds as readonly string[],
+        })),
+      );
+      return heads.map((h) => all.find((b) => b.bindingRevisionId === h.id)!);
+    },
     getBindingsForRoute(routeRevisionId: RouteRevisionId) {
       return Array.from(bindingsById.values()).filter(
         (b) => b.routeRevisionId === routeRevisionId,
       );
     },
+    getBindingHeadsForRoute(routeRevisionId: RouteRevisionId) {
+      const all = this.getBindingsForRoute(routeRevisionId);
+      const heads = getHeads(
+        all.map((b) => ({
+          ...b,
+          id: b.bindingRevisionId as string,
+          supersedesRevisionIds: b.supersedesRevisionIds as readonly string[],
+        })),
+      );
+      return heads.map((h) => all.find((b) => b.bindingRevisionId === h.id)!);
+    },
     getRoutesForCapability(capabilityRevisionId: CapabilityRevisionId) {
-      const bindings = this.getBindingsForCapability(capabilityRevisionId);
+      // Utiliza exclusivamente binding heads vigentes
+      const bindingHeads = this.getBindingHeadsForCapability(capabilityRevisionId);
       const routes: RouteRevision[] = [];
-      for (const b of bindings) {
+      for (const b of bindingHeads) {
         const route = routesById.get(b.routeRevisionId);
         if (route && !routes.some((r) => r.routeRevisionId === route.routeRevisionId)) {
           routes.push(route);
@@ -551,8 +747,8 @@ export function createCapabilityRegistry(initialData?: Partial<CapabilityRegistr
     },
 
     registerTermsRevision: registerTerms,
-    getTermsForRoute(routeRevisionId: RouteRevisionId) {
-      return resolveTermsForRoute(routeRevisionId, Array.from(termsById.values()));
+    getTermsForRoute(routeRevisionId: RouteRevisionId, context: TermsResolutionContext) {
+      return resolveTermsForRoute(routeRevisionId, Array.from(termsById.values()), context);
     },
     listTermsRevisions(routeRevisionId?: RouteRevisionId) {
       const all = Array.from(termsById.values());
