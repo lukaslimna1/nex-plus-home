@@ -1,8 +1,9 @@
 /**
  * NEX+ · Resource Governor & Local Runtime Lifecycle
- * Testes Unitários de Resource Leases — Escopo 0.6 (Fase B)
+ * Testes Unitários de Resource Leases — Escopo 0.6 (Fase B / Hardening)
  *
- * Cenários B1 a B13: Criação, estados, transições válidas/inválidas, reconciliação temporal e proteção.
+ * Cenários B1 a B13 + G20 a G22: Criação, estados, transições válidas/inválidas,
+ * validação numérica estrita, timestamps obrigatórios e reconciliação temporal.
  */
 
 import { describe, it } from 'node:test';
@@ -21,7 +22,7 @@ import {
   ResourceLeaseError,
 } from '../leases/store';
 
-describe('NEX+ Resource Governor · Resource Leases (Fase B)', () => {
+describe('NEX+ Resource Governor · Resource Leases (Fase B & Hardening)', () => {
   // B1. create reserved lease
   it('B1. create reserved lease', () => {
     const store = createResourceLeaseStore();
@@ -80,7 +81,7 @@ describe('NEX+ Resource Governor · Resource Leases (Fase B)', () => {
   });
 
   // B4. activate lease
-  it('B4. activate lease transita de reserved para active', () => {
+  it('B4. activate lease transita de reserved para active com timestamp explícito', () => {
     const store = createResourceLeaseStore();
     store.createReservation({
       leaseId: 'lease_01' as ResourceLeaseId,
@@ -110,7 +111,7 @@ describe('NEX+ Resource Governor · Resource Leases (Fase B)', () => {
       reservedRamBytes: 1000,
       createdAt: '2026-08-19T20:00:00.000Z',
     });
-    store.activateLease('lease_01' as ResourceLeaseId);
+    store.activateLease('lease_01' as ResourceLeaseId, '2026-08-19T20:00:01.000Z');
 
     assert.equal(store.listReservedLeases().length, 0);
     assert.equal(store.listActiveLeases().length, 1);
@@ -128,7 +129,7 @@ describe('NEX+ Resource Governor · Resource Leases (Fase B)', () => {
       targetModel: 'llama3:8b',
       createdAt: '2026-08-19T20:00:00.000Z',
     });
-    store.activateLease('lease_01' as ResourceLeaseId);
+    store.activateLease('lease_01' as ResourceLeaseId, '2026-08-19T20:00:01.000Z');
 
     const active = store.listActiveLeases();
     assert.equal(active[0].targetModel, 'llama3:8b');
@@ -152,7 +153,7 @@ describe('NEX+ Resource Governor · Resource Leases (Fase B)', () => {
   });
 
   // B8. release remove proteção
-  it('B8. release remove lease de active e reserved', () => {
+  it('B8. release remove lease de active e reserved com timestamp explícito', () => {
     const store = createResourceLeaseStore();
     store.createReservation({
       leaseId: 'lease_01' as ResourceLeaseId,
@@ -162,10 +163,11 @@ describe('NEX+ Resource Governor · Resource Leases (Fase B)', () => {
       routeRevisionId: 'route_rev_01' as RouteRevisionId,
       createdAt: '2026-08-19T20:00:00.000Z',
     });
-    store.activateLease('lease_01' as ResourceLeaseId);
+    store.activateLease('lease_01' as ResourceLeaseId, '2026-08-19T20:00:01.000Z');
     const released = store.releaseLease('lease_01' as ResourceLeaseId, '2026-08-19T20:00:05.000Z');
 
     assert.equal(released.state, 'released');
+    assert.equal(released.releasedAt, '2026-08-19T20:00:05.000Z');
     assert.equal(store.listActiveLeases().length, 0);
     assert.equal(store.listReservedLeases().length, 0);
   });
@@ -246,10 +248,10 @@ describe('NEX+ Resource Governor · Resource Leases (Fase B)', () => {
       routeRevisionId: 'route_rev_01' as RouteRevisionId,
       createdAt: '2026-08-19T20:00:00.000Z',
     });
-    store.releaseLease('lease_01' as ResourceLeaseId);
+    store.releaseLease('lease_01' as ResourceLeaseId, '2026-08-19T20:00:01.000Z');
 
     assert.throws(() => {
-      store.activateLease('lease_01' as ResourceLeaseId);
+      store.activateLease('lease_01' as ResourceLeaseId, '2026-08-19T20:00:02.000Z');
     }, /Cannot activate lease/);
   });
 
@@ -268,7 +270,78 @@ describe('NEX+ Resource Governor · Resource Leases (Fase B)', () => {
     store.reconcileExpiredLeases('2026-08-19T20:00:10.000Z');
 
     assert.throws(() => {
-      store.activateLease('lease_01' as ResourceLeaseId);
+      store.activateLease('lease_01' as ResourceLeaseId, '2026-08-19T20:00:11.000Z');
     }, /Cannot activate lease/);
+  });
+
+  // G20. activateLease exige timestamp explícito
+  it('G20. activateLease exige timestamp explícito e não aceita omitido ou inválido', () => {
+    const store = createResourceLeaseStore();
+    store.createReservation({
+      leaseId: 'lease_01' as ResourceLeaseId,
+      requestId: 'req_01' as ResourceRequestId,
+      decisionId: 'dec_01' as DecisionId,
+      materialContextId: 'ctx_01' as DecisionMaterialContextId,
+      routeRevisionId: 'route_rev_01' as RouteRevisionId,
+      createdAt: '2026-08-19T20:00:00.000Z',
+    });
+
+    assert.throws(() => {
+      store.activateLease('lease_01' as ResourceLeaseId, '' as any);
+    }, /activateLease requires an explicit valid timestamp/);
+
+    assert.throws(() => {
+      store.activateLease('lease_01' as ResourceLeaseId, 'invalid-date' as any);
+    }, /activateLease requires an explicit valid timestamp/);
+  });
+
+  // G21. releaseLease exige timestamp explícito
+  it('G21. releaseLease exige timestamp explícito e não aceita omitido ou inválido', () => {
+    const store = createResourceLeaseStore();
+    store.createReservation({
+      leaseId: 'lease_01' as ResourceLeaseId,
+      requestId: 'req_01' as ResourceRequestId,
+      decisionId: 'dec_01' as DecisionId,
+      materialContextId: 'ctx_01' as DecisionMaterialContextId,
+      routeRevisionId: 'route_rev_01' as RouteRevisionId,
+      createdAt: '2026-08-19T20:00:00.000Z',
+    });
+
+    assert.throws(() => {
+      store.releaseLease('lease_01' as ResourceLeaseId, '' as any);
+    }, /releaseLease requires an explicit valid timestamp/);
+
+    assert.throws(() => {
+      store.releaseLease('lease_01' as ResourceLeaseId, 'invalid-date' as any);
+    }, /releaseLease requires an explicit valid timestamp/);
+  });
+
+  // G22. lease negativo é rejeitado
+  it('G22. lease com valor negativo, NaN ou Infinity é rejeitado estruturalmente', () => {
+    const store = createResourceLeaseStore();
+
+    assert.throws(() => {
+      store.createReservation({
+        leaseId: 'lease_01' as ResourceLeaseId,
+        requestId: 'req_01' as ResourceRequestId,
+        decisionId: 'dec_01' as DecisionId,
+        materialContextId: 'ctx_01' as DecisionMaterialContextId,
+        routeRevisionId: 'route_rev_01' as RouteRevisionId,
+        reservedRamBytes: -500,
+        createdAt: '2026-08-19T20:00:00.000Z',
+      });
+    }, /reservedRamBytes must be a finite number >= 0/);
+
+    assert.throws(() => {
+      store.createReservation({
+        leaseId: 'lease_02' as ResourceLeaseId,
+        requestId: 'req_01' as ResourceRequestId,
+        decisionId: 'dec_01' as DecisionId,
+        materialContextId: 'ctx_01' as DecisionMaterialContextId,
+        routeRevisionId: 'route_rev_01' as RouteRevisionId,
+        reservedVramBytes: NaN,
+        createdAt: '2026-08-19T20:00:00.000Z',
+      });
+    }, /reservedVramBytes must be a finite number >= 0/);
   });
 });

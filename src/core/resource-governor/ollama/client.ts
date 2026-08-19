@@ -226,10 +226,19 @@ export function createOllamaClient(config: OllamaClientConfig = {}): OllamaClien
           body: JSON.stringify({
             model: modelName,
             keep_alive: keepAlive,
-            prompt: '',
+            stream: false,
           }),
           signal: controller.signal,
         });
+
+        // Consome a resposta não-streaming completa antes de prosseguir
+        if (res.ok) {
+          try {
+            await res.json();
+          } catch {
+            // tolera formato de término vazio caso status seja OK
+          }
+        }
 
         return { status: res.status, ok: res.ok };
       } catch (err: any) {

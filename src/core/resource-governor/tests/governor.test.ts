@@ -1,9 +1,10 @@
 /**
  * NEX+ · Resource Governor & Local Runtime Lifecycle
- * Testes Determinísticos do Motor do Governor — Escopo 0.6 (Fase B)
+ * Testes Determinísticos do Motor do Governor — Escopo 0.6 (Fase B & Hardening)
  *
- * Cenários B14 a B40: Matriz completa de admissão, deferral, denial, lifecycle actions,
- * gating de modelos locais, isolamento de GPU/VRAM e proibição de auto-eviction.
+ * Cenários B14 a B40 + G8 a G15 + G23 a G24: Matriz completa de admissão, deferral, denial,
+ * lifecycle actions, estimativas efetivas (request vs catálogo), multi-GPU leases,
+ * checagem de Ollama state, profile pinning e validações numéricas.
  */
 
 import { describe, it } from 'node:test';
@@ -25,13 +26,14 @@ import type {
   ResourceSnapshotId,
 } from '../contracts';
 
-import { createResourceProfileRevision } from '../profiles';
-import { evaluateResourceRequest } from '../decision';
+import { createResourceProfileRevision, ResourceProfileValidationError } from '../profiles';
+import { evaluateResourceRequest, ProfileRevisionMismatchError } from '../decision';
 
 const mockCatalog: readonly ApprovedLocalModelRef[] = [
-  { modelName: 'llama3:8b', runtime: 'ollama_local', estimatedVramBytes: 6 * 1024 * 1024 * 1024 },
-  { modelName: 'mistral:7b', runtime: 'ollama_local', estimatedVramBytes: 5 * 1024 * 1024 * 1024 },
-  { modelName: 'phi3:mini', runtime: 'ollama_local', estimatedVramBytes: 3 * 1024 * 1024 * 1024 },
+  { modelName: 'llama3:8b', runtime: 'ollama_local', estimatedVramBytes: 6 * 1024 * 1024 * 1024, estimatedRamBytes: 1 * 1024 * 1024 * 1024 },
+  { modelName: 'mistral:7b', runtime: 'ollama_local', estimatedVramBytes: 5 * 1024 * 1024 * 1024, estimatedRamBytes: 1 * 1024 * 1024 * 1024 },
+  { modelName: 'phi3:mini', runtime: 'ollama_local', estimatedVramBytes: 3 * 1024 * 1024 * 1024, estimatedRamBytes: 512 * 1024 * 1024 },
+  { modelName: 'heavy-model:70b', runtime: 'ollama_local', estimatedVramBytes: 40 * 1024 * 1024 * 1024, estimatedRamBytes: 8 * 1024 * 1024 * 1024 },
 ];
 
 const mockProfile: ResourceProfileRevision = createResourceProfileRevision({
@@ -99,7 +101,7 @@ function createBaseRequest(overrides: Partial<ResourceRequest> = {}): ResourceRe
   };
 }
 
-describe('NEX+ Resource Governor · Decision Engine (Fase B)', () => {
+describe('NEX+ Resource Governor · Decision Engine (Fase B & Hardening)', () => {
   // B14. snapshot fresh + recursos suficientes → admit
   it('B14. snapshot fresh + recursos suficientes → admit', () => {
     const decision = evaluateResourceRequest({
@@ -113,6 +115,9 @@ describe('NEX+ Resource Governor · Decision Engine (Fase B)', () => {
 
     assert.equal(decision.disposition, 'admit');
     assert.equal(decision.reasonCode, 'RESOURCES_ADMITTED');
+    assert.equal(decision.requestId, 'req_01');
+    assert.equal(decision.profileRevisionId, 'prof_rev_std');
+    assert.equal(decision.resourceSnapshotId, 'snap_01');
   });
 
   // B15. snapshot stale → defer
@@ -134,10 +139,9 @@ describe('NEX+ Resource Governor · Decision Engine (Fase B)', () => {
   // B16. RAM insuficiente → defer
   it('B16. RAM insuficiente → defer', () => {
     const snap = createBaseSnapshot();
-    // Free RAM = 3 GiB. Minimum free profile = 2 GiB. Available headroom = 1 GiB.
     const customSnap: ResourceSnapshot = {
       ...snap,
-      system: { ...snap.system, freeRamBytes: 3 * 1024 * 1024 * 1024 },
+      system: { ...snap.system, freeRamBytes: 3 * 1024 * 1024 * 1024 }, // Free 3 GiB, min 2 GiB -> 1 GiB headroom
     };
 
     const decision = evaluateResourceRequest({
@@ -156,12 +160,11 @@ describe('NEX+ Resource Governor · Decision Engine (Fase B)', () => {
   // B17. VRAM insuficiente → defer
   it('B17. VRAM insuficiente → defer', () => {
     const snap = createBaseSnapshot();
-    // GPU Free VRAM = 2 GiB. Profile minimum = 1 GiB. Available = 1 GiB.
     const customSnap: ResourceSnapshot = {
       ...snap,
       gpu: {
         ...snap.gpu,
-        devices: [{ ...snap.gpu.devices[0], memoryFreeBytes: 2 * 1024 * 1024 * 1024 }],
+        devices: [{ ...snap.gpu.devices[0], memoryFreeBytes: 2 * 1024 * 1024 * 1024 }], // Free 2 GiB, min 1 GiB -> 1 GiB headroom
       },
     };
 
@@ -186,7 +189,7 @@ describe('NEX+ Resource Governor · Decision Engine (Fase B)', () => {
     const snap = createBaseSnapshot();
     const customSnap: ResourceSnapshot = {
       ...snap,
-      system: { ...snap.system, cpuUtilizationPercent: 95 }, // > 90%
+      system: { ...snap.system, cpuUtilizationPercent: 95 },
     };
 
     const decision = evaluateResourceRequest({
@@ -209,7 +212,7 @@ describe('NEX+ Resource Governor · Decision Engine (Fase B)', () => {
       ...snap,
       gpu: {
         ...snap.gpu,
-        devices: [{ ...snap.gpu.devices[0], gpuUtilizationPercent: 98 }], // > 95%
+        devices: [{ ...snap.gpu.devices[0], gpuUtilizationPercent: 98 }],
       },
     };
 
@@ -284,8 +287,8 @@ describe('NEX+ Resource Governor · Decision Engine (Fase B)', () => {
     assert.equal(decision.disposition, 'admit');
   });
 
-  // B23. estimativa RAM necessária ausente / insuficiente
-  it('B23. estimativa RAM faltante ao exceder headroom → defer', () => {
+  // B23. estimativa RAM efetiva excedendo headroom → defer
+  it('B23. estimativa RAM efetiva excedendo headroom → defer', () => {
     const snap = createBaseSnapshot();
     const customSnap: ResourceSnapshot = {
       ...snap,
@@ -305,10 +308,10 @@ describe('NEX+ Resource Governor · Decision Engine (Fase B)', () => {
     assert.equal(decision.reasonCode, 'INSUFFICIENT_SYSTEM_RAM');
   });
 
-  // B24. estimativa VRAM necessária ausente quando exigida → defer
+  // B24. estimativa VRAM necessária ausente no request e no catálogo → defer
   it('B24. estimativa VRAM necessária ausente no request e no catálogo → defer', () => {
     const catalogWithoutVram: readonly ApprovedLocalModelRef[] = [
-      { modelName: 'llama3:8b', runtime: 'ollama_local' }, // sem estimatedVramBytes
+      { modelName: 'llama3:8b', runtime: 'ollama_local' },
     ];
 
     const decision = evaluateResourceRequest({
@@ -440,7 +443,7 @@ describe('NEX+ Resource Governor · Decision Engine (Fase B)', () => {
       }),
       snapshot: snap,
       profile: mockProfile,
-      leases: [], // Nenhum lease ativo
+      leases: [],
       approvedCatalog: mockCatalog,
       evaluatedAt: '2026-08-19T20:00:01.000Z',
     });
@@ -471,6 +474,9 @@ describe('NEX+ Resource Governor · Decision Engine (Fase B)', () => {
       reservedVramBytes: 0,
       state: 'active',
       createdAt: '2026-08-19T20:00:00.000Z',
+      activatedAt: '2026-08-19T20:00:00.000Z',
+      releasedAt: undefined,
+      expiresAt: undefined,
     };
 
     const decision = evaluateResourceRequest({
@@ -496,7 +502,7 @@ describe('NEX+ Resource Governor · Decision Engine (Fase B)', () => {
         intent: 'ensure_model_unloaded',
         targetModel: 'llama3:8b',
       }),
-      snapshot: createBaseSnapshot(), // loadedModels: []
+      snapshot: createBaseSnapshot(),
       profile: mockProfile,
       leases: [],
       approvedCatalog: mockCatalog,
@@ -507,7 +513,7 @@ describe('NEX+ Resource Governor · Decision Engine (Fase B)', () => {
     assert.equal(decision.reasonCode, 'MODEL_ALREADY_UNLOADED');
   });
 
-  // B32. pressão VRAM não escolhe eviction target (defer com evictionCandidates neutros)
+  // B32. pressão VRAM não escolhe eviction target
   it('B32. pressão VRAM não escolhe eviction target', () => {
     const snap = createBaseSnapshot({
       gpu: {
@@ -519,7 +525,7 @@ describe('NEX+ Resource Governor · Decision Engine (Fase B)', () => {
             name: 'RTX 4090',
             memoryTotalBytes: 24 * 1024 * 1024 * 1024,
             memoryUsedBytes: 22 * 1024 * 1024 * 1024,
-            memoryFreeBytes: 2 * 1024 * 1024 * 1024, // 2 GiB free (minimum 1 GiB -> 1 GiB headroom)
+            memoryFreeBytes: 2 * 1024 * 1024 * 1024,
             gpuUtilizationPercent: 10,
             memoryUtilizationPercent: 90,
           },
@@ -539,7 +545,7 @@ describe('NEX+ Resource Governor · Decision Engine (Fase B)', () => {
     const decision = evaluateResourceRequest({
       request: createBaseRequest({
         requiresGpu: true,
-        estimatedAdditionalVramBytes: 5 * 1024 * 1024 * 1024, // Needs 5 GiB
+        estimatedAdditionalVramBytes: 5 * 1024 * 1024 * 1024,
       }),
       snapshot: snap,
       profile: mockProfile,
@@ -550,7 +556,6 @@ describe('NEX+ Resource Governor · Decision Engine (Fase B)', () => {
 
     assert.equal(decision.disposition, 'defer');
     assert.equal(decision.reasonCode, 'INSUFFICIENT_VRAM');
-    // Candidates reportados neutramente como fatos, sem escolher vencedor
     assert.equal(decision.materialFacts.evictionCandidates?.length, 2);
   });
 
@@ -602,7 +607,7 @@ describe('NEX+ Resource Governor · Decision Engine (Fase B)', () => {
     });
 
     const decision = evaluateResourceRequest({
-      request: createBaseRequest({ requiresGpu: true }), // targetGpuUuid omitted
+      request: createBaseRequest({ requiresGpu: true }),
       snapshot: multiGpuSnap,
       profile: mockProfile,
       leases: [],
@@ -719,5 +724,315 @@ describe('NEX+ Resource Governor · Decision Engine (Fase B)', () => {
     assert.equal(untyped.devices, undefined);
     assert.equal(untyped.installedModels, undefined);
     assert.equal(untyped.loadedModels, undefined);
+  });
+
+  // G8. catalog estimatedVramBytes é realmente usado no headroom
+  it('G8. catalog estimatedVramBytes é realmente usado no headroom e impede preload se exceder', () => {
+    const snap = createBaseSnapshot({
+      gpu: {
+        status: 'available',
+        devices: [
+          {
+            index: 0,
+            uuid: 'GPU-01',
+            name: 'RTX 3060',
+            memoryTotalBytes: 12 * 1024 * 1024 * 1024,
+            memoryUsedBytes: 2 * 1024 * 1024 * 1024,
+            memoryFreeBytes: 10 * 1024 * 1024 * 1024, // 10 GiB free, min 2 GiB -> 8 GiB headroom
+            gpuUtilizationPercent: 5,
+            memoryUtilizationPercent: 15,
+          },
+        ],
+        observedAt: '2026-08-19T20:00:00.000Z',
+      },
+    });
+
+    const customProfile = createResourceProfileRevision({
+      ...mockProfile,
+      minimumFreeVramBytes: 2 * 1024 * 1024 * 1024, // 2 GiB min
+    });
+
+    // heavy-model:70b tem estimatedVramBytes = 40 GiB no catálogo
+    const decision = evaluateResourceRequest({
+      request: createBaseRequest({
+        intent: 'ensure_model_loaded',
+        targetModel: 'heavy-model:70b',
+        requiresGpu: true,
+      }),
+      snapshot: snap,
+      profile: customProfile,
+      leases: [],
+      approvedCatalog: mockCatalog,
+      evaluatedAt: '2026-08-19T20:00:01.000Z',
+    });
+
+    // Headroom (8 GiB) < 40 GiB -> DEFER INSUFFICIENT_VRAM (NÃO action_required preload)
+    assert.equal(decision.disposition, 'defer');
+    assert.equal(decision.reasonCode, 'INSUFFICIENT_VRAM');
+  });
+
+  // G9. catalog estimatedRamBytes é realmente usado no headroom
+  it('G9. catalog estimatedRamBytes é realmente usado no headroom', () => {
+    const snap = createBaseSnapshot();
+    const customSnap: ResourceSnapshot = {
+      ...snap,
+      system: { ...snap.system, freeRamBytes: 4 * 1024 * 1024 * 1024 }, // 4 GiB free, min 2 GiB -> 2 GiB headroom
+    };
+
+    // heavy-model:70b tem estimatedRamBytes = 8 GiB
+    const decision = evaluateResourceRequest({
+      request: createBaseRequest({
+        intent: 'ensure_model_loaded',
+        targetModel: 'heavy-model:70b',
+      }),
+      snapshot: customSnap,
+      profile: mockProfile,
+      leases: [],
+      approvedCatalog: mockCatalog,
+      evaluatedAt: '2026-08-19T20:00:01.000Z',
+    });
+
+    // Headroom 2 GiB < 8 GiB -> DEFER INSUFFICIENT_SYSTEM_RAM
+    assert.equal(decision.disposition, 'defer');
+    assert.equal(decision.reasonCode, 'INSUFFICIENT_SYSTEM_RAM');
+  });
+
+  // G10. request estimate sobrescreve catalog estimate
+  it('G10. request estimate sobrescreve catalog estimate', () => {
+    // mistral:7b no catálogo tem 5 GiB VRAM. Request declara 2 GiB explicitamente.
+    const snap = createBaseSnapshot({
+      gpu: {
+        status: 'available',
+        devices: [
+          { ...createBaseSnapshot().gpu.devices[0], memoryFreeBytes: 4 * 1024 * 1024 * 1024 }, // Headroom = 3 GiB
+        ],
+        observedAt: '2026-08-19T20:00:00.000Z',
+      },
+    });
+
+    const decision = evaluateResourceRequest({
+      request: createBaseRequest({
+        intent: 'ensure_model_loaded',
+        targetModel: 'mistral:7b',
+        requiresGpu: true,
+        estimatedAdditionalVramBytes: 2 * 1024 * 1024 * 1024, // 2 GiB cabe em 3 GiB
+      }),
+      snapshot: snap,
+      profile: mockProfile,
+      leases: [],
+      approvedCatalog: mockCatalog,
+      evaluatedAt: '2026-08-19T20:00:01.000Z',
+    });
+
+    assert.equal(decision.disposition, 'action_required');
+    assert.equal(decision.requiredAction?.kind, 'preload_model');
+  });
+
+  // G11. estimate necessária ausente em request e catalog → defer
+  it('G11. estimate necessária ausente em request e catalog → defer ESTIMATED_RESOURCES_MISSING', () => {
+    const unestimatedCatalog: readonly ApprovedLocalModelRef[] = [
+      { modelName: 'llama3:8b', runtime: 'ollama_local' }, // sem estimates
+    ];
+
+    const decision = evaluateResourceRequest({
+      request: createBaseRequest({
+        intent: 'ensure_model_loaded',
+        targetModel: 'llama3:8b',
+        requiresGpu: true,
+      }),
+      snapshot: createBaseSnapshot(),
+      profile: mockProfile,
+      leases: [],
+      approvedCatalog: unestimatedCatalog,
+      evaluatedAt: '2026-08-19T20:00:01.000Z',
+    });
+
+    assert.equal(decision.disposition, 'defer');
+    assert.equal(decision.reasonCode, 'ESTIMATED_RESOURCES_MISSING');
+  });
+
+  // G12. reserved VRAM GPU-B não reduz GPU-A
+  it('G12. reserved VRAM GPU-B não reduz GPU-A', () => {
+    const multiGpuSnap = createBaseSnapshot({
+      gpu: {
+        status: 'available',
+        devices: [
+          { ...createBaseSnapshot().gpu.devices[0], uuid: 'GPU-AAA', memoryFreeBytes: 10 * 1024 * 1024 * 1024 },
+          { ...createBaseSnapshot().gpu.devices[0], uuid: 'GPU-BBB', memoryFreeBytes: 10 * 1024 * 1024 * 1024 },
+        ],
+        observedAt: '2026-08-19T20:00:00.000Z',
+      },
+    });
+
+    // Lease reservado na GPU-BBB de 8 GiB
+    const leaseOnB: ResourceLease = {
+      leaseId: 'lease_b_01' as any,
+      requestId: 'req_b' as any,
+      decisionId: 'dec_b' as any,
+      materialContextId: 'ctx_b' as any,
+      routeRevisionId: 'route_rev_b' as any,
+      targetGpuUuid: 'GPU-BBB',
+      reservedRamBytes: 0,
+      reservedVramBytes: 8 * 1024 * 1024 * 1024,
+      state: 'reserved',
+      createdAt: '2026-08-19T20:00:00.000Z',
+      activatedAt: undefined,
+      releasedAt: undefined,
+      expiresAt: undefined,
+    };
+
+    // Request visa GPU-AAA com estimativa de 6 GiB (cabe no headroom de 9 GiB de GPU-AAA)
+    const decision = evaluateResourceRequest({
+      request: createBaseRequest({
+        intent: 'ensure_model_loaded',
+        targetModel: 'llama3:8b',
+        requiresGpu: true,
+        targetGpuUuid: 'GPU-AAA',
+      }),
+      snapshot: multiGpuSnap,
+      profile: mockProfile,
+      leases: [leaseOnB],
+      approvedCatalog: mockCatalog,
+      evaluatedAt: '2026-08-19T20:00:01.000Z',
+    });
+
+    assert.equal(decision.disposition, 'action_required');
+    assert.equal(decision.requiredAction?.targetGpuUuid, 'GPU-AAA');
+  });
+
+  // G13. unscoped reserved VRAM em multi-GPU → defer ambíguo
+  it('G13. unscoped reserved VRAM em multi-GPU → defer AMBIGUOUS_VRAM_RESERVATION', () => {
+    const multiGpuSnap = createBaseSnapshot({
+      gpu: {
+        status: 'available',
+        devices: [
+          { ...createBaseSnapshot().gpu.devices[0], uuid: 'GPU-AAA' },
+          { ...createBaseSnapshot().gpu.devices[0], uuid: 'GPU-BBB' },
+        ],
+        observedAt: '2026-08-19T20:00:00.000Z',
+      },
+    });
+
+    const unscopedLease: ResourceLease = {
+      leaseId: 'lease_unscoped' as any,
+      requestId: 'req_x' as any,
+      decisionId: 'dec_x' as any,
+      materialContextId: 'ctx_x' as any,
+      routeRevisionId: 'route_rev_x' as any,
+      reservedRamBytes: 0,
+      reservedVramBytes: 4 * 1024 * 1024 * 1024, // Sem targetGpuUuid
+      state: 'reserved',
+      createdAt: '2026-08-19T20:00:00.000Z',
+      activatedAt: undefined,
+      releasedAt: undefined,
+      expiresAt: undefined,
+    };
+
+    const decision = evaluateResourceRequest({
+      request: createBaseRequest({
+        requiresGpu: true,
+        targetGpuUuid: 'GPU-AAA',
+        estimatedAdditionalVramBytes: 2 * 1024 * 1024 * 1024,
+      }),
+      snapshot: multiGpuSnap,
+      profile: mockProfile,
+      leases: [unscopedLease],
+      approvedCatalog: mockCatalog,
+      evaluatedAt: '2026-08-19T20:00:01.000Z',
+    });
+
+    assert.equal(decision.disposition, 'defer');
+    assert.equal(decision.reasonCode, 'AMBIGUOUS_VRAM_RESERVATION');
+  });
+
+  // G14. Ollama telemetry unavailable não vira MODEL_ALREADY_UNLOADED
+  it('G14. Ollama telemetry unavailable não vira MODEL_ALREADY_UNLOADED', () => {
+    const snap = createBaseSnapshot({
+      ollama: {
+        status: 'unavailable',
+        loadedModels: [],
+        observedAt: '2026-08-19T20:00:00.000Z',
+      },
+    });
+
+    const decision = evaluateResourceRequest({
+      request: createBaseRequest({
+        intent: 'ensure_model_unloaded',
+        targetModel: 'llama3:8b',
+      }),
+      snapshot: snap,
+      profile: mockProfile,
+      leases: [],
+      approvedCatalog: mockCatalog,
+      evaluatedAt: '2026-08-19T20:00:01.000Z',
+    });
+
+    assert.equal(decision.disposition, 'defer');
+    assert.equal(decision.reasonCode, 'OLLAMA_STATE_UNAVAILABLE');
+  });
+
+  // G15. Ollama telemetry unavailable não gera PRELOAD_REQUIRED
+  it('G15. Ollama telemetry unavailable não gera PRELOAD_REQUIRED', () => {
+    const snap = createBaseSnapshot({
+      ollama: {
+        status: 'unavailable',
+        loadedModels: [],
+        observedAt: '2026-08-19T20:00:00.000Z',
+      },
+    });
+
+    const decision = evaluateResourceRequest({
+      request: createBaseRequest({
+        intent: 'ensure_model_loaded',
+        targetModel: 'llama3:8b',
+      }),
+      snapshot: snap,
+      profile: mockProfile,
+      leases: [],
+      approvedCatalog: mockCatalog,
+      evaluatedAt: '2026-08-19T20:00:01.000Z',
+    });
+
+    assert.equal(decision.disposition, 'defer');
+    assert.equal(decision.reasonCode, 'OLLAMA_STATE_UNAVAILABLE');
+  });
+
+  // G23. profile CPU > 100 é rejeitado
+  it('G23. profile CPU > 100 é rejeitado', () => {
+    assert.throws(() => {
+      createResourceProfileRevision({
+        ...mockProfile,
+        maximumCpuUtilizationPercent: 105,
+      });
+    }, ResourceProfileValidationError);
+  });
+
+  // G24. profile GPU negativo é rejeitado
+  it('G24. profile GPU negativo é rejeitado', () => {
+    assert.throws(() => {
+      createResourceProfileRevision({
+        ...mockProfile,
+        maximumGpuUtilizationPercent: -10,
+      });
+    }, ResourceProfileValidationError);
+  });
+
+  // Profile Revision Pinning: mismatch entre request.profileRevisionId e profile.profileRevisionId
+  it('Profile Revision Pinning: mismatch lança ProfileRevisionMismatchError', () => {
+    const divergentProfile = createResourceProfileRevision({
+      ...mockProfile,
+      profileRevisionId: 'prof_rev_DIVERGENT' as ResourceProfileRevisionId,
+    });
+
+    assert.throws(() => {
+      evaluateResourceRequest({
+        request: createBaseRequest({ profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId }),
+        snapshot: createBaseSnapshot(),
+        profile: divergentProfile,
+        leases: [],
+        approvedCatalog: mockCatalog,
+        evaluatedAt: '2026-08-19T20:00:01.000Z',
+      });
+    }, ProfileRevisionMismatchError);
   });
 });

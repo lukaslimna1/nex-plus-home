@@ -1,10 +1,10 @@
 /**
  * NEX+ · Resource Governor & Local Runtime Lifecycle
- * Operações de Lifecycle e Observabilidade Ollama — Escopo 0.6 (Fase A)
+ * Operações de Lifecycle e Observabilidade Ollama — Escopo 0.6
  *
- * Suporta Preload (keep_alive: -1), Unload (keep_alive: 0) e verificação factual pós-comando.
+ * Suporta Preload (keep_alive: -1, stream: false), Unload (keep_alive: 0, stream: false) e verificação factual pós-comando.
+ * Valida modelo no catálogo aprovado, presença no catálogo instalado e correspondência de digest.
  * Transport success (HTTP 200) NÃO equivale a estado factual confirmado sem checagem em /api/ps.
- * Rejeita qualquer operação sobre modelos fora do catálogo aprovado fornecido por L0.
  */
 
 import type {
@@ -47,8 +47,9 @@ export function isModelApproved(
 }
 
 /**
- * Executa preload factual de um modelo aprovado no Ollama com keep_alive: -1.
- * Confirma o carregamento fático via /api/ps.
+ * Executa preload factual de um modelo aprovado no Ollama com keep_alive: -1 e stream: false.
+ * Valida se está no catálogo aprovado, se está instalado e se o digest coincide.
+ * Confirma o carregamento fático consultando /api/ps.
  */
 export async function preloadModel(
   client: OllamaClient,
@@ -57,9 +58,16 @@ export async function preloadModel(
   options: LifecycleOptions = {},
 ): Promise<LifecycleExecutionResult> {
   const observedAt = options.observedAt || new Date().toISOString();
+  const targetNorm = normalizeModelName(modelName);
 
   // 1. Gate de Autoridade: Modelo deve estar no catálogo aprovado
-  if (!isModelApproved(approvedCatalog, modelName)) {
+  const approvedEntry = approvedCatalog.find(
+    (item) =>
+      item.runtime === 'ollama_local' &&
+      normalizeModelName(item.modelName) === targetNorm,
+  );
+
+  if (!approvedEntry) {
     return {
       status: 'rejected',
       modelName,
@@ -69,7 +77,43 @@ export async function preloadModel(
     };
   }
 
-  // 2. Envio do comando de Preload (keep_alive: -1)
+  // 2. Verificação de Instalação e Digest (/api/tags)
+  try {
+    const installedList = await client.getInstalledModels(options);
+    const installed = installedList.find(
+      (m) => normalizeModelName(m.modelName) === targetNorm,
+    );
+
+    if (!installed) {
+      return {
+        status: 'rejected',
+        modelName,
+        reasonCode: 'MODEL_NOT_INSTALLED',
+        observedAt,
+        detail: `Model '${modelName}' is approved by L0 but is not installed in local Ollama instance.`,
+      };
+    }
+
+    if (approvedEntry.digest && installed.digest && approvedEntry.digest !== installed.digest) {
+      return {
+        status: 'rejected',
+        modelName,
+        reasonCode: 'MODEL_DIGEST_MISMATCH',
+        observedAt,
+        detail: `Installed model digest '${installed.digest}' does not match approved digest '${approvedEntry.digest}'.`,
+      };
+    }
+  } catch (err: any) {
+    return {
+      status: 'transport_failed',
+      modelName,
+      reasonCode: err.code || 'OLLAMA_TRANSPORT_FAILED',
+      observedAt,
+      detail: `Failed to verify model installation in /api/tags: ${err.message}`,
+    };
+  }
+
+  // 3. Envio do comando de Preload (keep_alive: -1, stream: false)
   try {
     const res = await client.setLifecycle(modelName, -1, options);
     if (!res.ok) {
@@ -90,10 +134,9 @@ export async function preloadModel(
     };
   }
 
-  // 3. Verificação Factual Pós-Comando via /api/ps
+  // 4. Verificação Factual Pós-Comando via /api/ps
   try {
     const loaded = await client.getLoadedModels(options);
-    const targetNorm = normalizeModelName(modelName);
     const isLoaded = loaded.some((m) => normalizeModelName(m.modelName) === targetNorm);
 
     if (isLoaded) {
@@ -124,8 +167,8 @@ export async function preloadModel(
 }
 
 /**
- * Executa unload factual de um modelo no Ollama com keep_alive: 0.
- * Confirma o descarregamento fático via /api/ps.
+ * Executa unload factual de um modelo no Ollama com keep_alive: 0 e stream: false.
+ * Valida modelo no catálogo aprovado, digest se carregado, e confirma o descarregamento fático via /api/ps.
  */
 export async function unloadModel(
   client: OllamaClient,
@@ -134,9 +177,16 @@ export async function unloadModel(
   options: LifecycleOptions = {},
 ): Promise<LifecycleExecutionResult> {
   const observedAt = options.observedAt || new Date().toISOString();
+  const targetNorm = normalizeModelName(modelName);
 
   // 1. Gate de Autoridade: Modelo deve estar no catálogo aprovado
-  if (!isModelApproved(approvedCatalog, modelName)) {
+  const approvedEntry = approvedCatalog.find(
+    (item) =>
+      item.runtime === 'ollama_local' &&
+      normalizeModelName(item.modelName) === targetNorm,
+  );
+
+  if (!approvedEntry) {
     return {
       status: 'rejected',
       modelName,
@@ -146,7 +196,25 @@ export async function unloadModel(
     };
   }
 
-  // 2. Envio do comando de Unload (keep_alive: 0)
+  // 2. Checagem prévia de digest em /api/ps se o modelo estiver carregado
+  try {
+    const loadedBefore = await client.getLoadedModels(options);
+    const loadedTarget = loadedBefore.find((m) => normalizeModelName(m.modelName) === targetNorm);
+
+    if (loadedTarget && approvedEntry.digest && loadedTarget.digest && approvedEntry.digest !== loadedTarget.digest) {
+      return {
+        status: 'rejected',
+        modelName,
+        reasonCode: 'MODEL_DIGEST_MISMATCH',
+        observedAt,
+        detail: `Loaded model digest '${loadedTarget.digest}' does not match approved digest '${approvedEntry.digest}'.`,
+      };
+    }
+  } catch {
+    // Se a checagem prévia de /api/ps falhar, tenta prosseguir com comando explícito de unload
+  }
+
+  // 3. Envio do comando de Unload (keep_alive: 0, stream: false)
   try {
     const res = await client.setLifecycle(modelName, 0, options);
     if (!res.ok) {
@@ -167,10 +235,9 @@ export async function unloadModel(
     };
   }
 
-  // 3. Verificação Factual Pós-Comando via /api/ps
+  // 4. Verificação Factual Pós-Comando via /api/ps
   try {
     const loaded = await client.getLoadedModels(options);
-    const targetNorm = normalizeModelName(modelName);
     const isLoaded = loaded.some((m) => normalizeModelName(m.modelName) === targetNorm);
 
     if (!isLoaded) {

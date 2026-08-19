@@ -1,10 +1,10 @@
 /**
  * NEX+ · Resource Governor & Local Runtime Lifecycle
- * Store e Máquina de Estados de Resource Leases — Escopo 0.6 (Fase B)
+ * Store e Máquina de Estados de Resource Leases — Escopo 0.6
  *
  * Gerencia reservas temporárias de RAM/VRAM e proteção de modelos contra descarregamento indevido.
- * Implementação in-memory de Fase 0 com imutabilidade defensiva profunda.
- * Nenhuma função utiliza relógio interno do sistema.
+ * Implementação in-memory de Fase 0 com imutabilidade defensiva profunda e validação estrita.
+ * Nenhuma função utiliza relógio interno do sistema (Date.now / new Date).
  */
 
 import type { RouteRevisionId } from '../../capabilities/contracts';
@@ -12,9 +12,10 @@ import type { DecisionId } from '../../execution/contracts';
 import type { DecisionMaterialContextId } from '../../evaluation/contracts';
 
 import type {
+  CreateReservationParams,
   ResourceLease,
   ResourceLeaseId,
-  ResourceLeaseState,
+  ResourceLeaseStore,
   ResourceRequestId,
 } from '../contracts';
 
@@ -25,31 +26,6 @@ export class ResourceLeaseError extends Error {
     this.name = 'ResourceLeaseError';
     this.code = code;
   }
-}
-
-export interface CreateReservationParams {
-  readonly leaseId: ResourceLeaseId;
-  readonly requestId: ResourceRequestId;
-  readonly decisionId: DecisionId;
-  readonly materialContextId: DecisionMaterialContextId;
-  readonly routeRevisionId: RouteRevisionId;
-  readonly targetModel?: string;
-  readonly targetGpuUuid?: string;
-  readonly reservedRamBytes?: number;
-  readonly reservedVramBytes?: number;
-  readonly createdAt: string;
-  readonly expiresAt?: string;
-}
-
-export interface ResourceLeaseStore {
-  createReservation(params: CreateReservationParams): ResourceLease;
-  activateLease(leaseId: ResourceLeaseId, activatedAt?: string): ResourceLease;
-  releaseLease(leaseId: ResourceLeaseId, releasedAt?: string): ResourceLease;
-  reconcileExpiredLeases(at: string): readonly ResourceLease[];
-  getLease(leaseId: ResourceLeaseId): ResourceLease | undefined;
-  listLeases(): readonly ResourceLease[];
-  listActiveLeases(): readonly ResourceLease[];
-  listReservedLeases(): readonly ResourceLease[];
 }
 
 function deepFreeze<T>(obj: T): Readonly<T> {
@@ -80,12 +56,34 @@ export function createResourceLeaseStore(): ResourceLeaseStore {
         throw new ResourceLeaseError('Mandatory lineage fields missing for lease reservation.', 'INVALID_LEASE_PARAMS');
       }
 
+      if (!params.createdAt || isNaN(Date.parse(params.createdAt))) {
+        throw new ResourceLeaseError(`Invalid or missing createdAt timestamp '${params.createdAt}'.`, 'INVALID_TIMESTAMP');
+      }
+
       if (leases.has(params.leaseId)) {
         throw new ResourceLeaseError(`Duplicate leaseId '${params.leaseId}' is rejected.`, 'DUPLICATE_LEASE_ID');
       }
 
-      const reservedRamBytes = Math.max(0, params.reservedRamBytes || 0);
-      const reservedVramBytes = Math.max(0, params.reservedVramBytes || 0);
+      const rawRam = params.reservedRamBytes !== undefined ? params.reservedRamBytes : 0;
+      const rawVram = params.reservedVramBytes !== undefined ? params.reservedVramBytes : 0;
+
+      if (!Number.isFinite(rawRam) || rawRam < 0) {
+        throw new ResourceLeaseError(
+          `reservedRamBytes must be a finite number >= 0 (got '${params.reservedRamBytes}').`,
+          'INVALID_NUMERIC_RESERVATION',
+        );
+      }
+
+      if (!Number.isFinite(rawVram) || rawVram < 0) {
+        throw new ResourceLeaseError(
+          `reservedVramBytes must be a finite number >= 0 (got '${params.reservedVramBytes}').`,
+          'INVALID_NUMERIC_RESERVATION',
+        );
+      }
+
+      if (params.expiresAt && isNaN(Date.parse(params.expiresAt))) {
+        throw new ResourceLeaseError(`Invalid expiresAt timestamp '${params.expiresAt}'.`, 'INVALID_TIMESTAMP');
+      }
 
       const lease: ResourceLease = {
         leaseId: params.leaseId,
@@ -95,10 +93,12 @@ export function createResourceLeaseStore(): ResourceLeaseStore {
         routeRevisionId: params.routeRevisionId,
         targetModel: params.targetModel,
         targetGpuUuid: params.targetGpuUuid,
-        reservedRamBytes,
-        reservedVramBytes,
+        reservedRamBytes: rawRam,
+        reservedVramBytes: rawVram,
         state: 'reserved',
         createdAt: params.createdAt,
+        activatedAt: undefined,
+        releasedAt: undefined,
         expiresAt: params.expiresAt,
       };
 
@@ -107,7 +107,14 @@ export function createResourceLeaseStore(): ResourceLeaseStore {
       return frozen;
     },
 
-    activateLease(leaseId: ResourceLeaseId, activatedAt?: string): ResourceLease {
+    activateLease(leaseId: ResourceLeaseId, activatedAt: string): ResourceLease {
+      if (!activatedAt || isNaN(Date.parse(activatedAt))) {
+        throw new ResourceLeaseError(
+          `activateLease requires an explicit valid timestamp (got '${activatedAt}').`,
+          'INVALID_TIMESTAMP',
+        );
+      }
+
       const current = leases.get(leaseId);
       if (!current) {
         throw new ResourceLeaseError(`Lease '${leaseId}' not found.`, 'LEASE_NOT_FOUND');
@@ -123,7 +130,7 @@ export function createResourceLeaseStore(): ResourceLeaseStore {
       const updated: ResourceLease = {
         ...current,
         state: 'active',
-        activatedAt: activatedAt || new Date().toISOString(),
+        activatedAt,
       };
 
       const frozen = deepFreeze(updated);
@@ -131,7 +138,14 @@ export function createResourceLeaseStore(): ResourceLeaseStore {
       return frozen;
     },
 
-    releaseLease(leaseId: ResourceLeaseId, releasedAt?: string): ResourceLease {
+    releaseLease(leaseId: ResourceLeaseId, releasedAt: string): ResourceLease {
+      if (!releasedAt || isNaN(Date.parse(releasedAt))) {
+        throw new ResourceLeaseError(
+          `releaseLease requires an explicit valid timestamp (got '${releasedAt}').`,
+          'INVALID_TIMESTAMP',
+        );
+      }
+
       const current = leases.get(leaseId);
       if (!current) {
         throw new ResourceLeaseError(`Lease '${leaseId}' not found.`, 'LEASE_NOT_FOUND');
@@ -147,7 +161,7 @@ export function createResourceLeaseStore(): ResourceLeaseStore {
       const updated: ResourceLease = {
         ...current,
         state: 'released',
-        releasedAt: releasedAt || new Date().toISOString(),
+        releasedAt,
       };
 
       const frozen = deepFreeze(updated);

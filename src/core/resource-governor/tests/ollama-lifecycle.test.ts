@@ -1,9 +1,9 @@
 /**
  * NEX+ · Resource Governor & Local Runtime Lifecycle
- * Testes Unitários de Cliente e Lifecycle Ollama — Escopo 0.6 (Fase A)
+ * Testes Unitários de Cliente e Lifecycle Ollama — Escopo 0.6 (Fase A & Hardening)
  *
- * Cenários A11 a A24: Parsing de VRAM/context, loopback gating, catálogo aprovado,
- * comandos de lifecycle, verificação factual pós-comando, timeouts e segurança de API.
+ * Cenários A11 a A24 + G16 a G19: Parsing de VRAM/context, loopback gating, catálogo aprovado,
+ * stream:false, checagem de modelos instalados e correspondência de digest.
  */
 
 import { describe, it } from 'node:test';
@@ -22,11 +22,21 @@ import {
 } from '../ollama/lifecycle';
 
 const mockApprovedCatalog: readonly ApprovedLocalModelRef[] = [
-  { modelName: 'llama3:8b', runtime: 'ollama_local', estimatedVramBytes: 6 * 1024 * 1024 * 1024 },
-  { modelName: 'mistral:7b', runtime: 'ollama_local', estimatedVramBytes: 5 * 1024 * 1024 * 1024 },
+  {
+    modelName: 'llama3:8b',
+    digest: 'sha256:llama3digest',
+    runtime: 'ollama_local',
+    estimatedVramBytes: 6 * 1024 * 1024 * 1024,
+  },
+  {
+    modelName: 'mistral:7b',
+    digest: 'sha256:mistraldigest',
+    runtime: 'ollama_local',
+    estimatedVramBytes: 5 * 1024 * 1024 * 1024,
+  },
 ];
 
-describe('NEX+ Resource Governor · Ollama Client & Lifecycle (Fase A)', () => {
+describe('NEX+ Resource Governor · Ollama Client & Lifecycle (Fase A & Hardening)', () => {
   // A11. Ollama /api/ps parseia size_vram
   it('A11. Ollama /api/ps parseia size_vram', async () => {
     const mockFetch = async (url: string | URL | Request) => {
@@ -39,7 +49,7 @@ describe('NEX+ Resource Governor · Ollama Client & Lifecycle (Fase A)', () => {
               name: 'llama3:8b',
               size: 4920737382,
               size_vram: 4920737382,
-              digest: 'sha256:12345',
+              digest: 'sha256:llama3digest',
             },
           ],
         }),
@@ -121,14 +131,23 @@ describe('NEX+ Resource Governor · Ollama Client & Lifecycle (Fase A)', () => {
     assert.equal(result.reasonCode, 'MODEL_NOT_APPROVED');
   });
 
-  // A16. preload envia keep_alive=-1
-  it('A16. preload envia keep_alive=-1', async () => {
+  // A16. preload envia keep_alive=-1 e stream:false
+  it('A16. preload envia keep_alive=-1 e stream:false', async () => {
     let capturedBody: any;
     const mockFetch = async (url: string | URL | Request, init?: RequestInit) => {
       const urlStr = String(url);
+      if (urlStr.endsWith('/api/tags')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            models: [{ name: 'llama3:8b', digest: 'sha256:llama3digest' }],
+          }),
+        } as Response;
+      }
       if (urlStr.endsWith('/api/generate')) {
         capturedBody = JSON.parse(init?.body as string);
-        return { ok: true, status: 200 } as Response;
+        return { ok: true, status: 200, json: async () => ({ done: true }) } as Response;
       }
       if (urlStr.endsWith('/api/ps')) {
         return {
@@ -144,24 +163,25 @@ describe('NEX+ Resource Governor · Ollama Client & Lifecycle (Fase A)', () => {
     const result = await preloadModel(client, mockApprovedCatalog, 'llama3:8b');
 
     assert.equal(capturedBody?.keep_alive, -1);
+    assert.equal(capturedBody?.stream, false);
     assert.equal(capturedBody?.model, 'llama3:8b');
     assert.equal(result.status, 'verified_loaded');
   });
 
-  // A17. unload envia keep_alive=0
-  it('A17. unload envia keep_alive=0', async () => {
+  // A17. unload envia keep_alive=0 e stream:false
+  it('A17. unload envia keep_alive=0 e stream:false', async () => {
     let capturedBody: any;
     const mockFetch = async (url: string | URL | Request, init?: RequestInit) => {
       const urlStr = String(url);
       if (urlStr.endsWith('/api/generate')) {
         capturedBody = JSON.parse(init?.body as string);
-        return { ok: true, status: 200 } as Response;
+        return { ok: true, status: 200, json: async () => ({ done: true }) } as Response;
       }
       if (urlStr.endsWith('/api/ps')) {
         return {
           ok: true,
           status: 200,
-          json: async () => ({ models: [] }), // Descarregado com sucesso
+          json: async () => ({ models: [] }),
         } as Response;
       }
       return { ok: false, status: 404 } as Response;
@@ -171,6 +191,7 @@ describe('NEX+ Resource Governor · Ollama Client & Lifecycle (Fase A)', () => {
     const result = await unloadModel(client, mockApprovedCatalog, 'llama3:8b');
 
     assert.equal(capturedBody?.keep_alive, 0);
+    assert.equal(capturedBody?.stream, false);
     assert.equal(result.status, 'verified_unloaded');
   });
 
@@ -178,11 +199,17 @@ describe('NEX+ Resource Governor · Ollama Client & Lifecycle (Fase A)', () => {
   it('A18. HTTP 200 sem estado pós-comando comprovado vira indeterminate', async () => {
     const mockFetch = async (url: string | URL | Request) => {
       const urlStr = String(url);
+      if (urlStr.endsWith('/api/tags')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ models: [{ name: 'llama3:8b', digest: 'sha256:llama3digest' }] }),
+        } as Response;
+      }
       if (urlStr.endsWith('/api/generate')) {
-        return { ok: true, status: 200 } as Response;
+        return { ok: true, status: 200, json: async () => ({ done: true }) } as Response;
       }
       if (urlStr.endsWith('/api/ps')) {
-        // Retorna lista vazia: modelo não apareceu no /api/ps
         return { ok: true, status: 200, json: async () => ({ models: [] }) } as Response;
       }
       return { ok: false, status: 404 } as Response;
@@ -199,8 +226,15 @@ describe('NEX+ Resource Governor · Ollama Client & Lifecycle (Fase A)', () => {
   it('A19. preload + /api/ps contendo modelo → verified_loaded', async () => {
     const mockFetch = async (url: string | URL | Request) => {
       const urlStr = String(url);
+      if (urlStr.endsWith('/api/tags')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ models: [{ name: 'mistral:7b', digest: 'sha256:mistraldigest' }] }),
+        } as Response;
+      }
       if (urlStr.endsWith('/api/generate')) {
-        return { ok: true, status: 200 } as Response;
+        return { ok: true, status: 200, json: async () => ({ done: true }) } as Response;
       }
       if (urlStr.endsWith('/api/ps')) {
         return { ok: true, status: 200, json: async () => ({ models: [{ name: 'mistral:7b' }] }) } as Response;
@@ -220,7 +254,7 @@ describe('NEX+ Resource Governor · Ollama Client & Lifecycle (Fase A)', () => {
     const mockFetch = async (url: string | URL | Request) => {
       const urlStr = String(url);
       if (urlStr.endsWith('/api/generate')) {
-        return { ok: true, status: 200 } as Response;
+        return { ok: true, status: 200, json: async () => ({ done: true }) } as Response;
       }
       if (urlStr.endsWith('/api/ps')) {
         return { ok: true, status: 200, json: async () => ({ models: [{ name: 'other_model:latest' }] }) } as Response;
@@ -285,5 +319,84 @@ describe('NEX+ Resource Governor · Ollama Client & Lifecycle (Fase A)', () => {
   it('A24. base URL loopback padrão e ausência de chamadas externas', () => {
     const client = createOllamaClient();
     assert.equal(client.baseUrl, 'http://127.0.0.1:11434');
+  });
+
+  // G16. setLifecycle envia stream:false
+  it('G16. setLifecycle envia explicitamente stream:false no payload JSON', async () => {
+    let capturedBody: any;
+    const mockFetch = async (_url: string | URL | Request, init?: RequestInit) => {
+      capturedBody = JSON.parse(init?.body as string);
+      return { ok: true, status: 200, json: async () => ({ done: true }) } as Response;
+    };
+
+    const client = createOllamaClient({ fetchFn: mockFetch as any });
+    await client.setLifecycle('llama3:8b', -1);
+
+    assert.equal(capturedBody?.stream, false);
+  });
+
+  // G17. setLifecycle espera body antes do /api/ps
+  it('G17. setLifecycle consome a resposta antes de retornar sucesso', async () => {
+    let bodyConsumed = false;
+    const mockFetch = async (_url: string | URL | Request) => {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => {
+          bodyConsumed = true;
+          return { done: true };
+        },
+      } as Response;
+    };
+
+    const client = createOllamaClient({ fetchFn: mockFetch as any });
+    const res = await client.setLifecycle('llama3:8b', -1);
+
+    assert.equal(res.ok, true);
+    assert.equal(bodyConsumed, true);
+  });
+
+  // G18. modelo aprovado mas não instalado → MODEL_NOT_INSTALLED
+  it('G18. modelo aprovado mas ausente no /api/tags retorna MODEL_NOT_INSTALLED', async () => {
+    const mockFetch = async (url: string | URL | Request) => {
+      const urlStr = String(url);
+      if (urlStr.endsWith('/api/tags')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ models: [{ name: 'other_installed:latest' }] }),
+        } as Response;
+      }
+      return { ok: false, status: 404 } as Response;
+    };
+
+    const client = createOllamaClient({ fetchFn: mockFetch as any });
+    const result = await preloadModel(client, mockApprovedCatalog, 'llama3:8b');
+
+    assert.equal(result.status, 'rejected');
+    assert.equal(result.reasonCode, 'MODEL_NOT_INSTALLED');
+  });
+
+  // G19. digest aprovado diferente do instalado → MODEL_DIGEST_MISMATCH
+  it('G19. digest aprovado diferente do instalado retorna MODEL_DIGEST_MISMATCH', async () => {
+    const mockFetch = async (url: string | URL | Request) => {
+      const urlStr = String(url);
+      if (urlStr.endsWith('/api/tags')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            models: [{ name: 'llama3:8b', digest: 'sha256:MUTATED_DIGEST' }],
+          }),
+        } as Response;
+      }
+      return { ok: false, status: 404 } as Response;
+    };
+
+    const client = createOllamaClient({ fetchFn: mockFetch as any });
+    const result = await preloadModel(client, mockApprovedCatalog, 'llama3:8b');
+
+    assert.equal(result.status, 'rejected');
+    assert.equal(result.reasonCode, 'MODEL_DIGEST_MISMATCH');
   });
 });

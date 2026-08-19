@@ -1,8 +1,9 @@
 /**
  * NEX+ · Resource Governor & Local Runtime Lifecycle
- * Testes de Integração com o Core 0.5 (DispatchAdmission & L0 Attempt) — Escopo 0.6 (Fase B)
+ * Testes de Integração com o Core 0.5 (DispatchAdmission & L0 Attempt) — Escopo 0.6 (Hardening)
  *
- * Cenários B41 a B50: Correlação causal rigorosa entre DispatchAdmission e ResourceAdmission.
+ * Cenários B41 a B50 + G1 a G7: Correlação causal rigorosa entre DispatchAdmission,
+ * GovernorDecision e ResourceAdmission.
  */
 
 import { describe, it } from 'node:test';
@@ -26,9 +27,11 @@ import type {
 import type { PolicyRevisionId } from '../../policy/contracts';
 
 import type {
+  GovernorDecision,
   ResourceAdmission,
   ResourceAdmissionId,
   ResourceProfileRevisionId,
+  ResourceRequest,
   ResourceRequestId,
   ResourceSnapshotId,
 } from '../contracts';
@@ -54,6 +57,33 @@ function createMockDispatchAdmission(overrides: Partial<DispatchAdmission> = {})
   };
 }
 
+function createMockRequest(overrides: Partial<ResourceRequest> = {}): ResourceRequest {
+  return {
+    requestId: 'req_01' as ResourceRequestId,
+    decisionId: 'dec_01' as DecisionId,
+    materialContextId: 'ctx_01' as DecisionMaterialContextId,
+    routeEvaluationId: 'eval_01' as RouteEvaluationId,
+    routeRevisionId: 'route_rev_01' as RouteRevisionId,
+    profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId,
+    intent: 'use_current_state',
+    requestedAt: '2026-08-19T20:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function createMockGovernorDecision(overrides: Partial<GovernorDecision> = {}): GovernorDecision {
+  return {
+    disposition: 'admit',
+    reasonCode: 'RESOURCES_ADMITTED',
+    requestId: 'req_01' as ResourceRequestId,
+    profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId,
+    resourceSnapshotId: 'snap_01' as ResourceSnapshotId,
+    materialFacts: { freeRamBytes: 16000000000 },
+    evaluatedAt: '2026-08-19T20:00:01.000Z',
+    ...overrides,
+  };
+}
+
 function createMockResourceAdmission(overrides: Partial<ResourceAdmission> = {}): ResourceAdmission {
   return {
     admissionId: 'res_adm_01' as ResourceAdmissionId,
@@ -70,7 +100,149 @@ function createMockResourceAdmission(overrides: Partial<ResourceAdmission> = {})
   };
 }
 
-describe('NEX+ Resource Governor · Core 0.5 Integration (Fase B)', () => {
+describe('NEX+ Resource Governor · Core 0.5 Integration (Fase B & Hardening)', () => {
+  // G1. GovernorDecision admit + refs corretas → ResourceAdmission
+  it('G1. GovernorDecision admit + refs corretas materializa ResourceAdmission', () => {
+    const dispatch = createMockDispatchAdmission();
+    const request = createMockRequest();
+    const decision = createMockGovernorDecision();
+
+    const adm = materializeResourceAdmission({
+      admissionId: 'res_adm_01' as ResourceAdmissionId,
+      request,
+      governorDecision: decision,
+      dispatchAdmission: dispatch,
+      profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId,
+      resourceSnapshotId: 'snap_01' as ResourceSnapshotId,
+      materialFacts: { freeRamBytes: 16000000000 },
+      admittedAt: '2026-08-19T20:00:01.000Z',
+    });
+
+    assert.equal(adm.admissionId, 'res_adm_01');
+    assert.equal(adm.decisionId, dispatch.decisionId);
+    assert.equal(adm.materialContextId, dispatch.materialContextId);
+  });
+
+  // G2. GovernorDecision defer → não materializa admission
+  it('G2. GovernorDecision defer rejeita materialização de ResourceAdmission', () => {
+    const dispatch = createMockDispatchAdmission();
+    const request = createMockRequest();
+    const decision = createMockGovernorDecision({ disposition: 'defer', reasonCode: 'INSUFFICIENT_VRAM' });
+
+    assert.throws(() => {
+      materializeResourceAdmission({
+        admissionId: 'res_adm_01' as ResourceAdmissionId,
+        request,
+        governorDecision: decision,
+        dispatchAdmission: dispatch,
+        profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId,
+        resourceSnapshotId: 'snap_01' as ResourceSnapshotId,
+        materialFacts: {},
+        admittedAt: '2026-08-19T20:00:01.000Z',
+      });
+    }, /GovernorDecision disposition is 'defer'/);
+  });
+
+  // G3. GovernorDecision deny → não materializa admission
+  it('G3. GovernorDecision deny rejeita materialização de ResourceAdmission', () => {
+    const dispatch = createMockDispatchAdmission();
+    const request = createMockRequest();
+    const decision = createMockGovernorDecision({ disposition: 'deny', reasonCode: 'MODEL_NOT_APPROVED' });
+
+    assert.throws(() => {
+      materializeResourceAdmission({
+        admissionId: 'res_adm_01' as ResourceAdmissionId,
+        request,
+        governorDecision: decision,
+        dispatchAdmission: dispatch,
+        profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId,
+        resourceSnapshotId: 'snap_01' as ResourceSnapshotId,
+        materialFacts: {},
+        admittedAt: '2026-08-19T20:00:01.000Z',
+      });
+    }, /GovernorDecision disposition is 'deny'/);
+  });
+
+  // G4. GovernorDecision action_required → não materializa admission
+  it('G4. GovernorDecision action_required rejeita materialização de ResourceAdmission', () => {
+    const dispatch = createMockDispatchAdmission();
+    const request = createMockRequest();
+    const decision = createMockGovernorDecision({ disposition: 'action_required', reasonCode: 'PRELOAD_REQUIRED' });
+
+    assert.throws(() => {
+      materializeResourceAdmission({
+        admissionId: 'res_adm_01' as ResourceAdmissionId,
+        request,
+        governorDecision: decision,
+        dispatchAdmission: dispatch,
+        profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId,
+        resourceSnapshotId: 'snap_01' as ResourceSnapshotId,
+        materialFacts: {},
+        admittedAt: '2026-08-19T20:00:01.000Z',
+      });
+    }, /GovernorDecision disposition is 'action_required'/);
+  });
+
+  // G5. Decision de Request A usada em Request B → rejeita
+  it('G5. Decision de Request A usada em Request B rejeita por requestId mismatch', () => {
+    const dispatch = createMockDispatchAdmission();
+    const request = createMockRequest({ requestId: 'req_A' as ResourceRequestId });
+    const decision = createMockGovernorDecision({ requestId: 'req_B' as ResourceRequestId });
+
+    assert.throws(() => {
+      materializeResourceAdmission({
+        admissionId: 'res_adm_01' as ResourceAdmissionId,
+        request,
+        governorDecision: decision,
+        dispatchAdmission: dispatch,
+        profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId,
+        resourceSnapshotId: 'snap_01' as ResourceSnapshotId,
+        materialFacts: {},
+        admittedAt: '2026-08-19T20:00:01.000Z',
+      });
+    }, /requestId mismatch/);
+  });
+
+  // G6. snapshot mismatch → rejeita
+  it('G6. snapshot mismatch rejeita por resourceSnapshotId mismatch', () => {
+    const dispatch = createMockDispatchAdmission();
+    const request = createMockRequest();
+    const decision = createMockGovernorDecision({ resourceSnapshotId: 'snap_01' as ResourceSnapshotId });
+
+    assert.throws(() => {
+      materializeResourceAdmission({
+        admissionId: 'res_adm_01' as ResourceAdmissionId,
+        request,
+        governorDecision: decision,
+        dispatchAdmission: dispatch,
+        profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId,
+        resourceSnapshotId: 'snap_DIVERGENT' as ResourceSnapshotId,
+        materialFacts: {},
+        admittedAt: '2026-08-19T20:00:01.000Z',
+      });
+    }, /resourceSnapshotId mismatch/);
+  });
+
+  // G7. profile mismatch → rejeita
+  it('G7. profile mismatch rejeita por profileRevisionId mismatch', () => {
+    const dispatch = createMockDispatchAdmission();
+    const request = createMockRequest({ profileRevisionId: 'prof_A' as ResourceProfileRevisionId });
+    const decision = createMockGovernorDecision({ profileRevisionId: 'prof_B' as ResourceProfileRevisionId });
+
+    assert.throws(() => {
+      materializeResourceAdmission({
+        admissionId: 'res_adm_01' as ResourceAdmissionId,
+        request,
+        governorDecision: decision,
+        dispatchAdmission: dispatch,
+        profileRevisionId: 'prof_A' as ResourceProfileRevisionId,
+        resourceSnapshotId: 'snap_01' as ResourceSnapshotId,
+        materialFacts: {},
+        admittedAt: '2026-08-19T20:00:01.000Z',
+      });
+    }, /profileRevisionId mismatch/);
+  });
+
   // B41. ResourceAdmission + DispatchAdmission com Decision mismatch → rejeita
   it('B41. ResourceAdmission + DispatchAdmission com Decision mismatch → rejeita', () => {
     const dispatch = createMockDispatchAdmission({ decisionId: 'dec_01' as DecisionId });
@@ -156,24 +328,6 @@ describe('NEX+ Resource Governor · Core 0.5 Integration (Fase B)', () => {
     assert.equal(event.createdAt, '2026-08-19T20:00:01.000Z');
   });
 
-  // B46. materializeResourceAdmission fixa todos os campos de linhagem
-  it('B46. materializeResourceAdmission fixa todos os campos de linhagem', () => {
-    const dispatch = createMockDispatchAdmission();
-    const adm = materializeResourceAdmission({
-      requestId: 'req_01' as ResourceRequestId,
-      dispatchAdmission: dispatch,
-      profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId,
-      resourceSnapshotId: 'snap_01' as ResourceSnapshotId,
-      materialFacts: { freeRamBytes: 8000 },
-      admittedAt: '2026-08-19T20:00:00.000Z',
-    });
-
-    assert.equal(adm.decisionId, dispatch.decisionId);
-    assert.equal(adm.materialContextId, dispatch.materialContextId);
-    assert.equal(adm.routeEvaluationId, dispatch.routeEvaluationId);
-    assert.equal(adm.routeRevisionId, dispatch.routeRevisionId);
-  });
-
   // B47. context mismatch entre currentMaterialContextId e admissão é rejeitado
   it('B47. context mismatch entre currentMaterialContextId e admissão é rejeitado', () => {
     const dispatch = createMockDispatchAdmission();
@@ -193,8 +347,13 @@ describe('NEX+ Resource Governor · Core 0.5 Integration (Fase B)', () => {
   // B48. ResourceAdmission é imutável
   it('B48. ResourceAdmission é imutável', () => {
     const dispatch = createMockDispatchAdmission();
+    const request = createMockRequest();
+    const decision = createMockGovernorDecision();
+
     const adm = materializeResourceAdmission({
-      requestId: 'req_01' as ResourceRequestId,
+      admissionId: 'res_adm_01' as ResourceAdmissionId,
+      request,
+      governorDecision: decision,
       dispatchAdmission: dispatch,
       profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId,
       resourceSnapshotId: 'snap_01' as ResourceSnapshotId,
@@ -205,23 +364,6 @@ describe('NEX+ Resource Governor · Core 0.5 Integration (Fase B)', () => {
     assert.throws(() => {
       (adm as any).targetModel = 'hacked';
     });
-  });
-
-  // B49. somente admit permite prosseguir para materializeResourceAdmission
-  it('B49. materializeResourceAdmission gera estrutura de admissão formal de recursos', () => {
-    const dispatch = createMockDispatchAdmission();
-    const adm = materializeResourceAdmission({
-      admissionId: 'res_custom_01' as ResourceAdmissionId,
-      requestId: 'req_01' as ResourceRequestId,
-      dispatchAdmission: dispatch,
-      profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId,
-      resourceSnapshotId: 'snap_01' as ResourceSnapshotId,
-      materialFacts: { freeVramBytes: 12000 },
-      admittedAt: '2026-08-19T20:00:00.000Z',
-    });
-
-    assert.equal(adm.admissionId, 'res_custom_01');
-    assert.equal(adm.materialFacts.freeVramBytes, 12000);
   });
 
   // B50. Resource Governor não altera PolicyDecision
@@ -237,7 +379,6 @@ describe('NEX+ Resource Governor · Core 0.5 Integration (Fase B)', () => {
       currentMaterialContextId: 'ctx_01' as DecisionMaterialContextId,
     });
 
-    // policyRevisionId original preservada intacta
     assert.equal(event.policyRevisionId, 'pol_rev_original');
   });
 });

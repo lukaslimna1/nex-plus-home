@@ -213,6 +213,31 @@ export interface ResourceLease {
   readonly expiresAt?: string;
 }
 
+export interface CreateReservationParams {
+  readonly leaseId: ResourceLeaseId;
+  readonly requestId: ResourceRequestId;
+  readonly decisionId: DecisionId;
+  readonly materialContextId: DecisionMaterialContextId;
+  readonly routeRevisionId: RouteRevisionId;
+  readonly targetModel?: string;
+  readonly targetGpuUuid?: string;
+  readonly reservedRamBytes?: number;
+  readonly reservedVramBytes?: number;
+  readonly createdAt: string;
+  readonly expiresAt?: string;
+}
+
+export interface ResourceLeaseStore {
+  createReservation(params: CreateReservationParams): ResourceLease;
+  activateLease(leaseId: ResourceLeaseId, activatedAt: string): ResourceLease;
+  releaseLease(leaseId: ResourceLeaseId, releasedAt: string): ResourceLease;
+  reconcileExpiredLeases(at: string): readonly ResourceLease[];
+  getLease(leaseId: ResourceLeaseId): ResourceLease | undefined;
+  listLeases(): readonly ResourceLease[];
+  listActiveLeases(): readonly ResourceLease[];
+  listReservedLeases(): readonly ResourceLease[];
+}
+
 // ============================================================================
 // 11. GOVERNOR DECISION & ACTIONS
 // ============================================================================
@@ -237,12 +262,17 @@ export interface ResourceMaterialFacts {
   readonly snapshotFreshness?: 'fresh' | 'stale';
   readonly pendingReservedRamBytes?: number;
   readonly pendingReservedVramBytes?: number;
+  readonly effectiveEstimatedRamBytes?: number;
+  readonly effectiveEstimatedVramBytes?: number;
   readonly evictionCandidates?: readonly string[];
 }
 
 export interface GovernorDecision {
   readonly disposition: GovernorDisposition;
   readonly reasonCode: string;
+  readonly requestId: ResourceRequestId;
+  readonly profileRevisionId: ResourceProfileRevisionId;
+  readonly resourceSnapshotId: ResourceSnapshotId;
   readonly materialFacts: ResourceMaterialFacts;
   readonly requiredAction?: RequiredLifecycleAction;
   readonly admittedLeaseId?: ResourceLeaseId;

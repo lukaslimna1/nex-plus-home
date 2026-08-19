@@ -1,10 +1,10 @@
 /**
  * NEX+ · Resource Governor & Local Runtime Lifecycle
- * Definições e Fábrica de Resource Profiles — Escopo 0.6 (Fase B)
+ * Definições e Fábrica de Resource Profiles — Escopo 0.6
  *
  * Perfis imutáveis de governança de recursos locais.
- * Define thresholds mínimos de RAM/VRAM, limites de CPU/GPU, tempo máximo de telemetria
- * e permissões de preload/unload de modelos.
+ * Valida estritamente limites numéricos finitos de RAM, VRAM, CPU e GPU.
+ * Não congela perfis com números arbitrários na API pública de produção.
  */
 
 import type {
@@ -12,6 +12,15 @@ import type {
   ResourceProfileRevision,
   ResourceProfileRevisionId,
 } from './contracts';
+
+export class ResourceProfileValidationError extends Error {
+  readonly code: string;
+  constructor(message: string, code: string) {
+    super(`[ResourceProfile] ${message}`);
+    this.name = 'ResourceProfileValidationError';
+    this.code = code;
+  }
+}
 
 export interface CreateResourceProfileParams {
   readonly profileKey: ResourceProfileKey;
@@ -30,13 +39,57 @@ export function createResourceProfileRevision(
   params: CreateResourceProfileParams,
 ): ResourceProfileRevision {
   if (!params.profileKey || !params.profileRevisionId) {
-    throw new Error('[ResourceProfile] profileKey and profileRevisionId are mandatory.');
+    throw new ResourceProfileValidationError(
+      'profileKey and profileRevisionId are mandatory.',
+      'INVALID_PROFILE_PARAMS',
+    );
   }
-  if (params.minimumFreeSystemRamBytes < 0 || params.minimumFreeVramBytes < 0) {
-    throw new Error('[ResourceProfile] Minimum free memory thresholds cannot be negative.');
+
+  if (!Number.isFinite(params.minimumFreeSystemRamBytes) || params.minimumFreeSystemRamBytes < 0) {
+    throw new ResourceProfileValidationError(
+      'minimumFreeSystemRamBytes must be a finite number >= 0.',
+      'INVALID_NUMERIC_THRESHOLD',
+    );
   }
-  if (params.maximumTelemetryAgeMs <= 0) {
-    throw new Error('[ResourceProfile] maximumTelemetryAgeMs must be greater than zero.');
+
+  if (!Number.isFinite(params.minimumFreeVramBytes) || params.minimumFreeVramBytes < 0) {
+    throw new ResourceProfileValidationError(
+      'minimumFreeVramBytes must be a finite number >= 0.',
+      'INVALID_NUMERIC_THRESHOLD',
+    );
+  }
+
+  if (!Number.isFinite(params.maximumTelemetryAgeMs) || params.maximumTelemetryAgeMs <= 0) {
+    throw new ResourceProfileValidationError(
+      'maximumTelemetryAgeMs must be a finite number > 0.',
+      'INVALID_NUMERIC_THRESHOLD',
+    );
+  }
+
+  if (params.maximumCpuUtilizationPercent !== undefined) {
+    if (
+      !Number.isFinite(params.maximumCpuUtilizationPercent) ||
+      params.maximumCpuUtilizationPercent < 0 ||
+      params.maximumCpuUtilizationPercent > 100
+    ) {
+      throw new ResourceProfileValidationError(
+        'maximumCpuUtilizationPercent must be a finite number between 0 and 100 inclusive.',
+        'INVALID_NUMERIC_THRESHOLD',
+      );
+    }
+  }
+
+  if (params.maximumGpuUtilizationPercent !== undefined) {
+    if (
+      !Number.isFinite(params.maximumGpuUtilizationPercent) ||
+      params.maximumGpuUtilizationPercent < 0 ||
+      params.maximumGpuUtilizationPercent > 100
+    ) {
+      throw new ResourceProfileValidationError(
+        'maximumGpuUtilizationPercent must be a finite number between 0 and 100 inclusive.',
+        'INVALID_NUMERIC_THRESHOLD',
+      );
+    }
   }
 
   return Object.freeze({
@@ -47,40 +100,8 @@ export function createResourceProfileRevision(
     maximumCpuUtilizationPercent: params.maximumCpuUtilizationPercent,
     maximumGpuUtilizationPercent: params.maximumGpuUtilizationPercent,
     maximumTelemetryAgeMs: params.maximumTelemetryAgeMs,
-    allowModelPreload: params.allowModelPreload,
-    allowModelUnload: params.allowModelUnload,
+    allowModelPreload: Boolean(params.allowModelPreload),
+    allowModelUnload: Boolean(params.allowModelUnload),
     description: params.description,
   });
 }
-
-/**
- * Fixture de Perfil Padrão Equilibrado para Workloads Locais.
- */
-export const STANDARD_LOCAL_PROFILE = createResourceProfileRevision({
-  profileKey: 'profile_standard_local' as ResourceProfileKey,
-  profileRevisionId: 'prof_rev_std_01' as ResourceProfileRevisionId,
-  minimumFreeSystemRamBytes: 2 * 1024 * 1024 * 1024, // 2 GiB de margem no SO
-  minimumFreeVramBytes: 1 * 1024 * 1024 * 1024,      // 1 GiB de margem na GPU
-  maximumCpuUtilizationPercent: 90,                  // 90% máx
-  maximumGpuUtilizationPercent: 95,                  // 95% máx
-  maximumTelemetryAgeMs: 5000,                       // Telemetria com máx 5s de idade
-  allowModelPreload: true,
-  allowModelUnload: true,
-  description: 'Standard local workload profile with balanced resource headroom',
-});
-
-/**
- * Fixture de Perfil Estrito (Sem Preload / Baixa tolerância a pressão).
- */
-export const STRICT_CONSERVATIVE_PROFILE = createResourceProfileRevision({
-  profileKey: 'profile_strict_conservative' as ResourceProfileKey,
-  profileRevisionId: 'prof_rev_strict_01' as ResourceProfileRevisionId,
-  minimumFreeSystemRamBytes: 4 * 1024 * 1024 * 1024, // 4 GiB livre
-  minimumFreeVramBytes: 2 * 1024 * 1024 * 1024,      // 2 GiB livre
-  maximumCpuUtilizationPercent: 70,
-  maximumGpuUtilizationPercent: 75,
-  maximumTelemetryAgeMs: 3000,
-  allowModelPreload: false,                          // Proíbe preload sob demanda
-  allowModelUnload: false,                           // Proíbe descarregamento
-  description: 'Strict conservative profile prohibiting on-demand model lifecycle changes',
-});

@@ -1,6 +1,6 @@
 /**
  * NEX+ · Resource Governor & Local Runtime Lifecycle
- * Motor Determinístico de Decisão do Resource Governor — Escopo 0.6 (Fase B)
+ * Motor Determinístico de Decisão do Resource Governor — Escopo 0.6
  *
  * Avalia se um workload local pode utilizar recursos físicos no momento e sob o perfil configurado.
  * Função pura, sem relógio interno, sem IDs aleatórios internos.
@@ -19,6 +19,15 @@ import type {
 } from './contracts';
 
 import { isModelApproved, normalizeModelName } from './ollama/lifecycle';
+
+export class ProfileRevisionMismatchError extends Error {
+  readonly code: string;
+  constructor(message: string) {
+    super(`[ResourceGovernor] ${message}`);
+    this.name = 'ProfileRevisionMismatchError';
+    this.code = 'PROFILE_REVISION_MISMATCH';
+  }
+}
 
 export interface EvaluateResourceRequestParams {
   readonly request: ResourceRequest;
@@ -45,6 +54,13 @@ export function evaluateResourceRequest(
     throw new Error('[ResourceGovernor] evaluatedAt must be a valid ISO 8601 timestamp.');
   }
 
+  // 0. PROFILE REVISION PINNING (Validação Causal Estrutural Obrigatória)
+  if (request.profileRevisionId !== profile.profileRevisionId) {
+    throw new ProfileRevisionMismatchError(
+      `Profile revision mismatch: request specifies '${request.profileRevisionId}', but evaluation profile is '${profile.profileRevisionId}'.`,
+    );
+  }
+
   // 1. FRESHNESS GATE
   const snapshotEpoch = Date.parse(snapshot.collectedAt);
   const evalEpoch = Date.parse(evaluatedAt);
@@ -54,6 +70,9 @@ export function evaluateResourceRequest(
     return {
       disposition: 'defer',
       reasonCode: 'SNAPSHOT_STALE',
+      requestId: request.requestId,
+      profileRevisionId: profile.profileRevisionId,
+      resourceSnapshotId: snapshot.snapshotId,
       materialFacts: {
         snapshotFreshness: 'stale',
       },
@@ -61,12 +80,23 @@ export function evaluateResourceRequest(
     };
   }
 
-  // 2. TARGET MODEL APPROVAL GATE
-  if (request.targetModel) {
-    if (!isModelApproved(approvedCatalog, request.targetModel)) {
+  // 2. TARGET MODEL APPROVAL GATE & ESTIMATIVAS EFETIVAS
+  const targetModel = request.targetModel;
+  const targetNorm = targetModel ? normalizeModelName(targetModel) : '';
+
+  let approvedEntry: ApprovedLocalModelRef | undefined = undefined;
+  if (targetModel) {
+    approvedEntry = approvedCatalog.find(
+      (c) => c.runtime === 'ollama_local' && normalizeModelName(c.modelName) === targetNorm,
+    );
+
+    if (!approvedEntry) {
       return {
         disposition: 'deny',
         reasonCode: 'MODEL_NOT_APPROVED',
+        requestId: request.requestId,
+        profileRevisionId: profile.profileRevisionId,
+        resourceSnapshotId: snapshot.snapshotId,
         materialFacts: {
           snapshotFreshness: 'fresh',
         },
@@ -75,15 +105,33 @@ export function evaluateResourceRequest(
     }
   }
 
-  // 3. HEADROOM & PENDING RESERVED LEASES (Apenas 'reserved' pendente; 'active' já está na telemetria)
-  let pendingReservedRamBytes = 0;
-  let pendingReservedVramBytes = 0;
+  // Precedência de estimativas: request explícito vence; catálogo serve de fallback factual
+  const effectiveEstimatedRamBytes =
+    request.estimatedAdditionalRamBytes !== undefined
+      ? request.estimatedAdditionalRamBytes
+      : approvedEntry?.estimatedRamBytes;
 
-  for (const lease of leases) {
-    if (lease.state === 'reserved') {
-      pendingReservedRamBytes += lease.reservedRamBytes || 0;
-      pendingReservedVramBytes += lease.reservedVramBytes || 0;
-    }
+  const effectiveEstimatedVramBytes =
+    request.estimatedAdditionalVramBytes !== undefined
+      ? request.estimatedAdditionalVramBytes
+      : approvedEntry?.estimatedVramBytes;
+
+  // 3. OLLAMA TELEMETRY STATE CHECK (Material para intents que dependem do estado do modelo)
+  const isLifecycleIntent =
+    request.intent === 'ensure_model_loaded' || request.intent === 'ensure_model_unloaded';
+
+  if (isLifecycleIntent && snapshot.ollama.status !== 'available') {
+    return {
+      disposition: 'defer',
+      reasonCode: 'OLLAMA_STATE_UNAVAILABLE',
+      requestId: request.requestId,
+      profileRevisionId: profile.profileRevisionId,
+      resourceSnapshotId: snapshot.snapshotId,
+      materialFacts: {
+        snapshotFreshness: 'fresh',
+      },
+      evaluatedAt,
+    };
   }
 
   // 4. SYSTEM RAM & CPU GATE
@@ -91,26 +139,39 @@ export function evaluateResourceRequest(
     return {
       disposition: 'defer',
       reasonCode: 'SYSTEM_TELEMETRY_UNAVAILABLE',
+      requestId: request.requestId,
+      profileRevisionId: profile.profileRevisionId,
+      resourceSnapshotId: snapshot.snapshotId,
       materialFacts: {
         snapshotFreshness: 'fresh',
-        pendingReservedRamBytes,
       },
       evaluatedAt,
     };
   }
 
+  // Headroom de RAM (Desconta apenas leases pendentes em estado 'reserved')
+  let pendingReservedRamBytes = 0;
+  for (const lease of leases) {
+    if (lease.state === 'reserved') {
+      pendingReservedRamBytes += lease.reservedRamBytes || 0;
+    }
+  }
+
   const effectiveFreeRamBytes = snapshot.system.freeRamBytes - pendingReservedRamBytes;
   const availableRamHeadroom = effectiveFreeRamBytes - profile.minimumFreeSystemRamBytes;
 
-  const estimatedRam = request.estimatedAdditionalRamBytes;
-  if (estimatedRam !== undefined && estimatedRam > 0) {
-    if (availableRamHeadroom < estimatedRam) {
+  if (effectiveEstimatedRamBytes !== undefined && effectiveEstimatedRamBytes > 0) {
+    if (availableRamHeadroom < effectiveEstimatedRamBytes) {
       return {
         disposition: 'defer',
         reasonCode: 'INSUFFICIENT_SYSTEM_RAM',
+        requestId: request.requestId,
+        profileRevisionId: profile.profileRevisionId,
+        resourceSnapshotId: snapshot.snapshotId,
         materialFacts: {
           freeRamBytes: snapshot.system.freeRamBytes,
           pendingReservedRamBytes,
+          effectiveEstimatedRamBytes,
           snapshotFreshness: 'fresh',
         },
         evaluatedAt,
@@ -123,6 +184,9 @@ export function evaluateResourceRequest(
       return {
         disposition: 'defer',
         reasonCode: 'CPU_UTILIZATION_UNKNOWN',
+        requestId: request.requestId,
+        profileRevisionId: profile.profileRevisionId,
+        resourceSnapshotId: snapshot.snapshotId,
         materialFacts: {
           freeRamBytes: snapshot.system.freeRamBytes,
           pendingReservedRamBytes,
@@ -136,6 +200,9 @@ export function evaluateResourceRequest(
       return {
         disposition: 'defer',
         reasonCode: 'CPU_UTILIZATION_EXCEEDED',
+        requestId: request.requestId,
+        profileRevisionId: profile.profileRevisionId,
+        resourceSnapshotId: snapshot.snapshotId,
         materialFacts: {
           cpuUtilizationPercent: snapshot.system.cpuUtilizationPercent,
           freeRamBytes: snapshot.system.freeRamBytes,
@@ -147,18 +214,23 @@ export function evaluateResourceRequest(
     }
   }
 
-  // 5. GPU & VRAM GATE
+  // 5. GPU & VRAM GATE COM ESCOPO DE DISPOSITIVO
   let selectedGpu: GpuDeviceTelemetry | undefined = undefined;
+  let pendingReservedVramBytes = 0;
+
   const isGpuMaterial =
     request.requiresGpu === true ||
     request.targetGpuUuid !== undefined ||
-    (request.estimatedAdditionalVramBytes !== undefined && request.estimatedAdditionalVramBytes > 0);
+    (effectiveEstimatedVramBytes !== undefined && effectiveEstimatedVramBytes > 0);
 
   if (isGpuMaterial) {
     if (snapshot.gpu.status !== 'available' || snapshot.gpu.devices.length === 0) {
       return {
         disposition: 'defer',
         reasonCode: 'GPU_TELEMETRY_UNAVAILABLE',
+        requestId: request.requestId,
+        profileRevisionId: profile.profileRevisionId,
+        resourceSnapshotId: snapshot.snapshotId,
         materialFacts: {
           snapshotFreshness: 'fresh',
           freeRamBytes: snapshot.system.freeRamBytes,
@@ -173,6 +245,9 @@ export function evaluateResourceRequest(
         return {
           disposition: 'defer',
           reasonCode: 'MULTIPLE_GPUS_REQUIRE_TARGET',
+          requestId: request.requestId,
+          profileRevisionId: profile.profileRevisionId,
+          resourceSnapshotId: snapshot.snapshotId,
           materialFacts: {
             snapshotFreshness: 'fresh',
           },
@@ -185,19 +260,48 @@ export function evaluateResourceRequest(
         return {
           disposition: 'deny',
           reasonCode: 'TARGET_GPU_NOT_FOUND',
+          requestId: request.requestId,
+          profileRevisionId: profile.profileRevisionId,
+          resourceSnapshotId: snapshot.snapshotId,
           materialFacts: {
             snapshotFreshness: 'fresh',
           },
           evaluatedAt,
         };
       }
+
+      // Em host multi-GPU: reservas pendentes devem ser atribuídas estritamente ao device
+      for (const lease of leases) {
+        if (lease.state === 'reserved' && (lease.reservedVramBytes || 0) > 0) {
+          if (!lease.targetGpuUuid) {
+            // Reserva sem GPU-target em ambiente multi-GPU é ambígua
+            return {
+              disposition: 'defer',
+              reasonCode: 'AMBIGUOUS_VRAM_RESERVATION',
+              requestId: request.requestId,
+              profileRevisionId: profile.profileRevisionId,
+              resourceSnapshotId: snapshot.snapshotId,
+              materialFacts: {
+                snapshotFreshness: 'fresh',
+              },
+              evaluatedAt,
+            };
+          }
+          if (lease.targetGpuUuid === selectedGpu.uuid) {
+            pendingReservedVramBytes += lease.reservedVramBytes;
+          }
+        }
+      }
     } else {
-      // Exatamente 1 GPU
+      // Exatamente 1 GPU no host
       const single = devices[0];
       if (request.targetGpuUuid && request.targetGpuUuid !== single.uuid) {
         return {
           disposition: 'deny',
           reasonCode: 'TARGET_GPU_NOT_FOUND',
+          requestId: request.requestId,
+          profileRevisionId: profile.profileRevisionId,
+          resourceSnapshotId: snapshot.snapshotId,
           materialFacts: {
             snapshotFreshness: 'fresh',
           },
@@ -205,15 +309,23 @@ export function evaluateResourceRequest(
         };
       }
       selectedGpu = single;
+
+      // Em single-GPU: debita reservas sem target ou com target da GPU
+      for (const lease of leases) {
+        if (lease.state === 'reserved') {
+          if (!lease.targetGpuUuid || lease.targetGpuUuid === single.uuid) {
+            pendingReservedVramBytes += lease.reservedVramBytes || 0;
+          }
+        }
+      }
     }
 
     // Validação de Headroom de VRAM no dispositivo selecionado
     const effectiveFreeVramBytes = selectedGpu.memoryFreeBytes - pendingReservedVramBytes;
     const availableVramHeadroom = effectiveFreeVramBytes - profile.minimumFreeVramBytes;
 
-    const estimatedVram = request.estimatedAdditionalVramBytes;
-    if (estimatedVram !== undefined && estimatedVram > 0) {
-      if (availableVramHeadroom < estimatedVram) {
+    if (effectiveEstimatedVramBytes !== undefined && effectiveEstimatedVramBytes > 0) {
+      if (availableVramHeadroom < effectiveEstimatedVramBytes) {
         // Coleta candidatos a descarregamento (fatos neutros, sem ordenação de auto-eviction)
         const evictionCandidates: string[] = [];
         if (snapshot.ollama.status === 'available') {
@@ -233,9 +345,13 @@ export function evaluateResourceRequest(
         return {
           disposition: 'defer',
           reasonCode: 'INSUFFICIENT_VRAM',
+          requestId: request.requestId,
+          profileRevisionId: profile.profileRevisionId,
+          resourceSnapshotId: snapshot.snapshotId,
           materialFacts: {
             freeVramBytes: selectedGpu.memoryFreeBytes,
             pendingReservedVramBytes,
+            effectiveEstimatedVramBytes,
             evictionCandidates: evictionCandidates.length > 0 ? Object.freeze(evictionCandidates) : undefined,
             snapshotFreshness: 'fresh',
           },
@@ -249,6 +365,9 @@ export function evaluateResourceRequest(
         return {
           disposition: 'defer',
           reasonCode: 'GPU_UTILIZATION_EXCEEDED',
+          requestId: request.requestId,
+          profileRevisionId: profile.profileRevisionId,
+          resourceSnapshotId: snapshot.snapshotId,
           materialFacts: {
             gpuUtilizationPercent: selectedGpu.gpuUtilizationPercent,
             freeVramBytes: selectedGpu.memoryFreeBytes,
@@ -261,9 +380,7 @@ export function evaluateResourceRequest(
   }
 
   // 6. INTENT EVALUATION
-  const targetModel = request.targetModel;
-  const targetNorm = targetModel ? normalizeModelName(targetModel) : '';
-  const isTargetLoaded = targetNorm
+  const isTargetLoaded = targetNorm && snapshot.ollama.status === 'available'
     ? snapshot.ollama.loadedModels.some((m) => normalizeModelName(m.modelName) === targetNorm)
     : false;
 
@@ -275,6 +392,8 @@ export function evaluateResourceRequest(
     targetModelLoaded: targetModel ? isTargetLoaded : undefined,
     pendingReservedRamBytes: pendingReservedRamBytes > 0 ? pendingReservedRamBytes : undefined,
     pendingReservedVramBytes: pendingReservedVramBytes > 0 ? pendingReservedVramBytes : undefined,
+    effectiveEstimatedRamBytes,
+    effectiveEstimatedVramBytes,
     snapshotFreshness: 'fresh',
   };
 
@@ -283,6 +402,9 @@ export function evaluateResourceRequest(
     return {
       disposition: 'admit',
       reasonCode: 'RESOURCES_ADMITTED',
+      requestId: request.requestId,
+      profileRevisionId: profile.profileRevisionId,
+      resourceSnapshotId: snapshot.snapshotId,
       materialFacts: baseMaterialFacts,
       evaluatedAt,
     };
@@ -294,6 +416,9 @@ export function evaluateResourceRequest(
       return {
         disposition: 'deny',
         reasonCode: 'TARGET_MODEL_REQUIRED',
+        requestId: request.requestId,
+        profileRevisionId: profile.profileRevisionId,
+        resourceSnapshotId: snapshot.snapshotId,
         materialFacts: baseMaterialFacts,
         evaluatedAt,
       };
@@ -303,6 +428,9 @@ export function evaluateResourceRequest(
       return {
         disposition: 'admit',
         reasonCode: 'MODEL_ALREADY_LOADED',
+        requestId: request.requestId,
+        profileRevisionId: profile.profileRevisionId,
+        resourceSnapshotId: snapshot.snapshotId,
         materialFacts: baseMaterialFacts,
         evaluatedAt,
       };
@@ -313,27 +441,33 @@ export function evaluateResourceRequest(
       return {
         disposition: 'deny',
         reasonCode: 'PRELOAD_PROHIBITED_BY_PROFILE',
+        requestId: request.requestId,
+        profileRevisionId: profile.profileRevisionId,
+        resourceSnapshotId: snapshot.snapshotId,
         materialFacts: baseMaterialFacts,
         evaluatedAt,
       };
     }
 
-    // Se exige estimativas e não foram fornecidas no request nem no catálogo
-    if (request.requiresGpu && request.estimatedAdditionalVramBytes === undefined) {
-      const catalogEntry = approvedCatalog.find((c) => normalizeModelName(c.modelName) === targetNorm);
-      if (!catalogEntry?.estimatedVramBytes) {
-        return {
-          disposition: 'defer',
-          reasonCode: 'ESTIMATED_RESOURCES_MISSING',
-          materialFacts: baseMaterialFacts,
-          evaluatedAt,
-        };
-      }
+    // Se exige GPU e a estimativa de VRAM não está disponível no request nem no catálogo
+    if (isGpuMaterial && effectiveEstimatedVramBytes === undefined) {
+      return {
+        disposition: 'defer',
+        reasonCode: 'ESTIMATED_RESOURCES_MISSING',
+        requestId: request.requestId,
+        profileRevisionId: profile.profileRevisionId,
+        resourceSnapshotId: snapshot.snapshotId,
+        materialFacts: baseMaterialFacts,
+        evaluatedAt,
+      };
     }
 
     return {
       disposition: 'action_required',
       reasonCode: 'PRELOAD_REQUIRED',
+      requestId: request.requestId,
+      profileRevisionId: profile.profileRevisionId,
+      resourceSnapshotId: snapshot.snapshotId,
       requiredAction: {
         kind: 'preload_model',
         targetModel,
@@ -351,6 +485,9 @@ export function evaluateResourceRequest(
       return {
         disposition: 'deny',
         reasonCode: 'TARGET_MODEL_REQUIRED',
+        requestId: request.requestId,
+        profileRevisionId: profile.profileRevisionId,
+        resourceSnapshotId: snapshot.snapshotId,
         materialFacts: baseMaterialFacts,
         evaluatedAt,
       };
@@ -360,6 +497,9 @@ export function evaluateResourceRequest(
       return {
         disposition: 'admit',
         reasonCode: 'MODEL_ALREADY_UNLOADED',
+        requestId: request.requestId,
+        profileRevisionId: profile.profileRevisionId,
+        resourceSnapshotId: snapshot.snapshotId,
         materialFacts: baseMaterialFacts,
         evaluatedAt,
       };
@@ -377,6 +517,9 @@ export function evaluateResourceRequest(
       return {
         disposition: 'deny',
         reasonCode: 'MODEL_PROTECTED_BY_ACTIVE_LEASE',
+        requestId: request.requestId,
+        profileRevisionId: profile.profileRevisionId,
+        resourceSnapshotId: snapshot.snapshotId,
         materialFacts: baseMaterialFacts,
         evaluatedAt,
       };
@@ -386,6 +529,9 @@ export function evaluateResourceRequest(
       return {
         disposition: 'deny',
         reasonCode: 'UNLOAD_PROHIBITED_BY_PROFILE',
+        requestId: request.requestId,
+        profileRevisionId: profile.profileRevisionId,
+        resourceSnapshotId: snapshot.snapshotId,
         materialFacts: baseMaterialFacts,
         evaluatedAt,
       };
@@ -394,6 +540,9 @@ export function evaluateResourceRequest(
     return {
       disposition: 'action_required',
       reasonCode: 'UNLOAD_REQUIRED',
+      requestId: request.requestId,
+      profileRevisionId: profile.profileRevisionId,
+      resourceSnapshotId: snapshot.snapshotId,
       requiredAction: {
         kind: 'unload_model',
         targetModel,
@@ -408,6 +557,9 @@ export function evaluateResourceRequest(
   return {
     disposition: 'deny',
     reasonCode: 'UNSUPPORTED_INTENT',
+    requestId: request.requestId,
+    profileRevisionId: profile.profileRevisionId,
+    resourceSnapshotId: snapshot.snapshotId,
     materialFacts: baseMaterialFacts,
     evaluatedAt,
   };
