@@ -8,6 +8,8 @@
  */
 
 import type {
+  CapabilityRevision,
+  CapabilityRevisionId,
   RouteRevisionId,
   TermsResolutionContext,
 } from '../capabilities/contracts';
@@ -40,9 +42,11 @@ export interface EvaluateDecisionParams {
   readonly decisionId: DecisionId;
   readonly materialContextId: DecisionMaterialContextId;
   readonly interpretation: InterpretationReadiness;
+  readonly targetCapabilityRevisionId?: CapabilityRevisionId;
   readonly capabilityRegistry: CapabilityRegistryStore;
   readonly policy: PolicyRevision;
   readonly authorization?: ContextualAuthorizationDecision;
+  readonly authorizationRequired?: boolean;
   readonly confirmation?: ConfirmationDecision;
   readonly confirmationRequired?: boolean;
   readonly containsSecretMaterial: boolean;
@@ -64,9 +68,11 @@ export function evaluateDecision(params: EvaluateDecisionParams): DecisionResult
     decisionId,
     materialContextId,
     interpretation,
+    targetCapabilityRevisionId,
     capabilityRegistry,
     policy,
     authorization,
+    authorizationRequired = false,
     confirmation,
     confirmationRequired = false,
     containsSecretMaterial,
@@ -120,7 +126,7 @@ export function evaluateDecision(params: EvaluateDecisionParams): DecisionResult
     };
   }
 
-  // 2. Localizar Capability no Registry
+  // 2. Localizar Capability no Registry (Resolução Soberana de Heads)
   const capabilityHeads = capabilityRegistry.getCapabilityHeads(interpretation.capabilityKey);
   if (capabilityHeads.length === 0) {
     return {
@@ -132,11 +138,86 @@ export function evaluateDecision(params: EvaluateDecisionParams): DecisionResult
       decidedAt,
     };
   }
-  const capability = capabilityHeads[0];
 
-  // 3. Gate de Autorização Humana (0.5C)
-  if (authorization) {
-    if (authorization.materialContextId && authorization.materialContextId !== materialContextId) {
+  const requestedRevId = targetCapabilityRevisionId || interpretation.capabilityRevisionId;
+  let capability: CapabilityRevision;
+
+  if (requestedRevId) {
+    const matchingHead = capabilityHeads.find((h) => h.capabilityRevisionId === requestedRevId);
+    if (!matchingHead) {
+      const escalation: HumanEscalation = {
+        escalationId: `esc_cap_rev_inv_${decisionId}` as HumanEscalationId,
+        decisionId,
+        materialContextId,
+        kind: 'clarification_required',
+        reasonCode: 'CAPABILITY_REVISION_INVALID',
+        detail: `Requested CapabilityRevisionId '${requestedRevId}' is not an active head for capabilityKey '${interpretation.capabilityKey}'.`,
+        escalatedAt: decidedAt,
+      };
+
+      return {
+        decisionId,
+        materialContextId,
+        disposition: 'clarification_required',
+        reasonCode: 'CAPABILITY_REVISION_INVALID',
+        evaluations: [],
+        escalation,
+        decidedAt,
+      };
+    }
+    capability = matchingHead;
+  } else {
+    if (capabilityHeads.length === 1) {
+      capability = capabilityHeads[0];
+    } else {
+      // Múltiplos heads sem especificação explícita: PROIBIDO usar heads[0] ou ordem do Array
+      const escalation: HumanEscalation = {
+        escalationId: `esc_mult_cap_${decisionId}` as HumanEscalationId,
+        decisionId,
+        materialContextId,
+        kind: 'clarification_required',
+        reasonCode: 'MULTIPLE_CAPABILITY_REVISIONS',
+        detail: `Multiple active capability revisions found for '${interpretation.capabilityKey}' without an explicit capabilityRevisionId.`,
+        escalatedAt: decidedAt,
+      };
+
+      return {
+        decisionId,
+        materialContextId,
+        disposition: 'awaiting_human',
+        reasonCode: 'MULTIPLE_CAPABILITY_REVISIONS',
+        evaluations: [],
+        escalation,
+        decidedAt,
+      };
+    }
+  }
+
+  // 3. Gate de Autorização Humana (0.5C / 0.5E)
+  if (authorizationRequired) {
+    if (!authorization) {
+      const escalation: HumanEscalation = {
+        escalationId: `esc_auth_req_${decisionId}` as HumanEscalationId,
+        decisionId,
+        materialContextId,
+        kind: 'authorization_pending',
+        reasonCode: 'AUTHORIZATION_REQUIRED',
+        detail: 'Human authorization is required but absent.',
+        escalatedAt: decidedAt,
+      };
+
+      return {
+        decisionId,
+        materialContextId,
+        disposition: 'awaiting_human',
+        reasonCode: 'AUTHORIZATION_REQUIRED',
+        evaluations: [],
+        escalation,
+        decidedAt,
+      };
+    }
+
+    if (authorization.materialContextId !== materialContextId) {
       const escalation: HumanEscalation = {
         escalationId: `esc_auth_ctx_${decisionId}` as HumanEscalationId,
         decisionId,
@@ -171,12 +252,12 @@ export function evaluateDecision(params: EvaluateDecisionParams): DecisionResult
 
     if (authorization.verdict === 'pending') {
       const escalation: HumanEscalation = {
-        escalationId: `esc_auth_${decisionId}` as HumanEscalationId,
+        escalationId: `esc_auth_pend_${decisionId}` as HumanEscalationId,
         decisionId,
         materialContextId,
         kind: 'authorization_pending',
         reasonCode: 'AUTHORIZATION_PENDING',
-        detail: 'Human authorization is required and pending.',
+        detail: 'Human authorization is pending.',
         escalatedAt: decidedAt,
       };
 
@@ -189,6 +270,84 @@ export function evaluateDecision(params: EvaluateDecisionParams): DecisionResult
         escalation,
         decidedAt,
       };
+    }
+
+    if (authorization.verdict === 'not_required') {
+      const escalation: HumanEscalation = {
+        escalationId: `esc_auth_not_sat_${decisionId}` as HumanEscalationId,
+        decisionId,
+        materialContextId,
+        kind: 'authorization_pending',
+        reasonCode: 'AUTHORIZATION_REQUIRED_NOT_SATISFIED',
+        detail: 'Authorization verdict not_required does not satisfy authorizationRequired=true.',
+        escalatedAt: decidedAt,
+      };
+
+      return {
+        decisionId,
+        materialContextId,
+        disposition: 'awaiting_human',
+        reasonCode: 'AUTHORIZATION_REQUIRED_NOT_SATISFIED',
+        evaluations: [],
+        escalation,
+        decidedAt,
+      };
+    }
+  } else {
+    // authorizationRequired = false
+    if (authorization) {
+      if (authorization.materialContextId !== materialContextId) {
+        const escalation: HumanEscalation = {
+          escalationId: `esc_auth_ctx_${decisionId}` as HumanEscalationId,
+          decisionId,
+          materialContextId,
+          kind: 'authorization_pending',
+          reasonCode: 'AUTHORIZATION_CONTEXT_MISMATCH',
+          detail: 'Authorization decision was granted for a different material context.',
+          escalatedAt: decidedAt,
+        };
+
+        return {
+          decisionId,
+          materialContextId,
+          disposition: 'awaiting_human',
+          reasonCode: 'AUTHORIZATION_CONTEXT_MISMATCH',
+          evaluations: [],
+          escalation,
+          decidedAt,
+        };
+      }
+      if (authorization.verdict === 'denied') {
+        return {
+          decisionId,
+          materialContextId,
+          disposition: 'authorization_denied',
+          reasonCode: authorization.reasonCode || 'AUTHORIZATION_DENIED',
+          evaluations: [],
+          decidedAt,
+        };
+      }
+      if (authorization.verdict === 'pending') {
+        const escalation: HumanEscalation = {
+          escalationId: `esc_auth_pend_${decisionId}` as HumanEscalationId,
+          decisionId,
+          materialContextId,
+          kind: 'authorization_pending',
+          reasonCode: 'AUTHORIZATION_PENDING',
+          detail: 'Human authorization is pending.',
+          escalatedAt: decidedAt,
+        };
+
+        return {
+          decisionId,
+          materialContextId,
+          disposition: 'awaiting_human',
+          reasonCode: 'AUTHORIZATION_PENDING',
+          evaluations: [],
+          escalation,
+          decidedAt,
+        };
+      }
     }
   }
 
@@ -269,6 +428,63 @@ export function evaluateDecision(params: EvaluateDecisionParams): DecisionResult
         escalation,
         decidedAt,
       };
+    }
+
+    if (confirmation.verdict === 'not_required') {
+      const escalation: HumanEscalation = {
+        escalationId: `esc_conf_not_sat_${decisionId}` as HumanEscalationId,
+        decisionId,
+        materialContextId,
+        kind: 'confirmation_required',
+        reasonCode: 'CONFIRMATION_REQUIRED_NOT_SATISFIED',
+        detail: 'Confirmation verdict not_required does not satisfy confirmationRequired=true.',
+        escalatedAt: decidedAt,
+      };
+
+      return {
+        decisionId,
+        materialContextId,
+        disposition: 'awaiting_human',
+        reasonCode: 'CONFIRMATION_REQUIRED_NOT_SATISFIED',
+        evaluations: [],
+        escalation,
+        decidedAt,
+      };
+    }
+  } else {
+    // confirmationRequired = false
+    if (confirmation) {
+      if (confirmation.verdict === 'declined') {
+        return {
+          decisionId,
+          materialContextId,
+          disposition: 'cancelled',
+          reasonCode: confirmation.reasonCode || 'CONFIRMATION_DECLINED',
+          evaluations: [],
+          decidedAt,
+        };
+      }
+      if (confirmation.verdict === 'pending') {
+        const escalation: HumanEscalation = {
+          escalationId: `esc_conf_pend_${decisionId}` as HumanEscalationId,
+          decisionId,
+          materialContextId,
+          kind: 'confirmation_required',
+          reasonCode: 'CONFIRMATION_PENDING',
+          detail: 'Human confirmation is pending.',
+          escalatedAt: decidedAt,
+        };
+
+        return {
+          decisionId,
+          materialContextId,
+          disposition: 'awaiting_human',
+          reasonCode: 'CONFIRMATION_PENDING',
+          evaluations: [],
+          escalation,
+          decidedAt,
+        };
+      }
     }
   }
 

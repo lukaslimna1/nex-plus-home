@@ -34,9 +34,16 @@ export type SelectionPlanId = string & { readonly __brand?: 'SelectionPlanId' };
 // 2. HUMAN CONFIRMATION, AUTHORIZATION & INTERPRETATION READINESS
 // ============================================================================
 
-export interface ContextualAuthorizationDecision extends HumanAuthorizationDecision {
-  readonly authorizationId?: AuthorizationDecisionId;
-  readonly materialContextId?: DecisionMaterialContextId;
+export interface ContextualAuthorizationDecision {
+  readonly authorizationId: AuthorizationDecisionId;
+  readonly materialContextId: DecisionMaterialContextId;
+  readonly actorRef: string;
+  readonly operation: string;
+  readonly resourceTarget?: string;
+  readonly verdict: 'authorized' | 'denied' | 'pending' | 'not_required';
+  readonly reasonCode: string;
+  readonly provenance?: FactProvenance;
+  readonly authorizedAt?: string;
 }
 
 export type ConfirmationVerdict = 'confirmed' | 'declined' | 'pending' | 'not_required';
@@ -59,6 +66,7 @@ export interface InterpretationReadiness {
   readonly clarity: InterpretationClarity;
   readonly potentiallyMutating: boolean;
   readonly capabilityKey?: CapabilityKey;
+  readonly capabilityRevisionId?: CapabilityRevisionId;
   readonly materialParameters?: Readonly<Record<string, unknown>>;
   readonly reason?: string;
 }

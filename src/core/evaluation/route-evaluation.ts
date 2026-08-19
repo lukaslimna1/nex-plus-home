@@ -61,6 +61,37 @@ export function evaluateCandidateRoute(params: EvaluateCandidateRouteParams): Ro
     evaluatedAt,
   } = params;
 
+  // 0. Correlação Causal e Estrutural Obrigatória
+  if (binding.capabilityRevisionId !== capability.capabilityRevisionId) {
+    throw new Error(
+      `[L0 RouteEvaluation] Binding '${binding.bindingRevisionId}' capabilityRevisionId '${binding.capabilityRevisionId}' does not match capability '${capability.capabilityRevisionId}'.`,
+    );
+  }
+  if (binding.routeRevisionId !== route.routeRevisionId) {
+    throw new Error(
+      `[L0 RouteEvaluation] Binding '${binding.bindingRevisionId}' routeRevisionId '${binding.routeRevisionId}' does not match route '${route.routeRevisionId}'.`,
+    );
+  }
+  if (runtimeFacts && runtimeFacts.routeRevisionId !== route.routeRevisionId) {
+    throw new Error(
+      `[L0 RouteEvaluation] RuntimeFacts routeRevisionId '${runtimeFacts.routeRevisionId}' does not match candidate route '${route.routeRevisionId}'.`,
+    );
+  }
+  if (termsResult.status === 'single_applicable' && termsResult.terms.routeRevisionId !== route.routeRevisionId) {
+    throw new Error(
+      `[L0 RouteEvaluation] TermsRevision '${termsResult.terms.termsRevisionId}' routeRevisionId '${termsResult.terms.routeRevisionId}' does not match candidate route '${route.routeRevisionId}'.`,
+    );
+  }
+  if (termsResult.status === 'composable_terms') {
+    for (const t of termsResult.terms) {
+      if (t.routeRevisionId !== route.routeRevisionId) {
+        throw new Error(
+          `[L0 RouteEvaluation] Composable TermsRevision '${t.termsRevisionId}' routeRevisionId '${t.routeRevisionId}' does not match candidate route '${route.routeRevisionId}'.`,
+        );
+      }
+    }
+  }
+
   const reasonCodes: string[] = [];
   let isAwaitingHuman = false;
   let isDenied = false;

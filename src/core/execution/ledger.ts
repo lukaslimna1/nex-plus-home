@@ -116,11 +116,22 @@ export class InvalidReceiptStructureError extends Error {
 }
 
 // ============================================================================
-// 2. HELPERS DEFENSIVOS DE IMUTABILIDADE
+// 2. HELPERS DEFENSIVOS DE IMUTABILIDADE PROFUNDA
 // ============================================================================
 
-function freezeClone<T extends object>(obj: T): Readonly<T> {
-  return Object.freeze({ ...obj });
+export function deepCloneAndFreeze<T>(val: T): Readonly<T> {
+  if (val === null || typeof val !== 'object') {
+    return val;
+  }
+  if (Array.isArray(val)) {
+    const copy = val.map((item) => deepCloneAndFreeze(item));
+    return Object.freeze(copy) as unknown as Readonly<T>;
+  }
+  const copy: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(val)) {
+    copy[k] = deepCloneAndFreeze(v);
+  }
+  return Object.freeze(copy) as unknown as Readonly<T>;
 }
 
 // ============================================================================
@@ -162,8 +173,8 @@ export function createExecutionLedgerStore(
         createdAt: event.createdAt,
       };
 
-      attemptStatesById.set(event.attemptId, freezeClone(state));
-      attemptEventsList.push(freezeClone(event));
+      attemptStatesById.set(event.attemptId, deepCloneAndFreeze(state));
+      attemptEventsList.push(deepCloneAndFreeze(event));
       return;
     }
 
@@ -182,8 +193,8 @@ export function createExecutionLedgerStore(
         startedAt: event.startedAt,
       };
 
-      attemptStatesById.set(event.attemptId, freezeClone(updated));
-      attemptEventsList.push(freezeClone(event));
+      attemptStatesById.set(event.attemptId, deepCloneAndFreeze(updated));
+      attemptEventsList.push(deepCloneAndFreeze(event));
       return;
     }
 
@@ -203,8 +214,8 @@ export function createExecutionLedgerStore(
         terminalReason: event.terminalReason,
       };
 
-      attemptStatesById.set(event.attemptId, freezeClone(updated));
-      attemptEventsList.push(freezeClone(event));
+      attemptStatesById.set(event.attemptId, deepCloneAndFreeze(updated));
+      attemptEventsList.push(deepCloneAndFreeze(event));
       return;
     }
   }
@@ -218,7 +229,7 @@ export function createExecutionLedgerStore(
       throw new InvalidAttemptReferenceError(signal.attemptId as string, 'appendExecutionSignal');
     }
 
-    const frozen = freezeClone(signal);
+    const frozen = deepCloneAndFreeze(signal);
     signalsById.set(signal.signalId, frozen);
 
     const list = signalsByAttempt.get(signal.attemptId) || [];
@@ -248,7 +259,7 @@ export function createExecutionLedgerStore(
       }
     }
 
-    const frozen = freezeClone(evidence);
+    const frozen = deepCloneAndFreeze(evidence);
     evidenceById.set(evidence.evidenceId, frozen);
 
     const list = evidenceByAttempt.get(evidence.attemptId) || [];
@@ -312,7 +323,7 @@ export function createExecutionLedgerStore(
       }
     }
 
-    const frozen = freezeClone(assessment);
+    const frozen = deepCloneAndFreeze(assessment);
     assessmentsById.set(assessment.assessmentId, frozen);
 
     existingList.push(frozen);
@@ -357,7 +368,7 @@ export function createExecutionLedgerStore(
       }
     }
 
-    receiptsById.set(receipt.receiptId, freezeClone(receipt));
+    receiptsById.set(receipt.receiptId, deepCloneAndFreeze(receipt));
   }
 
   // Pre-popular dados iniciais se fornecidos
@@ -383,66 +394,66 @@ export function createExecutionLedgerStore(
     appendAttemptEvent,
     getAttempt(attemptId: AttemptId) {
       const state = attemptStatesById.get(attemptId);
-      return state ? freezeClone(state) : undefined;
+      return state ? deepCloneAndFreeze(state) : undefined;
     },
     listAttemptEvents(attemptId: AttemptId) {
-      return Object.freeze(attemptEventsList.filter((e) => e.attemptId === attemptId).map(freezeClone));
+      return Object.freeze(attemptEventsList.filter((e) => e.attemptId === attemptId).map(deepCloneAndFreeze));
     },
     listAttempts(decisionId?: DecisionId) {
-      const all = Array.from(attemptStatesById.values()).map(freezeClone);
+      const all = Array.from(attemptStatesById.values()).map(deepCloneAndFreeze);
       return Object.freeze(decisionId ? all.filter((a) => a.decisionId === decisionId) : all);
     },
 
     appendExecutionSignal,
     getExecutionSignal(signalId: ExecutionSignalId) {
       const sig = signalsById.get(signalId);
-      return sig ? freezeClone(sig) : undefined;
+      return sig ? deepCloneAndFreeze(sig) : undefined;
     },
     listExecutionSignals(attemptId: AttemptId) {
-      return Object.freeze((signalsByAttempt.get(attemptId) || []).map(freezeClone));
+      return Object.freeze((signalsByAttempt.get(attemptId) || []).map(deepCloneAndFreeze));
     },
 
     appendExecutionEvidence,
     getExecutionEvidence(evidenceId: ExecutionEvidenceId) {
       const evi = evidenceById.get(evidenceId);
-      return evi ? freezeClone(evi) : undefined;
+      return evi ? deepCloneAndFreeze(evi) : undefined;
     },
     listExecutionEvidence(attemptId: AttemptId) {
-      return Object.freeze((evidenceByAttempt.get(attemptId) || []).map(freezeClone));
+      return Object.freeze((evidenceByAttempt.get(attemptId) || []).map(deepCloneAndFreeze));
     },
 
     appendOutcomeAssessment,
     getOutcomeAssessment(assessmentId: OutcomeAssessmentId) {
       const ass = assessmentsById.get(assessmentId);
-      return ass ? freezeClone(ass) : undefined;
+      return ass ? deepCloneAndFreeze(ass) : undefined;
     },
     getLatestOutcomeAssessment(attemptId: AttemptId) {
       const list = assessmentsByAttempt.get(attemptId) || [];
       if (list.length === 0) return undefined;
       // Head unívoco: último elemento da cadeia estrita
-      return freezeClone(list[list.length - 1]);
+      return deepCloneAndFreeze(list[list.length - 1]);
     },
     listOutcomeAssessments(attemptId: AttemptId) {
-      return Object.freeze((assessmentsByAttempt.get(attemptId) || []).map(freezeClone));
+      return Object.freeze((assessmentsByAttempt.get(attemptId) || []).map(deepCloneAndFreeze));
     },
 
     appendReceipt,
     getReceipt(receiptId: ReceiptId) {
       const rc = receiptsById.get(receiptId);
-      return rc ? freezeClone(rc) : undefined;
+      return rc ? deepCloneAndFreeze(rc) : undefined;
     },
     listReceipts(decisionId?: DecisionId) {
-      const all = Array.from(receiptsById.values()).map(freezeClone);
+      const all = Array.from(receiptsById.values()).map(deepCloneAndFreeze);
       return Object.freeze(decisionId ? all.filter((r) => r.decisionId === decisionId) : all);
     },
 
     exportSnapshot(): ExecutionLedgerSnapshot {
       return Object.freeze({
-        attemptEvents: Object.freeze(attemptEventsList.map(freezeClone)),
-        signals: Object.freeze(Array.from(signalsById.values()).map(freezeClone)),
-        evidence: Object.freeze(Array.from(evidenceById.values()).map(freezeClone)),
-        assessments: Object.freeze(Array.from(assessmentsById.values()).map(freezeClone)),
-        receipts: Object.freeze(Array.from(receiptsById.values()).map(freezeClone)),
+        attemptEvents: Object.freeze(attemptEventsList.map(deepCloneAndFreeze)),
+        signals: Object.freeze(Array.from(signalsById.values()).map(deepCloneAndFreeze)),
+        evidence: Object.freeze(Array.from(evidenceById.values()).map(deepCloneAndFreeze)),
+        assessments: Object.freeze(Array.from(assessmentsById.values()).map(deepCloneAndFreeze)),
+        receipts: Object.freeze(Array.from(receiptsById.values()).map(deepCloneAndFreeze)),
       });
     },
   };

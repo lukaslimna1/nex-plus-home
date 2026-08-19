@@ -54,6 +54,8 @@ import {
 
 import type {
   DecisionMaterialContextId,
+  AuthorizationDecisionId,
+  ContextualAuthorizationDecision,
   ConfirmationDecision,
   ConfirmationDecisionId,
   RouteRuntimeFacts,
@@ -302,7 +304,9 @@ describe('NEX+ L0 Route Eligibility, Selection & Escalation (Bloco 0.5E)', () =>
     registry.registerTermsRevision(createMockTerms('t.1', 't_rev_01', route.routeRevisionId));
     registry.registerBindingRevision(createMockBinding('b.1', 'b_rev_01', cap.capabilityRevisionId, route.routeRevisionId));
 
-    const auth: HumanAuthorizationDecision = {
+    const auth: ContextualAuthorizationDecision = {
+      authorizationId: 'auth_01' as AuthorizationDecisionId,
+      materialContextId: 'ctx_01' as DecisionMaterialContextId,
       actorRef: 'user_01',
       operation: 'execute',
       verdict: 'denied',
@@ -335,7 +339,9 @@ describe('NEX+ L0 Route Eligibility, Selection & Escalation (Bloco 0.5E)', () =>
     registry.registerTermsRevision(createMockTerms('t.1', 't_rev_01', route.routeRevisionId));
     registry.registerBindingRevision(createMockBinding('b.1', 'b_rev_01', cap.capabilityRevisionId, route.routeRevisionId));
 
-    const auth: HumanAuthorizationDecision = {
+    const auth: ContextualAuthorizationDecision = {
+      authorizationId: 'auth_01' as AuthorizationDecisionId,
+      materialContextId: 'ctx_01' as DecisionMaterialContextId,
       actorRef: 'user_01',
       operation: 'execute',
       verdict: 'pending',
@@ -368,11 +374,12 @@ describe('NEX+ L0 Route Eligibility, Selection & Escalation (Bloco 0.5E)', () =>
     registry.registerTermsRevision(createMockTerms('t.1', 't_rev_01', route.routeRevisionId));
     registry.registerBindingRevision(createMockBinding('b.1', 'b_rev_01', cap.capabilityRevisionId, route.routeRevisionId));
 
-    const auth = {
+    const auth: ContextualAuthorizationDecision = {
+      authorizationId: 'auth_01' as AuthorizationDecisionId,
+      materialContextId: 'ctx_other_different' as DecisionMaterialContextId,
       actorRef: 'user_01',
       operation: 'execute',
-      materialContextId: 'ctx_other_different' as DecisionMaterialContextId,
-      verdict: 'authorized' as const,
+      verdict: 'authorized',
       reasonCode: 'PREV_AUTH',
     };
 
@@ -408,7 +415,14 @@ describe('NEX+ L0 Route Eligibility, Selection & Escalation (Bloco 0.5E)', () =>
       interpretation: { clarity: 'clear', potentiallyMutating: false, capabilityKey: cap.capabilityKey },
       capabilityRegistry: registry,
       policy: defaultPolicy,
-      authorization: { actorRef: 'u1', operation: 'op', verdict: 'denied', reasonCode: 'AUTH_DENIED' },
+      authorization: {
+        authorizationId: 'auth_01' as AuthorizationDecisionId,
+        materialContextId: 'ctx_01' as DecisionMaterialContextId,
+        actorRef: 'u1',
+        operation: 'op',
+        verdict: 'denied',
+        reasonCode: 'AUTH_DENIED',
+      },
       containsSecretMaterial: false,
       termsContext: defaultTermsContext,
       decidedAt: '2026-08-19T18:50:00.000Z',
@@ -439,7 +453,14 @@ describe('NEX+ L0 Route Eligibility, Selection & Escalation (Bloco 0.5E)', () =>
       interpretation: { clarity: 'clear', potentiallyMutating: false, capabilityKey: cap.capabilityKey },
       capabilityRegistry: registry,
       policy: localPolicy,
-      authorization: { actorRef: 'u1', operation: 'op', verdict: 'authorized', reasonCode: 'AUTH_OK' },
+      authorization: {
+        authorizationId: 'auth_01' as AuthorizationDecisionId,
+        materialContextId: 'ctx_01' as DecisionMaterialContextId,
+        actorRef: 'u1',
+        operation: 'op',
+        verdict: 'authorized',
+        reasonCode: 'AUTH_OK',
+      },
       containsSecretMaterial: false,
       termsContext: defaultTermsContext,
       decidedAt: '2026-08-19T18:50:00.000Z',
@@ -1776,7 +1797,14 @@ describe('NEX+ L0 Route Eligibility, Selection & Escalation (Bloco 0.5E)', () =>
       interpretation: { clarity: 'clear', potentiallyMutating: false, capabilityKey: cap.capabilityKey },
       capabilityRegistry: registry,
       policy: defaultPolicy,
-      authorization: { actorRef: 'u1', operation: 'op', verdict: 'denied', reasonCode: 'DENIED' },
+      authorization: {
+        authorizationId: 'auth_01' as AuthorizationDecisionId,
+        materialContextId: 'ctx_01' as DecisionMaterialContextId,
+        actorRef: 'u1',
+        operation: 'op',
+        verdict: 'denied',
+        reasonCode: 'DENIED',
+      },
       containsSecretMaterial: false,
       termsContext: defaultTermsContext,
       decidedAt: '2026-08-19T18:50:00.000Z',
@@ -1840,4 +1868,451 @@ describe('NEX+ L0 Route Eligibility, Selection & Escalation (Bloco 0.5E)', () =>
 
     assert.equal(result.evaluations[0].reasonCodes.includes('ROUTE_RETIRED'), true);
   });
+
+  // E65. dois Capability heads sem revision explícita NÃO usam ordem do Array
+  it('E65. dois Capability heads sem revision explícita NÃO usam ordem do Array', () => {
+    const registry = createCapabilityRegistry();
+    const cap1 = createMockCapability('cap.multi', 'cap_rev_01');
+    const cap2 = createMockCapability('cap.multi', 'cap_rev_02');
+    const route = createMockRoute('r.local', 'r_rev_01');
+    registry.registerCapabilityRevision(cap1);
+    registry.registerCapabilityRevision(cap2);
+    registry.registerRouteRevision(route);
+    registry.registerTermsRevision(createMockTerms('t.1', 't_rev_01', route.routeRevisionId));
+    registry.registerBindingRevision(createMockBinding('b.1', 'b_rev_01', cap1.capabilityRevisionId, route.routeRevisionId));
+
+    const result = evaluateDecision({
+      decisionId: 'dec_01' as DecisionId,
+      materialContextId: 'ctx_01' as DecisionMaterialContextId,
+      interpretation: { clarity: 'clear', potentiallyMutating: false, capabilityKey: 'cap.multi' as CapabilityKey },
+      capabilityRegistry: registry,
+      policy: defaultPolicy,
+      containsSecretMaterial: false,
+      termsContext: defaultTermsContext,
+      decidedAt: '2026-08-19T18:50:00.000Z',
+    });
+
+    assert.notEqual(result.disposition, 'route_selected');
+    assert.equal(result.disposition, 'awaiting_human');
+  });
+
+  // E66. dois Capability heads sem revision explícita → MULTIPLE_CAPABILITY_REVISIONS
+  it('E66. dois Capability heads sem revision explícita → MULTIPLE_CAPABILITY_REVISIONS', () => {
+    const registry = createCapabilityRegistry();
+    const cap1 = createMockCapability('cap.multi', 'cap_rev_01');
+    const cap2 = createMockCapability('cap.multi', 'cap_rev_02');
+    registry.registerCapabilityRevision(cap1);
+    registry.registerCapabilityRevision(cap2);
+
+    const result = evaluateDecision({
+      decisionId: 'dec_01' as DecisionId,
+      materialContextId: 'ctx_01' as DecisionMaterialContextId,
+      interpretation: { clarity: 'clear', potentiallyMutating: false, capabilityKey: 'cap.multi' as CapabilityKey },
+      capabilityRegistry: registry,
+      policy: defaultPolicy,
+      containsSecretMaterial: false,
+      termsContext: defaultTermsContext,
+      decidedAt: '2026-08-19T18:50:00.000Z',
+    });
+
+    assert.equal(result.disposition, 'awaiting_human');
+    assert.equal(result.reasonCode, 'MULTIPLE_CAPABILITY_REVISIONS');
+    assert.equal(result.escalation?.reasonCode, 'MULTIPLE_CAPABILITY_REVISIONS');
+  });
+
+  // E67. revision explícita válida seleciona exatamente aquela CapabilityRevision
+  it('E67. revision explícita válida seleciona exatamente aquela CapabilityRevision', () => {
+    const registry = createCapabilityRegistry();
+    const cap1 = createMockCapability('cap.multi', 'cap_rev_01');
+    const cap2 = createMockCapability('cap.multi', 'cap_rev_02');
+    const route = createMockRoute('r.local', 'r_rev_01');
+    registry.registerCapabilityRevision(cap1);
+    registry.registerCapabilityRevision(cap2);
+    registry.registerRouteRevision(route);
+    registry.registerTermsRevision(createMockTerms('t.1', 't_rev_01', route.routeRevisionId));
+    registry.registerBindingRevision(createMockBinding('b.1', 'b_rev_01', cap2.capabilityRevisionId, route.routeRevisionId));
+
+    const result = evaluateDecision({
+      decisionId: 'dec_01' as DecisionId,
+      materialContextId: 'ctx_01' as DecisionMaterialContextId,
+      interpretation: { clarity: 'clear', potentiallyMutating: false, capabilityKey: 'cap.multi' as CapabilityKey },
+      targetCapabilityRevisionId: 'cap_rev_02' as CapabilityRevisionId,
+      capabilityRegistry: registry,
+      policy: defaultPolicy,
+      containsSecretMaterial: false,
+      termsContext: defaultTermsContext,
+      decidedAt: '2026-08-19T18:50:00.000Z',
+    });
+
+    assert.equal(result.disposition, 'route_selected');
+    assert.equal(result.admission?.capabilityRevisionId, 'cap_rev_02');
+  });
+
+  // E68. revision explícita pertencente a outro CapabilityKey é rejeitada/suspensa
+  it('E68. revision explícita pertencente a outro CapabilityKey é rejeitada/suspensa', () => {
+    const registry = createCapabilityRegistry();
+    const capText = createMockCapability('cap.text', 'cap_rev_text');
+    const capAudio = createMockCapability('cap.audio', 'cap_rev_audio');
+    registry.registerCapabilityRevision(capText);
+    registry.registerCapabilityRevision(capAudio);
+
+    const result = evaluateDecision({
+      decisionId: 'dec_01' as DecisionId,
+      materialContextId: 'ctx_01' as DecisionMaterialContextId,
+      interpretation: { clarity: 'clear', potentiallyMutating: false, capabilityKey: 'cap.text' as CapabilityKey },
+      targetCapabilityRevisionId: 'cap_rev_audio' as CapabilityRevisionId,
+      capabilityRegistry: registry,
+      policy: defaultPolicy,
+      containsSecretMaterial: false,
+      termsContext: defaultTermsContext,
+      decidedAt: '2026-08-19T18:50:00.000Z',
+    });
+
+    assert.equal(result.disposition, 'clarification_required');
+    assert.equal(result.reasonCode, 'CAPABILITY_REVISION_INVALID');
+  });
+
+  // E69. authorizationRequired=true sem Authorization → awaiting_human
+  it('E69. authorizationRequired=true sem Authorization → awaiting_human', () => {
+    const registry = createCapabilityRegistry();
+    const cap = createMockCapability('cap.text', 'cap_rev_01');
+    const route = createMockRoute('r.local', 'r_rev_01');
+    registry.registerCapabilityRevision(cap);
+    registry.registerRouteRevision(route);
+    registry.registerTermsRevision(createMockTerms('t.1', 't_rev_01', route.routeRevisionId));
+    registry.registerBindingRevision(createMockBinding('b.1', 'b_rev_01', cap.capabilityRevisionId, route.routeRevisionId));
+
+    const result = evaluateDecision({
+      decisionId: 'dec_01' as DecisionId,
+      materialContextId: 'ctx_01' as DecisionMaterialContextId,
+      interpretation: { clarity: 'clear', potentiallyMutating: false, capabilityKey: cap.capabilityKey },
+      capabilityRegistry: registry,
+      policy: defaultPolicy,
+      authorizationRequired: true,
+      containsSecretMaterial: false,
+      termsContext: defaultTermsContext,
+      decidedAt: '2026-08-19T18:50:00.000Z',
+    });
+
+    assert.equal(result.disposition, 'awaiting_human');
+    assert.equal(result.reasonCode, 'AUTHORIZATION_REQUIRED');
+  });
+
+  // E70. Authorization sem materialContext pinado não compila/é recusada pelo contrato contextual
+  it('E70. Authorization com context mismatch é suspensa', () => {
+    const registry = createCapabilityRegistry();
+    const cap = createMockCapability('cap.text', 'cap_rev_01');
+    const route = createMockRoute('r.local', 'r_rev_01');
+    registry.registerCapabilityRevision(cap);
+    registry.registerRouteRevision(route);
+    registry.registerTermsRevision(createMockTerms('t.1', 't_rev_01', route.routeRevisionId));
+    registry.registerBindingRevision(createMockBinding('b.1', 'b_rev_01', cap.capabilityRevisionId, route.routeRevisionId));
+
+    const result = evaluateDecision({
+      decisionId: 'dec_01' as DecisionId,
+      materialContextId: 'ctx_01' as DecisionMaterialContextId,
+      interpretation: { clarity: 'clear', potentiallyMutating: false, capabilityKey: cap.capabilityKey },
+      capabilityRegistry: registry,
+      policy: defaultPolicy,
+      authorizationRequired: true,
+      authorization: {
+        authorizationId: 'auth_01' as AuthorizationDecisionId,
+        materialContextId: 'ctx_different' as DecisionMaterialContextId,
+        actorRef: 'u1',
+        operation: 'op',
+        verdict: 'authorized',
+        reasonCode: 'OK',
+      },
+      containsSecretMaterial: false,
+      termsContext: defaultTermsContext,
+      decidedAt: '2026-08-19T18:50:00.000Z',
+    });
+
+    assert.equal(result.disposition, 'awaiting_human');
+    assert.equal(result.reasonCode, 'AUTHORIZATION_CONTEXT_MISMATCH');
+  });
+
+  // E71. authorizationRequired=true + not_required não satisfaz gate
+  it('E71. authorizationRequired=true + not_required não satisfaz gate', () => {
+    const registry = createCapabilityRegistry();
+    const cap = createMockCapability('cap.text', 'cap_rev_01');
+    const route = createMockRoute('r.local', 'r_rev_01');
+    registry.registerCapabilityRevision(cap);
+    registry.registerRouteRevision(route);
+    registry.registerTermsRevision(createMockTerms('t.1', 't_rev_01', route.routeRevisionId));
+    registry.registerBindingRevision(createMockBinding('b.1', 'b_rev_01', cap.capabilityRevisionId, route.routeRevisionId));
+
+    const result = evaluateDecision({
+      decisionId: 'dec_01' as DecisionId,
+      materialContextId: 'ctx_01' as DecisionMaterialContextId,
+      interpretation: { clarity: 'clear', potentiallyMutating: false, capabilityKey: cap.capabilityKey },
+      capabilityRegistry: registry,
+      policy: defaultPolicy,
+      authorizationRequired: true,
+      authorization: {
+        authorizationId: 'auth_01' as AuthorizationDecisionId,
+        materialContextId: 'ctx_01' as DecisionMaterialContextId,
+        actorRef: 'u1',
+        operation: 'op',
+        verdict: 'not_required',
+        reasonCode: 'NOT_REQUIRED',
+      },
+      containsSecretMaterial: false,
+      termsContext: defaultTermsContext,
+      decidedAt: '2026-08-19T18:50:00.000Z',
+    });
+
+    assert.equal(result.disposition, 'awaiting_human');
+    assert.equal(result.reasonCode, 'AUTHORIZATION_REQUIRED_NOT_SATISFIED');
+  });
+
+  // E72. confirmationRequired=true + not_required não satisfaz gate
+  it('E72. confirmationRequired=true + not_required não satisfaz gate', () => {
+    const registry = createCapabilityRegistry();
+    const cap = createMockCapability('cap.text', 'cap_rev_01');
+    const route = createMockRoute('r.local', 'r_rev_01');
+    registry.registerCapabilityRevision(cap);
+    registry.registerRouteRevision(route);
+    registry.registerTermsRevision(createMockTerms('t.1', 't_rev_01', route.routeRevisionId));
+    registry.registerBindingRevision(createMockBinding('b.1', 'b_rev_01', cap.capabilityRevisionId, route.routeRevisionId));
+
+    const result = evaluateDecision({
+      decisionId: 'dec_01' as DecisionId,
+      materialContextId: 'ctx_01' as DecisionMaterialContextId,
+      interpretation: { clarity: 'clear', potentiallyMutating: false, capabilityKey: cap.capabilityKey },
+      capabilityRegistry: registry,
+      policy: defaultPolicy,
+      confirmationRequired: true,
+      confirmation: {
+        confirmationId: 'conf_01' as ConfirmationDecisionId,
+        materialContextId: 'ctx_01' as DecisionMaterialContextId,
+        actorRef: 'u1',
+        operation: 'op',
+        verdict: 'not_required',
+        reasonCode: 'NOT_REQ',
+      },
+      containsSecretMaterial: false,
+      termsContext: defaultTermsContext,
+      decidedAt: '2026-08-19T18:50:00.000Z',
+    });
+
+    assert.equal(result.disposition, 'awaiting_human');
+    assert.equal(result.reasonCode, 'CONFIRMATION_REQUIRED_NOT_SATISFIED');
+  });
+
+  // E73. confirmationRequired=true + confirmed + mesmo contexto passa
+  it('E73. confirmationRequired=true + confirmed + mesmo contexto passa', () => {
+    const registry = createCapabilityRegistry();
+    const cap = createMockCapability('cap.text', 'cap_rev_01');
+    const route = createMockRoute('r.local', 'r_rev_01');
+    registry.registerCapabilityRevision(cap);
+    registry.registerRouteRevision(route);
+    registry.registerTermsRevision(createMockTerms('t.1', 't_rev_01', route.routeRevisionId));
+    registry.registerBindingRevision(createMockBinding('b.1', 'b_rev_01', cap.capabilityRevisionId, route.routeRevisionId));
+
+    const result = evaluateDecision({
+      decisionId: 'dec_01' as DecisionId,
+      materialContextId: 'ctx_01' as DecisionMaterialContextId,
+      interpretation: { clarity: 'clear', potentiallyMutating: false, capabilityKey: cap.capabilityKey },
+      capabilityRegistry: registry,
+      policy: defaultPolicy,
+      confirmationRequired: true,
+      confirmation: {
+        confirmationId: 'conf_01' as ConfirmationDecisionId,
+        materialContextId: 'ctx_01' as DecisionMaterialContextId,
+        actorRef: 'u1',
+        operation: 'op',
+        verdict: 'confirmed',
+        reasonCode: 'USER_CONFIRMED',
+      },
+      containsSecretMaterial: false,
+      termsContext: defaultTermsContext,
+      decidedAt: '2026-08-19T18:50:00.000Z',
+    });
+
+    assert.equal(result.disposition, 'route_selected');
+    assert.equal(result.admission?.confirmationDecisionId, 'conf_01');
+  });
+
+  // E74. Binding de outra Capability não pode avaliar Route
+  it('E74. Binding de outra Capability não pode avaliar Route', () => {
+    const cap = createMockCapability('cap.text', 'cap_rev_01');
+    const route = createMockRoute('r.local', 'r_rev_01');
+    const crossBinding = createMockBinding('b.1', 'b_rev_01', 'cap_rev_other' as CapabilityRevisionId, route.routeRevisionId);
+
+    assert.throws(
+      () =>
+        evaluateCandidateRoute({
+          decisionId: 'dec_01' as DecisionId,
+          materialContextId: 'ctx_01' as DecisionMaterialContextId,
+          routeEvaluationId: 'eval_01' as RouteEvaluationId,
+          capability: cap,
+          binding: crossBinding,
+          route,
+          termsResult: { status: 'no_terms' },
+          termsContext: defaultTermsContext,
+          policy: defaultPolicy,
+          containsSecretMaterial: false,
+          evaluatedAt: '2026-08-19T18:50:00.000Z',
+        }),
+      /does not match capability/,
+    );
+  });
+
+  // E75. Binding aponta para outra Route não pode avaliar Route
+  it('E75. Binding aponta para outra Route não pode avaliar Route', () => {
+    const cap = createMockCapability('cap.text', 'cap_rev_01');
+    const route = createMockRoute('r.local', 'r_rev_01');
+    const crossBinding = createMockBinding('b.1', 'b_rev_01', cap.capabilityRevisionId, 'r_rev_other' as RouteRevisionId);
+
+    assert.throws(
+      () =>
+        evaluateCandidateRoute({
+          decisionId: 'dec_01' as DecisionId,
+          materialContextId: 'ctx_01' as DecisionMaterialContextId,
+          routeEvaluationId: 'eval_01' as RouteEvaluationId,
+          capability: cap,
+          binding: crossBinding,
+          route,
+          termsResult: { status: 'no_terms' },
+          termsContext: defaultTermsContext,
+          policy: defaultPolicy,
+          containsSecretMaterial: false,
+          evaluatedAt: '2026-08-19T18:50:00.000Z',
+        }),
+      /does not match route/,
+    );
+  });
+
+  // E76. RuntimeFacts de Route A não podem avaliar Route B
+  it('E76. RuntimeFacts de Route A não podem avaliar Route B', () => {
+    const cap = createMockCapability('cap.text', 'cap_rev_01');
+    const route = createMockRoute('r.local', 'r_rev_01');
+    const binding = createMockBinding('b.1', 'b_rev_01', cap.capabilityRevisionId, route.routeRevisionId);
+    const factsRouteB = {
+      routeRevisionId: 'r_rev_other' as RouteRevisionId,
+      availability: 'available' as const,
+      health: 'healthy' as const,
+      cooldown: 'clear' as const,
+      freshness: 'fresh' as const,
+      observedAt: '2026-08-19T18:50:00.000Z',
+      provenance: { source: 'runtime_observation' as const, acquisitionBasis: 'observed' as const, verificationStatus: 'empirically_verified' as const, observedAt: '2026-08-19T18:50:00.000Z' },
+    };
+
+    assert.throws(
+      () =>
+        evaluateCandidateRoute({
+          decisionId: 'dec_01' as DecisionId,
+          materialContextId: 'ctx_01' as DecisionMaterialContextId,
+          routeEvaluationId: 'eval_01' as RouteEvaluationId,
+          capability: cap,
+          binding,
+          route,
+          termsResult: { status: 'no_terms' },
+          termsContext: defaultTermsContext,
+          policy: defaultPolicy,
+          containsSecretMaterial: false,
+          runtimeFacts: factsRouteB,
+          evaluatedAt: '2026-08-19T18:50:00.000Z',
+        }),
+      /does not match candidate route/,
+    );
+  });
+
+  // E77. Terms de Route A não podem avaliar Route B
+  it('E77. Terms de Route A não podem avaliar Route B', () => {
+    const cap = createMockCapability('cap.text', 'cap_rev_01');
+    const route = createMockRoute('r.local', 'r_rev_01');
+    const binding = createMockBinding('b.1', 'b_rev_01', cap.capabilityRevisionId, route.routeRevisionId);
+    const termsRouteB = createMockTerms('t.other', 't_rev_other', 'r_rev_other' as RouteRevisionId);
+
+    assert.throws(
+      () =>
+        evaluateCandidateRoute({
+          decisionId: 'dec_01' as DecisionId,
+          materialContextId: 'ctx_01' as DecisionMaterialContextId,
+          routeEvaluationId: 'eval_01' as RouteEvaluationId,
+          capability: cap,
+          binding,
+          route,
+          termsResult: { status: 'single_applicable', terms: termsRouteB },
+          termsContext: defaultTermsContext,
+          policy: defaultPolicy,
+          containsSecretMaterial: false,
+          evaluatedAt: '2026-08-19T18:50:00.000Z',
+        }),
+      /does not match candidate route/,
+    );
+  });
+
+  // E78. Continuation com Assessment de outro Attempt é rejeitada
+  it('E78. Continuation com Assessment de outro Attempt é rejeitada', () => {
+    const attempt = {
+      attemptId: 'att_01' as AttemptId,
+      decisionId: 'dec_01' as DecisionId,
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_01' as BindingRevisionId,
+      routeRevisionId: 'r_01' as RouteRevisionId,
+      status: 'running' as const,
+      createdAt: '2026-08-19T18:50:00.000Z',
+    };
+    const assessmentOtherAttempt = {
+      assessmentId: 'ass_01' as OutcomeAssessmentId,
+      attemptId: 'att_other' as AttemptId,
+      evidenceRefs: [],
+      verdict: 'confirmed_mutation' as const,
+      reasonCode: 'MUTATION_OK',
+      assessedAt: '2026-08-19T18:50:05.000Z',
+    };
+
+    assert.throws(
+      () =>
+        assessContinuationAfterAttempt({
+          decisionId: 'dec_01' as DecisionId,
+          materialContextId: 'ctx_01' as DecisionMaterialContextId,
+          attempt,
+          assessment: assessmentOtherAttempt,
+          isDomainMutating: true,
+          assessedAt: '2026-08-19T18:50:05.000Z',
+        }),
+      /does not match AttemptState/,
+    );
+  });
+
+  // E79. Continuation com Attempt de outra Decision é rejeitada
+  it('E79. Continuation com Attempt de outra Decision é rejeitada', () => {
+    const attempt = {
+      attemptId: 'att_01' as AttemptId,
+      decisionId: 'dec_other' as DecisionId,
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_01' as BindingRevisionId,
+      routeRevisionId: 'r_01' as RouteRevisionId,
+      status: 'running' as const,
+      createdAt: '2026-08-19T18:50:00.000Z',
+    };
+    const assessment = {
+      assessmentId: 'ass_01' as OutcomeAssessmentId,
+      attemptId: 'att_01' as AttemptId,
+      evidenceRefs: [],
+      verdict: 'confirmed_mutation' as const,
+      reasonCode: 'MUTATION_OK',
+      assessedAt: '2026-08-19T18:50:05.000Z',
+    };
+
+    assert.throws(
+      () =>
+        assessContinuationAfterAttempt({
+          decisionId: 'dec_01' as DecisionId,
+          materialContextId: 'ctx_01' as DecisionMaterialContextId,
+          attempt,
+          assessment,
+          isDomainMutating: true,
+          assessedAt: '2026-08-19T18:50:05.000Z',
+        }),
+      /does not match DecisionId/,
+    );
+  });
 });
+

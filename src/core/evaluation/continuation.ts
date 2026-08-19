@@ -43,10 +43,23 @@ export function assessContinuationAfterAttempt(params: AssessContinuationParams)
   const {
     decisionId,
     materialContextId,
+    attempt,
     assessment,
     isDomainMutating,
     assessedAt,
   } = params;
+
+  // 0. Correlação Causal Obrigatória
+  if (assessment.attemptId !== attempt.attemptId) {
+    throw new Error(
+      `[L0 Continuation] OutcomeAssessment attemptId '${assessment.attemptId}' does not match AttemptState '${attempt.attemptId}'.`,
+    );
+  }
+  if (attempt.decisionId !== decisionId) {
+    throw new Error(
+      `[L0 Continuation] AttemptState decisionId '${attempt.decisionId}' does not match DecisionId '${decisionId}'.`,
+    );
+  }
 
   if (assessment.verdict === 'confirmed_mutation') {
     return {

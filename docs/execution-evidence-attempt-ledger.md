@@ -86,3 +86,11 @@ Registro imutável que avalia a mutação factual ou resultado:
 - **Discriminated Union**: `Receipt = ExecutionOutcomeReceipt | PolicyDenialReceipt | AuthorizationDenialReceipt | NoEligibleRouteReceipt | CancelledReceipt`.
 - **Imutabilidade e Validação**: Recibos de execução exigem `attemptId`, `outcomeAssessmentId` e `routeEvaluationId` válidos do mesmo Attempt. Recibos de negação/cancelamento proíbem estritamente `attemptId` (INV-09).
 - **Sem Falsas Declarações**: Se o `OutcomeAssessment` for `indeterminate`, o `Receipt` preserva a incerteza e proíbe declarações factuais de sucesso.
+
+---
+
+## 7. Imutabilidade Defensiva Profunda (Deep Defensive Copy & Freeze)
+
+- **Ingestão e Leitura Seguras**: Tanto no momento da gravação (`append*`) quanto na leitura (`get*`, `list*`, `exportSnapshot`), o ledger aplica clonagem defensiva recursiva e congelamento estrito (`deepCloneAndFreeze`).
+- **Isolamento Total de Referências**: Objetos e arrays aninhados (`safeMetadata`, `safeFacts`, `signalRefs`, `evidenceRefs`, `safeStructuredFacts`) não compartilham estado mutável com o chamador externo. Mutações posteriores nos objetos originais não afetam o ledger interno, e objetos lidos do ledger não podem ser mutados externamente.
+

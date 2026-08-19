@@ -1926,4 +1926,164 @@ describe('NEX+ L0 ExecutionEvidence & Attempt Ledger (Bloco 0.5D)', () => {
 
     assert.equal(ledger.listAttempts().length, 1);
   });
+
+  // D61. safeMetadata contém objeto aninhado. Após append: mutar o objeto original NÃO muda o Ledger.
+  it('D61. safeMetadata contém objeto aninhado. Após append: mutar o objeto original NÃO muda o Ledger.', () => {
+    const ledger = createExecutionLedgerStore();
+    ledger.appendAttemptEvent({
+      type: 'AttemptCreated',
+      attemptId: 'att_01' as AttemptId,
+      decisionId: 'dec_01' as DecisionId,
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_rev_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_rev_01' as BindingRevisionId,
+      routeRevisionId: 'route_rev_01' as RouteRevisionId,
+      createdAt: '2026-08-19T18:40:00.000Z',
+    });
+
+    const nested = { deep: { count: 42 } };
+    const originalSignal: ExecutionSignal = {
+      signalId: 'sig_01' as ExecutionSignalId,
+      attemptId: 'att_01' as AttemptId,
+      kind: 'technical_success',
+      provenance: defaultProvenance,
+      observedAt: '2026-08-19T18:40:01.000Z',
+      safeMetadata: nested,
+    };
+
+    ledger.appendExecutionSignal(originalSignal);
+
+    // Muta objeto externo original
+    nested.deep.count = 999;
+
+    const stored = ledger.getExecutionSignal('sig_01' as ExecutionSignalId);
+    assert.equal((stored?.safeMetadata as any)?.deep?.count, 42);
+  });
+
+  // D62. getExecutionSignal retorna objeto. Tentar alterar campo aninhado retornado NÃO muda o Ledger.
+  it('D62. getExecutionSignal retorna objeto. Tentar alterar campo aninhado retornado NÃO muda o Ledger.', () => {
+    const ledger = createExecutionLedgerStore();
+    ledger.appendAttemptEvent({
+      type: 'AttemptCreated',
+      attemptId: 'att_01' as AttemptId,
+      decisionId: 'dec_01' as DecisionId,
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_rev_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_rev_01' as BindingRevisionId,
+      routeRevisionId: 'route_rev_01' as RouteRevisionId,
+      createdAt: '2026-08-19T18:40:00.000Z',
+    });
+
+    ledger.appendExecutionSignal({
+      signalId: 'sig_01' as ExecutionSignalId,
+      attemptId: 'att_01' as AttemptId,
+      kind: 'technical_success',
+      provenance: defaultProvenance,
+      observedAt: '2026-08-19T18:40:01.000Z',
+      safeMetadata: { deep: { status: 'initial' } },
+    });
+
+    const sig = ledger.getExecutionSignal('sig_01' as ExecutionSignalId);
+    assert.ok(sig);
+    assert.throws(() => {
+      (sig.safeMetadata as any).deep.status = 'mutated';
+    });
+
+    const sigFresh = ledger.getExecutionSignal('sig_01' as ExecutionSignalId);
+    assert.equal((sigFresh?.safeMetadata as any)?.deep?.status, 'initial');
+  });
+
+  // D63. ExecutionEvidence.signalRefs e safeFacts aninhado não compartilham estado mutável externo.
+  it('D63. ExecutionEvidence.signalRefs e safeFacts aninhado não compartilham estado mutável externo.', () => {
+    const ledger = createExecutionLedgerStore();
+    ledger.appendAttemptEvent({
+      type: 'AttemptCreated',
+      attemptId: 'att_01' as AttemptId,
+      decisionId: 'dec_01' as DecisionId,
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_rev_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_rev_01' as BindingRevisionId,
+      routeRevisionId: 'route_rev_01' as RouteRevisionId,
+      createdAt: '2026-08-19T18:40:00.000Z',
+    });
+
+    const sigRefs = [] as ExecutionSignalId[];
+    const safeFacts = { nested: { verified: true } };
+
+    ledger.appendExecutionEvidence({
+      evidenceId: 'evi_01' as ExecutionEvidenceId,
+      attemptId: 'att_01' as AttemptId,
+      kind: 'no_effect_verified',
+      signalRefs: sigRefs,
+      safeFacts,
+      provenance: defaultProvenance,
+      recordedAt: '2026-08-19T18:40:02.000Z',
+    });
+
+    // Muta array e objeto externo
+    safeFacts.nested.verified = false;
+
+    const stored = ledger.getExecutionEvidence('evi_01' as ExecutionEvidenceId);
+    assert.equal((stored?.safeFacts as any)?.nested?.verified, true);
+    assert.throws(() => {
+      (stored?.signalRefs as any).push('sig_fake' as ExecutionSignalId);
+    });
+  });
+
+  // D64. Receipt.safeStructuredFacts aninhado não pode modificar Receipt armazenado.
+  it('D64. Receipt.safeStructuredFacts aninhado não pode modificar Receipt armazenado.', () => {
+    const ledger = createExecutionLedgerStore();
+    const facts = { auth: { role: 'admin' } };
+
+    ledger.appendReceipt({
+      receiptId: 'rcpt_01' as ReceiptId,
+      decisionId: 'dec_01' as DecisionId,
+      kind: 'authorization_denial',
+      verdictSummary: 'authorization_denied',
+      reasonCode: 'UNAUTHORIZED_ROLE',
+      safeStructuredFacts: facts,
+      materializedAt: '2026-08-19T18:40:05.000Z',
+    });
+
+    facts.auth.role = 'user';
+
+    const stored = ledger.getReceipt('rcpt_01' as ReceiptId);
+    assert.equal((stored?.safeStructuredFacts as any)?.auth?.role, 'admin');
+    assert.throws(() => {
+      (stored?.safeStructuredFacts as any).auth.role = 'hacked';
+    });
+  });
+
+  // D65. exportSnapshot com objetos aninhados não permite modificar o Ledger original.
+  it('D65. exportSnapshot com objetos aninhados não permite modificar o Ledger original.', () => {
+    const ledger = createExecutionLedgerStore();
+    ledger.appendAttemptEvent({
+      type: 'AttemptCreated',
+      attemptId: 'att_01' as AttemptId,
+      decisionId: 'dec_01' as DecisionId,
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_rev_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_rev_01' as BindingRevisionId,
+      routeRevisionId: 'route_rev_01' as RouteRevisionId,
+      createdAt: '2026-08-19T18:40:00.000Z',
+    });
+    ledger.appendExecutionSignal({
+      signalId: 'sig_01' as ExecutionSignalId,
+      attemptId: 'att_01' as AttemptId,
+      kind: 'technical_success',
+      provenance: defaultProvenance,
+      observedAt: '2026-08-19T18:40:01.000Z',
+      safeMetadata: { config: { level: 5 } },
+    });
+
+    const snapshot = ledger.exportSnapshot();
+    assert.throws(() => {
+      (snapshot.signals[0].safeMetadata as any).config.level = 99;
+    });
+
+    const sig = ledger.getExecutionSignal('sig_01' as ExecutionSignalId);
+    assert.equal((sig?.safeMetadata as any)?.config?.level, 5);
+  });
 });
+
+

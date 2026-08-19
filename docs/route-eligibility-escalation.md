@@ -42,8 +42,9 @@ Toda decisão de L0 opera sob um `DecisionMaterialContextId` representativo da r
 
 Para que uma rota seja declarada `eligible`:
 1. **Binding & Capability**:
+   - Resolução de Capability Heads: Se houver exatamente 1 head, ele é selecionado. Se houver múltiplos heads sem `capabilityRevisionId` explícito, a decisão é suspensa sob `awaiting_human` (`MULTIPLE_CAPABILITY_REVISIONS`). É expressamente proibido selecionar por ordem de inserção (`heads[0]`).
+   - Correlação Causal de Binding: O `BindingRevision` deve coincidir estritamente com `capability.capabilityRevisionId` e `route.routeRevisionId`.
    - Capability deve existir no Registry com status `active` (status `retired` $\rightarrow$ inelegível; `deprecated` $\rightarrow$ `awaiting_human` com escalonamento).
-   - A rota deve possuir um `BindingRevision` atual/head vinculando-a à Capability.
 2. **Route Lifecycle**:
    - `active` $\rightarrow$ elegível.
    - `retired` $\rightarrow$ inelegível.
@@ -53,7 +54,9 @@ Para que uma rota seja declarada `eligible`:
    - `zeroCostAxis.verdict === 'allow'` (quando `zeroCostRequired === true`, bloqueia cobranças pagas, trials e créditos promocionais isolados).
 4. **Terms Resolution (0.5B)**:
    - Projeção de termos com escopo resolvido com sucesso (`status === 'resolved'`). Estados como `insufficient_context`, `no_applicable_terms` ou `unresolved_conflict` tornam a rota inelegível.
+   - Correlação causal: Todas as `RouteTermsRevision` aplicáveis devem pertencer estritamente à mesma `route.routeRevisionId`.
 5. **Runtime Facts**:
+   - Correlação causal: `runtimeFacts.routeRevisionId` deve coincidir estritamente com `route.routeRevisionId`.
    - `availability === 'available'` (ou não `unavailable`).
    - `cooldown !== 'active'`.
    - `health !== 'unhealthy'` (`degraded` é permitido sem penalidade automática).
@@ -75,11 +78,14 @@ Para que uma rota seja declarada `eligible`:
 ## 6. Admissão e Transição para Attempt (`DispatchAdmission`)
 
 - Uma `DispatchAdmission` é gerada apenas quando a decisão atinge `route_selected`.
-- O helper `buildAttemptCreatedEvent(admission, attemptId, createdAt)` cria o evento inicial de ciclo de vida do Bloco 0.5D pinçando todas as referências exatas da admissão.
+- Pinagem obrigatória de `authorizationId` e `confirmationId` se os gates correspondentes forem exigidos.
+- O helper `buildAttemptCreatedEvent(admission, attemptId, createdAt)` cria o evento inicial de ciclo de vida do Bloco 0.5D validando que o contexto material atual coincide com a admissão.
 
 ---
 
 ## 7. Diretivas de Continuação Pós-Tentativa (`assessContinuationAfterAttempt`)
+
+- **Validação Causal Estrita**: Valida que `assessment.attemptId === attempt.attemptId` e `attempt.decisionId === decisionId`.
 
 | Desfecho do Attempt (0.5D) | Natureza da Operação | Diretiva de Continuação | Justificativa |
 | :--- | :--- | :--- | :--- |
