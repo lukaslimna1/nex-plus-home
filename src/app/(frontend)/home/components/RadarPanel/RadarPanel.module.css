@@ -211,3 +211,11 @@
 .sparklineSvg {
   flex-shrink: 0;
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .productRow,
+  .subHeaderLink {
+    transition: none !important;
+    transform: none !important;
+  }
+}

@@ -59,7 +59,6 @@
   transition: all 0.15s ease;
   width: 136px;
   overflow: hidden;
-  cursor: pointer;
   flex-shrink: 0;
 }
 
@@ -187,5 +186,13 @@
   }
   .statusBadgesRow {
     width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .badgeCard,
+  .iconContainer {
+    transition: none !important;
+    transform: none !important;
   }
 }

@@ -339,7 +339,6 @@
 
 .openChatBtn:hover {
   transform: translateY(-1.5px);
-  background: linear-gradient(135deg, #582287 0%, #bd1c6b 100%);
   border-color: rgba(247, 242, 255, 0.30);
   box-shadow: 0 6px 28px rgba(176, 24, 98, 0.55),
     0 0 32px rgba(75, 29, 115, 0.45),
@@ -369,6 +368,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .activitiesDrawer,
   .openChatBtn,
   .chevronBtn,
   .speechTrack,

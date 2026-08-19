@@ -3,10 +3,14 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
   column-gap: 12px;
   row-gap: 12px;
-  background: rgba(18, 20, 36, 0.6);
+  background: linear-gradient(
+    135deg,
+    rgba(33, 16, 57, 0.35) 0%,
+    rgba(5, 2, 10, 0.60) 100%
+  );
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(247, 242, 255, 0.055);
   border-radius: 14px;
   padding: 12px 10px;
 }
@@ -40,7 +44,7 @@
 
 .chipLabel {
   font-size: 0.72rem;
-  color: #94a3b8;
+  color: #8fa1b2;
   white-space: nowrap;
   line-height: 1.2;
 }
@@ -48,7 +52,7 @@
 .chipValue {
   font-size: 0.94rem;
   font-weight: 700;
-  color: #f1f5f9;
+  color: #f7f2ff;
   line-height: 1.1;
 }
 
@@ -230,4 +234,12 @@
   opacity: 0.85;
   font-size: 0.68rem;
   white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .supplierRow,
+  .subHeaderLink {
+    transition: none !important;
+    transform: none !important;
+  }
 }

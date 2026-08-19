@@ -11,6 +11,32 @@ import {
 } from "@phosphor-icons/react";
 import { MOCK_SUPPLIERS } from "../../data/mockHomeData";
 
+const supplierAvatarThemes: Record<
+  string,
+  { bg: string; color: string; border: string }
+> = {
+  "sup-1": {
+    bg: "rgba(228, 91, 79, 0.14)", // Nexus
+    color: "#E45B4F",
+    border: "rgba(228, 91, 79, 0.35)",
+  },
+  "sup-2": {
+    bg: "rgba(176, 24, 98, 0.14)", // Pulso
+    color: "#B01862",
+    border: "rgba(176, 24, 98, 0.35)",
+  },
+  "sup-3": {
+    bg: "rgba(255, 179, 0, 0.14)", // Incandescente
+    color: "#FFB300",
+    border: "rgba(255, 179, 0, 0.35)",
+  },
+  "sup-4": {
+    bg: "rgba(47, 125, 217, 0.14)", // Boreal
+    color: "#2F7DD9",
+    border: "rgba(47, 125, 217, 0.35)",
+  },
+};
+
 export function SuppliersPanel() {
   return (
     <ModuleCard
@@ -67,44 +93,52 @@ export function SuppliersPanel() {
 
       {/* Lista de Fornecedores Recentes */}
       <div className={styles.suppliersList}>
-        {MOCK_SUPPLIERS.map((s) => (
-          <div key={s.id} className={styles.supplierRow}>
-            <div className={styles.supplierLeft}>
-              <div
-                className={styles.letterAvatar}
-                style={{
-                  background: `${s.themeColor}1a`,
-                  color: s.themeColor,
-                  border: `1px solid ${s.themeColor}4d`,
-                }}
-              >
-                {s.initial}
-              </div>
-              <div className={styles.detailsCol}>
-                <span className={styles.nameText}>{s.name}</span>
-                <span className={styles.categoryText}>{s.category}</span>
-              </div>
-            </div>
+        {MOCK_SUPPLIERS.map((s) => {
+          const avatarTheme = supplierAvatarThemes[s.id] || {
+            bg: "rgba(247, 242, 255, 0.10)",
+            color: "#F7F2FF",
+            border: "rgba(247, 242, 255, 0.20)",
+          };
 
-            <div className={styles.rightCol}>
-              <div
-                className={
-                  s.status === "Em teste"
-                    ? styles.statusIndicatorTest
-                    : styles.statusIndicatorActive
-                }
-              >
+          return (
+            <div key={s.id} className={styles.supplierRow}>
+              <div className={styles.supplierLeft}>
+                <div
+                  className={styles.letterAvatar}
+                  style={{
+                    background: avatarTheme.bg,
+                    color: avatarTheme.color,
+                    border: `1px solid ${avatarTheme.border}`,
+                  }}
+                >
+                  {s.initial}
+                </div>
+                <div className={styles.detailsCol}>
+                  <span className={styles.nameText}>{s.name}</span>
+                  <span className={styles.categoryText}>{s.category}</span>
+                </div>
+              </div>
+
+              <div className={styles.rightCol}>
                 <div
                   className={
-                    s.status === "Em teste" ? styles.dotAmber : styles.dotGreen
+                    s.status === "Em teste"
+                      ? styles.statusIndicatorTest
+                      : styles.statusIndicatorActive
                   }
-                />
-                <span>{s.status}</span>
+                >
+                  <div
+                    className={
+                      s.status === "Em teste" ? styles.dotAmber : styles.dotGreen
+                    }
+                  />
+                  <span>{s.status}</span>
+                </div>
+                <span className={styles.timeText}>{s.updatedAt}</span>
               </div>
-              <span className={styles.timeText}>{s.updatedAt}</span>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </ModuleCard>
   );

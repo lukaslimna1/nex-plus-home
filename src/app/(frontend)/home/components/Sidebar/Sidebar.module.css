@@ -165,3 +165,12 @@
   background: rgba(247, 242, 255, 0.06);
   margin-bottom: 2px;
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .collapseToggle,
+  .navButton {
+    transition: none !important;
+    transform: none !important;
+  }
+}
