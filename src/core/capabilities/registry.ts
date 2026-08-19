@@ -300,8 +300,9 @@ export function resolveTermsForRoute(
     }
   }
 
-  // Se houver termos com contexto insuficiente e nenhum outro termo aplicável resolvido
-  if (insufficientTerms.length > 0 && applicableTerms.length === 0) {
+  // Se houver qualquer termo com contexto insuficiente (mesmo que haja outros termos já aplicáveis),
+  // a resolução factual completa não pode ser declarada como resolvida
+  if (insufficientTerms.length > 0) {
     const missingDimensions = Array.from(new Set(insufficientTerms.flatMap((i) => i.missing)));
     return {
       status: 'insufficient_context',

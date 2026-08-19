@@ -1584,4 +1584,189 @@ describe('NEX+ L0 Capability Registry & Route/Terms Ledger (Bloco 0.5B / B3)', (
     assert.equal(activeRoutes.length, 1);
     assert.equal(activeRoutes[0].routeRevisionId, 'rev_r_new');
   });
+
+  // ==========================================================================
+  // HARDENING FINAL FASE A (0.5B) - PRESERVAÇÃO DE CONTEXTO INSUFICIENTE
+  // ==========================================================================
+
+  // A1. T1 aplicável + T2 depende de accountTier ausente → insufficient_context
+  it('A1. T1 aplicável + T2 depende de accountTier ausente → insufficient_context', () => {
+    const registry = createCapabilityRegistry();
+    const route: RouteRevision = {
+      routeKey: 'route.hard.a1' as RouteKey,
+      routeRevisionId: 'rev_r_a1' as RouteRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      idempotencyProfile: { supportType: 'none' },
+      networkTopologyScopes: ['loopback'],
+      controlOwnership: 'operator_managed',
+      externalServiceNature: 'none',
+      crossesEgressBoundary: false,
+      domainEffect: 'none',
+    };
+    registry.registerRouteRevision(route);
+
+    const t1: RouteTermsRevision = {
+      termsKey: 'terms.a1.base' as RouteTermsKey,
+      termsRevisionId: 'rev_t_a1_base' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_a1' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_none',
+      billingComponents: [],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+    const t2: RouteTermsRevision = {
+      termsKey: 'terms.a1.tier' as RouteTermsKey,
+      termsRevisionId: 'rev_t_a1_tier' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_a1' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      applicability: { accountTier: 'Enterprise' },
+      provenance: defaultProvenance,
+      billingStatus: 'known_components',
+      billingComponents: [{ type: 'fixed_subscription', amount: 50 }],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+
+    registry.registerTermsRevision(t1);
+    registry.registerTermsRevision(t2);
+
+    // Contexto com data válida, mas sem accountTier
+    const result = registry.getTermsForRoute('rev_r_a1' as RouteRevisionId, {
+      at: '2026-08-19T18:00:00.000Z',
+    });
+    assert.equal(result.status, 'insufficient_context');
+    if (result.status === 'insufficient_context') {
+      assert.deepEqual(result.missingDimensions, ['accountTier']);
+      assert.equal(result.candidateTerms.length, 1);
+      assert.equal(result.candidateTerms[0].termsRevisionId, 'rev_t_a1_tier');
+    }
+  });
+
+  // A2. T1 aplicável + T2 exige region=BR e accountTier ausente, context region=US → T2 descartado por mismatch; T1 é single_applicable
+  it('A2. T1 aplicável + T2 exige region=BR e accountTier ausente, context region=US → T2 descartado por mismatch; T1 é single_applicable', () => {
+    const registry = createCapabilityRegistry();
+    const route: RouteRevision = {
+      routeKey: 'route.hard.a2' as RouteKey,
+      routeRevisionId: 'rev_r_a2' as RouteRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      idempotencyProfile: { supportType: 'none' },
+      networkTopologyScopes: ['loopback'],
+      controlOwnership: 'operator_managed',
+      externalServiceNature: 'none',
+      crossesEgressBoundary: false,
+      domainEffect: 'none',
+    };
+    registry.registerRouteRevision(route);
+
+    const t1: RouteTermsRevision = {
+      termsKey: 'terms.a2.base' as RouteTermsKey,
+      termsRevisionId: 'rev_t_a2_base' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_a2' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_none',
+      billingComponents: [],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+    const t2: RouteTermsRevision = {
+      termsKey: 'terms.a2.br_tier' as RouteTermsKey,
+      termsRevisionId: 'rev_t_a2_br_tier' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_a2' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      applicability: { region: 'BR', accountTier: 'Enterprise' },
+      provenance: defaultProvenance,
+      billingStatus: 'known_components',
+      billingComponents: [{ type: 'fixed_subscription', amount: 50 }],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+
+    registry.registerTermsRevision(t1);
+    registry.registerTermsRevision(t2);
+
+    // Contexto com region=US (mismatch com T2) e accountTier ausente
+    const result = registry.getTermsForRoute('rev_r_a2' as RouteRevisionId, {
+      at: '2026-08-19T18:00:00.000Z',
+      region: 'US',
+    });
+    assert.equal(result.status, 'single_applicable');
+    if (result.status === 'single_applicable') {
+      assert.equal(result.terms.termsRevisionId, 'rev_t_a2_base');
+    }
+  });
+
+  // A3. Dois Terms potencialmente conflitantes, um resolvido e outro com dimensão material ausente → insufficient_context, não single_applicable
+  it('A3. Dois Terms potencialmente conflitantes, um resolvido e outro com dimensão material ausente → insufficient_context, não single_applicable', () => {
+    const registry = createCapabilityRegistry();
+    const route: RouteRevision = {
+      routeKey: 'route.hard.a3' as RouteKey,
+      routeRevisionId: 'rev_r_a3' as RouteRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+      supportedExecutionModes: ['atomic_batch'],
+      idempotencyProfile: { supportType: 'none' },
+      networkTopologyScopes: ['wan'],
+      controlOwnership: 'third_party',
+      externalServiceNature: 'ai_third_party',
+      crossesEgressBoundary: true,
+      domainEffect: 'none',
+    };
+    registry.registerRouteRevision(route);
+
+    const tFree: RouteTermsRevision = {
+      termsKey: 'terms.a3.free' as RouteTermsKey,
+      termsRevisionId: 'rev_t_a3_free' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_a3' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      provenance: defaultProvenance,
+      billingStatus: 'known_none',
+      billingComponents: [],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      privacyDataTerms: { trainingOptOutGuaranteed: true },
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+    const tSpecialTierPaid: RouteTermsRevision = {
+      termsKey: 'terms.a3.paid' as RouteTermsKey,
+      termsRevisionId: 'rev_t_a3_paid' as RouteTermsRevisionId,
+      routeRevisionId: 'rev_r_a3' as RouteRevisionId,
+      supersedesRevisionIds: [],
+      applicability: { accountTier: 'CustomTier' },
+      provenance: defaultProvenance,
+      billingStatus: 'known_components',
+      billingComponents: [{ type: 'metered_usage', amount: 10 }],
+      freeEntitlementStatus: 'known_none',
+      freeEntitlements: [],
+      privacyDataTerms: { trainingOptOutGuaranteed: false },
+      effectiveFrom: '2026-08-01T00:00:00.000Z',
+    };
+
+    registry.registerTermsRevision(tFree);
+    registry.registerTermsRevision(tSpecialTierPaid);
+
+    // Sem accountTier no contexto: não podemos afirmar que é apenas tFree
+    const result = registry.getTermsForRoute('rev_r_a3' as RouteRevisionId, {
+      at: '2026-08-19T18:00:00.000Z',
+    });
+    assert.equal(result.status, 'insufficient_context');
+    if (result.status === 'insufficient_context') {
+      assert.deepEqual(result.missingDimensions, ['accountTier']);
+      assert.equal(result.candidateTerms.length, 1);
+      assert.equal(result.candidateTerms[0].termsRevisionId, 'rev_t_a3_paid');
+    }
+  });
 });
