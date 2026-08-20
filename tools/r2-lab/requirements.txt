@@ -1,0 +1,5 @@
+# NEX+ · Escopo 0.7B — R2 Local ONNX Runtime GenAI Feasibility Lab
+# Dependências isoladas e pinadas do laboratório
+
+onnxruntime-genai-directml==0.13.1
+huggingface_hub==1.28.0

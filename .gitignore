@@ -60,3 +60,12 @@ $RECYCLE.BIN/
 *.njsproj
 *.sln
 *.sw?
+
+# R2 Lab (ONNX Runtime GenAI)
+tools/r2-lab/.venv/
+tools/r2-lab/models/
+tools/r2-lab/.cache/
+tools/r2-lab/*.onnx
+tools/r2-lab/*.bin
+tools/r2-lab/output.json
+
