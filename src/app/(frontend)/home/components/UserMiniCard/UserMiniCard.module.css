@@ -97,9 +97,67 @@
 .chevronIcon {
   color: #8fa1b2;
   flex-shrink: 0;
-  transition: color 0.15s ease;
+  transition: color 0.15s ease, transform 0.15s ease;
+}
+
+.chevronIconOpen {
+  transform: rotate(180deg);
+  color: #f7f2ff;
 }
 
 .userMiniCard:hover .chevronIcon {
   color: #f7f2ff;
+}
+
+.cardContainer {
+  position: relative;
+  width: 100%;
+}
+
+.menuDropdown {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  background: #110d1f;
+  border: 1px solid rgba(247, 242, 255, 0.14);
+  border-radius: 9px;
+  box-shadow: 0 8px 24px rgba(5, 2, 10, 0.65);
+  padding: 6px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  backdrop-filter: blur(12px);
+}
+
+.menuDropdownCollapsed {
+  left: 0;
+  width: 120px;
+}
+
+.menuItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: #f7f2ff;
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: left;
+}
+
+.menuItem:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+}
+
+.menuItem:focus-visible {
+  outline: 2px solid #a855f7;
+  outline-offset: 1px;
 }

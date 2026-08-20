@@ -402,6 +402,35 @@
   outline-offset: 3px;
 }
 
+.submitButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none;
+}
+
+.errorBanner {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 0.86rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.disabledControl {
+  opacity: 0.55;
+  cursor: not-allowed !important;
+}
+
+.disabledControl input {
+  cursor: not-allowed !important;
+}
+
 /* Divisor e Rodapé do Card */
 .cardDivider {
   height: 1px;

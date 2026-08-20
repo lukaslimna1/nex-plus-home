@@ -1,33 +1,110 @@
-import React from "react";
+"use client";
+
+import React, { useState, useRef, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import styles from "./UserMiniCard.module.css";
-import { CaretDown } from "@phosphor-icons/react";
+import { CaretDown, SignOut } from "@phosphor-icons/react";
+import { getInitials, type AppUserView } from "@/auth/identity";
+import { logoutAction } from "@/auth/actions";
 
 interface UserMiniCardProps {
   isCollapsed: boolean;
+  user?: AppUserView | null;
 }
 
-export function UserMiniCard({ isCollapsed }: UserMiniCardProps) {
-  return (
-    <div
-      className={`${styles.userMiniCard} ${
-        isCollapsed ? styles.userMiniCardCollapsed : ""
-      }`}
-      title="Daniel Silva (Administrador)"
-    >
-      <div className={styles.avatarWrapper}>
-        <div className={styles.avatarCircle}>DS</div>
-        <div className={styles.onlineStatusDot} />
-      </div>
+export function UserMiniCard({ isCollapsed, user }: UserMiniCardProps) {
+  const router = useRouter();
+  const [isOpen, setIsOpen] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
 
-      {!isCollapsed && (
-        <>
-          <div className={styles.detailsCol}>
-            <span className={styles.nameText}>Daniel Silva</span>
-            <span className={styles.roleText}>Administrador</span>
-          </div>
-          <CaretDown size={14} className={styles.chevronIcon} />
-        </>
+  const displayName = user?.displayName || "Usuário";
+  const initials = getInitials(displayName);
+  const roleLabel = "Usuário NEX+";
+
+  // Fecha o dropdown ao clicar fora
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    }
+    if (isOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [isOpen]);
+
+  const handleToggle = () => {
+    setIsOpen((prev) => !prev);
+  };
+
+  const handleLogout = async () => {
+    if (isLoggingOut) return;
+    setIsLoggingOut(true);
+    try {
+      await logoutAction();
+    } finally {
+      router.push("/login");
+      router.refresh();
+    }
+  };
+
+  return (
+    <div className={styles.cardContainer} ref={containerRef}>
+      {isOpen && (
+        <div
+          className={`${styles.menuDropdown} ${
+            isCollapsed ? styles.menuDropdownCollapsed : ""
+          }`}
+          role="menu"
+          aria-label="Opções do usuário"
+        >
+          <button
+            type="button"
+            className={styles.menuItem}
+            role="menuitem"
+            disabled={isLoggingOut}
+            onClick={handleLogout}
+          >
+            <SignOut size={16} weight="bold" />
+            <span>{isLoggingOut ? "Saindo..." : "Sair"}</span>
+          </button>
+        </div>
       )}
+
+      <button
+        type="button"
+        className={`${styles.userMiniCard} ${
+          isCollapsed ? styles.userMiniCardCollapsed : ""
+        }`}
+        onClick={handleToggle}
+        aria-haspopup="true"
+        aria-expanded={isOpen}
+        title={`${displayName} (${roleLabel})`}
+      >
+        <div className={styles.avatarWrapper}>
+          <div className={styles.avatarCircle}>{initials}</div>
+          <div className={styles.onlineStatusDot} />
+        </div>
+
+        {!isCollapsed && (
+          <>
+            <div className={styles.detailsCol}>
+              <span className={styles.nameText}>{displayName}</span>
+              <span className={styles.roleText}>{roleLabel}</span>
+            </div>
+            <CaretDown
+              size={14}
+              className={`${styles.chevronIcon} ${
+                isOpen ? styles.chevronIconOpen : ""
+              }`}
+            />
+          </>
+        )}
+      </button>
     </div>
   );
 }

@@ -13,17 +13,20 @@ import {
   CaretDoubleRight,
 } from "@phosphor-icons/react";
 import { NavigationItemId } from "../../types/home.types";
+import type { AppUserView } from "@/auth/identity";
 
 interface SidebarProps {
   isCollapsed: boolean;
   onToggleCollapse: () => void;
   activeItem?: NavigationItemId;
+  user?: AppUserView | null;
 }
 
 export function Sidebar({
   isCollapsed,
   onToggleCollapse,
   activeItem = "home",
+  user,
 }: SidebarProps) {
   return (
     <aside
@@ -139,7 +142,7 @@ export function Sidebar({
           {!isCollapsed && <span>Configuração</span>}
         </button>
 
-        <UserMiniCard isCollapsed={isCollapsed} />
+        <UserMiniCard isCollapsed={isCollapsed} user={user} />
       </div>
     </aside>
   );

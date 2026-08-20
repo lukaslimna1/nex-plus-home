@@ -4,6 +4,7 @@ import { buildConfig } from 'payload'
 import { fileURLToPath } from 'url'
 
 import { Admins } from './collections/Admins'
+import { Users } from './collections/Users'
 
 const filename = fileURLToPath(import.meta.url)
 const dirname = path.dirname(filename)
@@ -23,7 +24,7 @@ export default buildConfig({
       baseDir: path.resolve(dirname),
     },
   },
-  collections: [Admins],
+  collections: [Admins, Users],
   secret: getRequiredEnv('PAYLOAD_SECRET'),
   typescript: {
     outputFile: path.resolve(dirname, 'payload-types.ts'),
