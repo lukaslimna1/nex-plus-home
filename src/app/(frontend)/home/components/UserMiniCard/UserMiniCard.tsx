@@ -16,6 +16,7 @@ export function UserMiniCard({ isCollapsed, user }: UserMiniCardProps) {
   const router = useRouter();
   const [isOpen, setIsOpen] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const displayName = user?.displayName || "Usuário";
@@ -44,11 +45,19 @@ export function UserMiniCard({ isCollapsed, user }: UserMiniCardProps) {
   const handleLogout = async () => {
     if (isLoggingOut) return;
     setIsLoggingOut(true);
+    setLogoutError(null);
     try {
-      await logoutAction();
-    } finally {
-      router.push("/login");
-      router.refresh();
+      const res = await logoutAction();
+      if (res.success) {
+        router.push("/login");
+        router.refresh();
+      } else {
+        setLogoutError(res.error || "Não foi possível encerrar a sessão.");
+        setIsLoggingOut(false);
+      }
+    } catch {
+      setLogoutError("Erro ao encerrar a sessão.");
+      setIsLoggingOut(false);
     }
   };
 
@@ -62,6 +71,11 @@ export function UserMiniCard({ isCollapsed, user }: UserMiniCardProps) {
           role="menu"
           aria-label="Opções do usuário"
         >
+          {logoutError && (
+            <div className={styles.logoutErrorText} role="alert">
+              {logoutError}
+            </div>
+          )}
           <button
             type="button"
             className={styles.menuItem}

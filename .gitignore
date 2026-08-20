@@ -69,3 +69,7 @@ tools/r2-lab/*.onnx
 tools/r2-lab/*.bin
 tools/r2-lab/output.json
 
+# Playwright Test Artifacts
+test-results/
+playwright-report/
+

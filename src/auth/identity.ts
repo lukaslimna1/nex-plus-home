@@ -12,7 +12,27 @@ export interface AppUserView {
   readonly displayName: string;
 }
 
+export interface LogoutActionResult {
+  readonly success: boolean;
+  readonly error?: string;
+}
+
 export type IdentityClass = 'app_user' | 'admin' | 'anonymous';
+
+/**
+ * Tradutor determinístico do resultado de logout para resposta segura ao frontend.
+ */
+export function handleLogoutResult(
+  result?: { success?: boolean } | null,
+): LogoutActionResult {
+  if (result && result.success === true) {
+    return { success: true };
+  }
+  return {
+    success: false,
+    error: 'Não foi possível encerrar a sessão.',
+  };
+}
 
 /**
  * Normaliza o e-mail para formato canônico seguro (trim e minúsculas).

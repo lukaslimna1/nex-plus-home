@@ -1,5 +1,5 @@
 # NEX+ · Autenticação Multiusuário da Aplicação
-**Escopo 0.8A — Camada de Identidade Local, Sessão e Proteção Server-Side**
+**Escopo 0.8A Hardening — Camada de Identidade Local, Sessão e Proteção Server-Side**
 
 ---
 
@@ -28,7 +28,12 @@ Usuários comuns da aplicação ou requisições anônimas recebem acesso negado
 
 ---
 
-## 3. Fluxo de Autenticação e Sessão
+## 3. Workaround do Payload 3.88.0 & Fluxo de Sessão
+
+- **Workaround de Autenticação na 3.88.0**:
+  - Na versão `3.88.0` do Payload, a configuração `removeTokenFromResponses: true` remove o `result.token` do retorno de `payload.login()` antes que o helper `@payloadcms/next/auth login()` consiga ler o token para materializar o cookie `payload-token`.
+  - O upstream do Payload corrigiu essa questão posteriormente no commit `b292343a89f812a0e03f2793708c6579935d161e`. Como o projeto não faz upgrade para canary nem patch em `node_modules`, o `removeTokenFromResponses` foi mantido desativado (comportamento padrão) na collection `Users`.
+  - **Garantia de Não-Vazamento**: O token JWT gerado internamente pelo servidor é consumido exclusivamente pelo helper do Next.js para criação do cookie HTTP-only. A nossa Server Action (`src/auth/actions.ts`) **nunca** retorna o token, hashes, salts ou sessões para o Client Component. O retorno para a UI é estritamente `{ success: boolean, error?: string }`.
 
 - **Login (`loginAction`)**:
   - Utiliza `login()` oficial de `@payloadcms/next/auth` em Server Action.
@@ -43,6 +48,7 @@ Usuários comuns da aplicação ou requisições anônimas recebem acesso negado
 
 - **Logout (`logoutAction`)**:
   - Utiliza `logout()` oficial de `@payloadcms/next/auth` em Server Action.
+  - Respeita o resultado da operação (`handleLogoutResult`) e propaga eventuais falhas com mensagens genéricas seguras para a interface sem fabricar sucesso.
   - Invalida a sessão atual e limpa os cookies de autenticação.
   - Redireciona o usuário para `/login`.
 
@@ -58,14 +64,19 @@ Usuários comuns da aplicação ou requisições anônimas recebem acesso negado
 
 ## 5. UI e Controles Indisponíveis
 
-- **UserMiniCard**: Exibe o `displayName` real do usuário autenticado, com identificação neutra `"Usuário NEX+"` e avatar derivado deterministicamente de suas iniciais. Inclui menu de contexto para a ação de `"Sair"`.
-- **Manter conectado**: Preservado visualmente, porém com atributo `disabled` e indicação acessível (`"Disponível em uma etapa futura."`).
+- **UserMiniCard**: Exibe o `displayName` real do usuário autenticado, com identificação neutra `"Usuário NEX+"` e avatar derivado deterministicamente de suas iniciais. Inclui dropdown acessível com o botão `"Sair"`. Em caso de falha no logout, o erro é exibido discretamente no menu sem desautenticar incorretamente a interface.
+- **Manter conectado**: Preservado visualmente, porém com atributo `disabled` e indicação acessível (`aria-label="Manter conectado (Disponível em uma etapa futura)"`).
 - **Esqueci minha senha?**: Preservado visualmente, desabilitado com `aria-disabled="true"` e indicação acessível. Não há adapter de e-mail ou reset implementado nesta etapa.
 
 ---
 
-## 6. Matriz de ACL e Próximos Passos
+## 6. Evidência E2E e Reversibilidade de Migração
 
-- A matriz fina de permissões societárias/funcionais permanece deliberadamente aberta.
-- **Cloudflare Tunnel e Access**: Pertencem exclusivamente ao **Escopo 0.8B** (borda remota).
-- **Local API Caveat**: A API Local do Payload (`payload.create`, `payload.find`) bypassa access control por padrão. Quando código futuro atuar em nome de usuários, deve-se passar explicitamente `overrideAccess: false` e `user`/`req`.
+- **Testes E2E com Playwright (`@playwright/test` 1.62.1)**:
+  - O antigo script de smoke em Local API foi removido.
+  - O fluxo completo de autenticação (anônimo, login real via interface, emissão de cookie HTTP-only, persistência após reload, login com credencial inválida e logout pelo UserMiniCard) é validado em navegador Chromium real em `tests/e2e/auth.spec.ts`.
+- **Reversibilidade de Migration (DOWN)**:
+  - A ordem de remoção no DOWN da migration `20260820_030631_multiuser_auth` espelha o UP em ordem estritamente reversa (remove constraints, remove índices, remove colunas relacionais e em seguida remove as tabelas `users_sessions` e `users`).
+  - O ciclo completo de `UP -> DOWN -> UP` foi verificado com 100% de sucesso estrutural em schema descartável isolado sem tocar no banco de dados operacional.
+- **Limitação de Cookie Multi-Auth do Payload**:
+  - `admins` e `users` compartilham o prefixo padrão do cookie de autenticação do Payload. Caso um administrador e um usuário operem no mesmo navegador, o login mais recente sobrescreve a sessão ativa daquele navegador. Sessões simultâneas de papéis distintos requerem perfis ou janelas anônimas separadas.
