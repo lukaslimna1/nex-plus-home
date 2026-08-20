@@ -1,10 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
-if (typeof process.loadEnvFile === 'function') {
-  try {
-    process.loadEnvFile('.env');
-  } catch {}
-}
+const port = process.env.PORT || '3108';
+const baseURL = `http://127.0.0.1:${port}`;
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -16,7 +13,7 @@ export default defineConfig({
   workers: 1,
   reporter: 'list',
   use: {
-    baseURL: 'http://127.0.0.1:3000',
+    baseURL,
     trace: 'on-first-retry',
   },
   projects: [
@@ -26,9 +23,9 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'npm run start',
-    url: 'http://127.0.0.1:3000/login',
-    reuseExistingServer: true,
+    command: `npx next start -H 127.0.0.1 -p ${port}`,
+    url: `${baseURL}/login`,
+    reuseExistingServer: false,
     timeout: 30000,
   },
 });

@@ -11,7 +11,8 @@
     "payload": "payload",
     "generate:types": "payload generate:types",
     "generate:importmap": "payload generate:importmap",
-    "preflight:windows": "powershell.exe -NoLogo -NoProfile -File ./scripts/windows-preflight.ps1"
+    "preflight:windows": "powershell.exe -NoLogo -NoProfile -File ./scripts/windows-preflight.ps1",
+    "test:e2e:auth:isolated": "powershell.exe -NoLogo -NoProfile -File ./scripts/run-auth-validation-isolated.ps1"
   },
   "dependencies": {
     "@payloadcms/db-postgres": "3.88.0",

@@ -1,5 +1,5 @@
 # NEX+ · Autenticação Multiusuário da Aplicação
-**Escopo 0.8A Hardening — Camada de Identidade Local, Sessão e Proteção Server-Side**
+**Escopo 0.8A Hardening — Camada de Identidade Local, Sessão e Harness de Validação Isolado**
 
 ---
 
@@ -49,7 +49,7 @@ Usuários comuns da aplicação ou requisições anônimas recebem acesso negado
 - **Logout (`logoutAction`)**:
   - Utiliza `logout()` oficial de `@payloadcms/next/auth` em Server Action.
   - Respeita o resultado da operação (`handleLogoutResult`) e propaga eventuais falhas com mensagens genéricas seguras para a interface sem fabricar sucesso.
-  - Invalida a sessão atual e limpa os cookies de autenticação.
+  - Invalida a sessão atual no banco de dados (`users_sessions`) e limpa os cookies de autenticação.
   - Redireciona o usuário para `/login`.
 
 ---
@@ -70,13 +70,28 @@ Usuários comuns da aplicação ou requisições anônimas recebem acesso negado
 
 ---
 
-## 6. Evidência E2E e Reversibilidade de Migração
+## 6. Harness de Validação Isolado (PostgreSQL DATABASE Real)
 
-- **Testes E2E com Playwright (`@playwright/test` 1.62.1)**:
-  - O antigo script de smoke em Local API foi removido.
-  - O fluxo completo de autenticação (anônimo, login real via interface, emissão de cookie HTTP-only, persistência após reload, login com credencial inválida e logout pelo UserMiniCard) é validado em navegador Chromium real em `tests/e2e/auth.spec.ts`.
-- **Reversibilidade de Migration (DOWN)**:
-  - A ordem de remoção no DOWN da migration `20260820_030631_multiuser_auth` espelha o UP em ordem estritamente reversa (remove constraints, remove índices, remove colunas relacionais e em seguida remove as tabelas `users_sessions` e `users`).
-  - O ciclo completo de `UP -> DOWN -> UP` foi verificado com 100% de sucesso estrutural em schema descartável isolado sem tocar no banco de dados operacional.
-- **Limitação de Cookie Multi-Auth do Payload**:
-  - `admins` e `users` compartilham o prefixo padrão do cookie de autenticação do Payload. Caso um administrador e um usuário operem no mesmo navegador, o login mais recente sobrescreve a sessão ativa daquele navegador. Sessões simultâneas de papéis distintos requerem perfis ou janelas anônimas separadas.
+Para garantir que os testes de ponta a ponta e as validações estruturais de migração nunca atinjam o banco de dados operacional local, o projeto dispõe do harness canônico:
+
+```powershell
+npm run test:e2e:auth:isolated
+```
+
+### Arquitetura de Isolamento do Harness:
+1. **Banco PostgreSQL Descartável Real (`DATABASE`, não schema)**:
+   - Cria um banco dedicado com prefixo obrigatório `nex_e2e_<timestamp>_<random>` via `createdb`.
+   - Trava fail-fast dupla: recusa terminantemente qualquer execução se a base não iniciar por `nex_e2e_` ou se for igual ao banco operacional.
+2. **Reversibilidade de Migração Comprovada (`UP -> DOWN -> UP`)**:
+   - `UP`: Aplica as migrations oficiais via Payload CLI e valida com `psql` a existência de `admins`, `admins_sessions`, `users` e `users_sessions`.
+   - `DOWN`: Executa `payload migrate:down` e valida que `users` e `users_sessions` foram removidas, `admins` e `admins_sessions` permanecem intactas e a coluna `users_id` foi excluída das tabelas relacionais.
+   - `UP`: Re-executa as migrations e valida a reconvergência total do schema.
+3. **Build Obrigatória Imediatamente Antes do E2E**:
+   - Compila `next build` garantindo que o servidor execute exatamente a versão atual do código.
+4. **Playwright E2E Sem Reuso de Servidor**:
+   - `playwright.config.ts` configurado com `reuseExistingServer: false` e porta dedicada (`3108`).
+   - Bloqueio no `beforeAll` do Playwright: recusa tocar dados se `NEX_E2E_ISOLATED !== '1'` ou se o banco não iniciar por `nex_e2e_`.
+   - Valida login anônimo, login real, emissão de cookie HTTP-only, permanência após reload, tentativa com senha inválida (sem cookie), logout com remoção de cookie e rejeição de requisição com cookie antigo (comprovando revogação da sessão no servidor).
+5. **Limpeza Automática no `finally`**:
+   - Encerra conexões ativas e remove o banco descartável via `dropdb`.
+   - O banco de dados operacional **nunca** recebe comandos `migrate:down`, `migrate:reset` ou `dropdb`.
