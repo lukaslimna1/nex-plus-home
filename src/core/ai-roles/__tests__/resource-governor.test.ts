@@ -279,4 +279,135 @@ describe('NEX+ AI Role Registry · Resource Governor Integration (0.7A)', () => 
       assert.equal(untyped.disposition, undefined);
     }
   });
+
+  // F10. local_model runtime ollama → ResourceRequest continua válido
+  it('F10. local_model runtime ollama continua válido e gera ResourceRequest normal', () => {
+    const registry = createAiRoleRegistry();
+    registry.appendRoleRevision(
+      createCanonicalRoleRevision({
+        roleKey: ROLE_LOCAL_RESIDENT,
+        roleRevisionId: 'role_res_01' as AiRoleRevisionId,
+        title: 'Resident',
+      }),
+    );
+    registry.appendBindingRevision(
+      createCanonicalBindingRevision({
+        bindingKey: 'bind_res' as AiRoleBindingKey,
+        bindingRevisionId: 'bind_res_01' as AiRoleBindingRevisionId,
+        roleKey: ROLE_LOCAL_RESIDENT,
+        roleRevisionId: 'role_res_01' as AiRoleRevisionId,
+        routeRevisionId: 'route_ollama_01' as RouteRevisionId,
+        target: { kind: 'local_model', runtimeKey: 'ollama', modelName: 'ministral-3:3b' },
+      }),
+    );
+
+    const resolved = resolveAiRole({ roleKey: ROLE_LOCAL_RESIDENT, registry });
+    assert.equal(resolved.status, 'resolved');
+
+    if (resolved.status === 'resolved') {
+      const request = createResourceRequestFromResolvedRole({
+        requestId: 'req_01' as ResourceRequestId,
+        resolvedRole: resolved,
+        decisionId: 'dec_01' as DecisionId,
+        materialContextId: 'ctx_01' as DecisionMaterialContextId,
+        routeEvaluationId: 'eval_01' as RouteEvaluationId,
+        routeRevisionId: 'route_ollama_01' as RouteRevisionId,
+        profileRevisionId: 'prof_std' as ResourceProfileRevisionId,
+        intent: 'ensure_model_loaded',
+        requestedAt: '2026-08-19T20:00:00.000Z',
+      });
+
+      assert.equal(request.targetModel, 'ministral-3:3b');
+    }
+  });
+
+  // F11. local_model runtime onnx_runtime → UNSUPPORTED_LOCAL_RUNTIME
+  it('F11. local_model runtime onnx_runtime é rejeitado pelo adapter com UNSUPPORTED_LOCAL_RUNTIME', () => {
+    const registry = createAiRoleRegistry();
+    registry.appendRoleRevision(
+      createCanonicalRoleRevision({
+        roleKey: 'r2_candidate' as AiRoleKey,
+        roleRevisionId: 'role_r2_01' as AiRoleRevisionId,
+        title: 'R2 Candidate Role',
+      }),
+    );
+    registry.appendBindingRevision(
+      createCanonicalBindingRevision({
+        bindingKey: 'bind_onnx' as AiRoleBindingKey,
+        bindingRevisionId: 'bind_onnx_01' as AiRoleBindingRevisionId,
+        roleKey: 'r2_candidate' as AiRoleKey,
+        roleRevisionId: 'role_r2_01' as AiRoleRevisionId,
+        routeRevisionId: 'route_onnx_01' as RouteRevisionId,
+        target: {
+          kind: 'local_model',
+          runtimeKey: 'onnx_runtime',
+          modelName: 'phi-3-mini-directml',
+        },
+      }),
+    );
+
+    const resolved = resolveAiRole({ roleKey: 'r2_candidate' as AiRoleKey, registry });
+    assert.equal(resolved.status, 'resolved');
+
+    if (resolved.status === 'resolved') {
+      assert.throws(() => {
+        createResourceRequestFromResolvedRole({
+          requestId: 'req_onnx' as ResourceRequestId,
+          resolvedRole: resolved,
+          decisionId: 'dec_01' as DecisionId,
+          materialContextId: 'ctx_01' as DecisionMaterialContextId,
+          routeEvaluationId: 'eval_01' as RouteEvaluationId,
+          routeRevisionId: 'route_onnx_01' as RouteRevisionId,
+          profileRevisionId: 'prof_std' as ResourceProfileRevisionId,
+          intent: 'ensure_model_loaded',
+          requestedAt: '2026-08-19T20:00:00.000Z',
+        });
+      }, (err: any) => err instanceof AiRoleResourceGovernorIntegrationError && err.code === 'UNSUPPORTED_LOCAL_RUNTIME');
+    }
+  });
+
+  // F12. local_model runtime mlc → UNSUPPORTED_LOCAL_RUNTIME
+  it('F12. local_model runtime mlc é rejeitado pelo adapter com UNSUPPORTED_LOCAL_RUNTIME', () => {
+    const registry = createAiRoleRegistry();
+    registry.appendRoleRevision(
+      createCanonicalRoleRevision({
+        roleKey: 'mlc_candidate' as AiRoleKey,
+        roleRevisionId: 'role_mlc_01' as AiRoleRevisionId,
+        title: 'MLC Candidate Role',
+      }),
+    );
+    registry.appendBindingRevision(
+      createCanonicalBindingRevision({
+        bindingKey: 'bind_mlc' as AiRoleBindingKey,
+        bindingRevisionId: 'bind_mlc_01' as AiRoleBindingRevisionId,
+        roleKey: 'mlc_candidate' as AiRoleKey,
+        roleRevisionId: 'role_mlc_01' as AiRoleRevisionId,
+        routeRevisionId: 'route_mlc_01' as RouteRevisionId,
+        target: {
+          kind: 'local_model',
+          runtimeKey: 'mlc',
+          modelName: 'llama-3-8b-q4f16_1',
+        },
+      }),
+    );
+
+    const resolved = resolveAiRole({ roleKey: 'mlc_candidate' as AiRoleKey, registry });
+    assert.equal(resolved.status, 'resolved');
+
+    if (resolved.status === 'resolved') {
+      assert.throws(() => {
+        createResourceRequestFromResolvedRole({
+          requestId: 'req_mlc' as ResourceRequestId,
+          resolvedRole: resolved,
+          decisionId: 'dec_01' as DecisionId,
+          materialContextId: 'ctx_01' as DecisionMaterialContextId,
+          routeEvaluationId: 'eval_01' as RouteEvaluationId,
+          routeRevisionId: 'route_mlc_01' as RouteRevisionId,
+          profileRevisionId: 'prof_std' as ResourceProfileRevisionId,
+          intent: 'ensure_model_loaded',
+          requestedAt: '2026-08-19T20:00:00.000Z',
+        });
+      }, (err: any) => err instanceof AiRoleResourceGovernorIntegrationError && err.code === 'UNSUPPORTED_LOCAL_RUNTIME');
+    }
+  });
 });

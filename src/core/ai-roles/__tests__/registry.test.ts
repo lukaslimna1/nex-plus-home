@@ -328,4 +328,307 @@ describe('NEX+ AI Role Registry · Registry Storage & Supersession (0.7A)', () =
     assert.equal(heads.length, 1);
     assert.equal(heads[0].bindingRevisionId, 'bind_h_rev_02');
   });
+
+  // F1. RoleRevision self-supersession → rejeitada
+  it('F1. RoleRevision self-supersession é rejeitada com SELF_SUPERSESSION', () => {
+    const registry = createAiRoleRegistry();
+    const role: AiRoleRevision = {
+      roleKey: 'local_resident' as AiRoleKey,
+      roleRevisionId: 'role_self' as AiRoleRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: ['role_self' as AiRoleRevisionId],
+      title: 'Self Superseding Role',
+    };
+
+    assert.throws(() => {
+      registry.appendRoleRevision(role);
+    }, (err: any) => err instanceof AiRoleRegistryError && err.code === 'SELF_SUPERSESSION');
+  });
+
+  // F2. RoleRevision cross-roleKey supersession → rejeitada
+  it('F2. RoleRevision cross-roleKey supersession é rejeitada com CROSS_IDENTITY_SUPERSESSION', () => {
+    const registry = createAiRoleRegistry();
+    registry.appendRoleRevision({
+      roleKey: 'role_a' as AiRoleKey,
+      roleRevisionId: 'role_a_01' as AiRoleRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      title: 'Role A',
+    });
+
+    const crossRole: AiRoleRevision = {
+      roleKey: 'role_b' as AiRoleKey,
+      roleRevisionId: 'role_b_01' as AiRoleRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: ['role_a_01' as AiRoleRevisionId],
+      title: 'Role B',
+    };
+
+    assert.throws(() => {
+      registry.appendRoleRevision(crossRole);
+    }, (err: any) => err instanceof AiRoleRegistryError && err.code === 'CROSS_IDENTITY_SUPERSESSION');
+  });
+
+  // F3. RoleRevision cycle A↔B → rejeitado
+  it('F3. RoleRevision cycle A↔B é rejeitado com SUPERSESSION_CYCLE', () => {
+    const registry = createAiRoleRegistry();
+    // Inserção com forward reference de ciclo
+    registry.appendRoleRevision({
+      roleKey: 'local_resident' as AiRoleKey,
+      roleRevisionId: 'role_c_01' as AiRoleRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: ['role_c_02' as AiRoleRevisionId], // forward ref
+      title: 'Role Cycle 1',
+    });
+
+    assert.throws(() => {
+      registry.appendRoleRevision({
+        roleKey: 'local_resident' as AiRoleKey,
+        roleRevisionId: 'role_c_02' as AiRoleRevisionId,
+        lifecycle: 'active',
+        supersedesRevisionIds: ['role_c_01' as AiRoleRevisionId], // completa o ciclo
+        title: 'Role Cycle 2',
+      });
+    }, (err: any) => err instanceof AiRoleRegistryError && err.code === 'SUPERSESSION_CYCLE');
+  });
+
+  // F4. BindingRevision self-supersession → rejeitada
+  it('F4. BindingRevision self-supersession é rejeitada com SELF_SUPERSESSION', () => {
+    const registry = createAiRoleRegistry();
+    registry.appendRoleRevision({
+      roleKey: 'local_resident' as AiRoleKey,
+      roleRevisionId: 'role_01' as AiRoleRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      title: 'Resident',
+    });
+
+    assert.throws(() => {
+      registry.appendBindingRevision({
+        bindingKey: 'bind_self' as AiRoleBindingKey,
+        bindingRevisionId: 'bind_self_rev' as AiRoleBindingRevisionId,
+        roleKey: 'local_resident' as AiRoleKey,
+        roleRevisionId: 'role_01' as AiRoleRevisionId,
+        routeRevisionId: 'route_01' as RouteRevisionId,
+        target: { kind: 'local_model', runtimeKey: 'ollama', modelName: 'model_1' },
+        lifecycle: 'active',
+        supersedesRevisionIds: ['bind_self_rev' as AiRoleBindingRevisionId],
+      });
+    }, (err: any) => err instanceof AiRoleRegistryError && err.code === 'SELF_SUPERSESSION');
+  });
+
+  // F5. BindingRevision de bindingKey A supersedendo bindingKey B → rejeitada
+  it('F5. BindingRevision de bindingKey A supersedendo bindingKey B é rejeitada com CROSS_IDENTITY_SUPERSESSION', () => {
+    const registry = createAiRoleRegistry();
+    registry.appendRoleRevision({
+      roleKey: 'local_resident' as AiRoleKey,
+      roleRevisionId: 'role_01' as AiRoleRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      title: 'Resident',
+    });
+
+    registry.appendBindingRevision({
+      bindingKey: 'bind_a' as AiRoleBindingKey,
+      bindingRevisionId: 'bind_a_rev_01' as AiRoleBindingRevisionId,
+      roleKey: 'local_resident' as AiRoleKey,
+      roleRevisionId: 'role_01' as AiRoleRevisionId,
+      routeRevisionId: 'route_01' as RouteRevisionId,
+      target: { kind: 'local_model', runtimeKey: 'ollama', modelName: 'model_a' },
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+    });
+
+    assert.throws(() => {
+      registry.appendBindingRevision({
+        bindingKey: 'bind_b' as AiRoleBindingKey,
+        bindingRevisionId: 'bind_b_rev_01' as AiRoleBindingRevisionId,
+        roleKey: 'local_resident' as AiRoleKey,
+        roleRevisionId: 'role_01' as AiRoleRevisionId,
+        routeRevisionId: 'route_01' as RouteRevisionId,
+        target: { kind: 'local_model', runtimeKey: 'ollama', modelName: 'model_b' },
+        lifecycle: 'active',
+        supersedesRevisionIds: ['bind_a_rev_01' as any],
+      });
+    }, (err: any) => err instanceof AiRoleRegistryError && err.code === 'CROSS_IDENTITY_SUPERSESSION');
+  });
+
+  // F6. BindingRevision cycle → rejeitado
+  it('F6. BindingRevision cycle é rejeitado com SUPERSESSION_CYCLE', () => {
+    const registry = createAiRoleRegistry();
+    registry.appendRoleRevision({
+      roleKey: 'local_resident' as AiRoleKey,
+      roleRevisionId: 'role_01' as AiRoleRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      title: 'Resident',
+    });
+
+    registry.appendBindingRevision({
+      bindingKey: 'bind_c' as AiRoleBindingKey,
+      bindingRevisionId: 'bind_c_rev_01' as AiRoleBindingRevisionId,
+      roleKey: 'local_resident' as AiRoleKey,
+      roleRevisionId: 'role_01' as AiRoleRevisionId,
+      routeRevisionId: 'route_01' as RouteRevisionId,
+      target: { kind: 'local_model', runtimeKey: 'ollama', modelName: 'model_1' },
+      lifecycle: 'active',
+      supersedesRevisionIds: ['bind_c_rev_02' as AiRoleBindingRevisionId], // forward ref
+    });
+
+    assert.throws(() => {
+      registry.appendBindingRevision({
+        bindingKey: 'bind_c' as AiRoleBindingKey,
+        bindingRevisionId: 'bind_c_rev_02' as AiRoleBindingRevisionId,
+        roleKey: 'local_resident' as AiRoleKey,
+        roleRevisionId: 'role_01' as AiRoleRevisionId,
+        routeRevisionId: 'route_01' as RouteRevisionId,
+        target: { kind: 'local_model', runtimeKey: 'ollama', modelName: 'model_2' },
+        lifecycle: 'active',
+        supersedesRevisionIds: ['bind_c_rev_01' as AiRoleBindingRevisionId], // fecha ciclo
+      });
+    }, (err: any) => err instanceof AiRoleRegistryError && err.code === 'SUPERSESSION_CYCLE');
+  });
+
+  // F7. branch legítimo: B2 supersedes B1, B3 supersedes B1 → dois heads preservados
+  it('F7. branch legítimo: B2 supersedes B1 e B3 supersedes B1 preserva dois heads paralelos', () => {
+    const registry = createAiRoleRegistry();
+    registry.appendRoleRevision({
+      roleKey: 'local_resident' as AiRoleKey,
+      roleRevisionId: 'role_01' as AiRoleRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      title: 'Resident',
+    });
+
+    registry.appendBindingRevision({
+      bindingKey: 'bind_x' as AiRoleBindingKey,
+      bindingRevisionId: 'b1' as AiRoleBindingRevisionId,
+      roleKey: 'local_resident' as AiRoleKey,
+      roleRevisionId: 'role_01' as AiRoleRevisionId,
+      routeRevisionId: 'route_01' as RouteRevisionId,
+      target: { kind: 'local_model', runtimeKey: 'ollama', modelName: 'model_1' },
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+    });
+
+    registry.appendBindingRevision({
+      bindingKey: 'bind_x' as AiRoleBindingKey,
+      bindingRevisionId: 'b2' as AiRoleBindingRevisionId,
+      roleKey: 'local_resident' as AiRoleKey,
+      roleRevisionId: 'role_01' as AiRoleRevisionId,
+      routeRevisionId: 'route_01' as RouteRevisionId,
+      target: { kind: 'local_model', runtimeKey: 'ollama', modelName: 'model_2' },
+      lifecycle: 'active',
+      supersedesRevisionIds: ['b1' as AiRoleBindingRevisionId],
+    });
+
+    registry.appendBindingRevision({
+      bindingKey: 'bind_x' as AiRoleBindingKey,
+      bindingRevisionId: 'b3' as AiRoleBindingRevisionId,
+      roleKey: 'local_resident' as AiRoleKey,
+      roleRevisionId: 'role_01' as AiRoleRevisionId,
+      routeRevisionId: 'route_01' as RouteRevisionId,
+      target: { kind: 'local_model', runtimeKey: 'ollama', modelName: 'model_3' },
+      lifecycle: 'active',
+      supersedesRevisionIds: ['b1' as AiRoleBindingRevisionId],
+    });
+
+    const heads = registry.getBindingHeadsForRole('role_01' as AiRoleRevisionId);
+    assert.equal(heads.length, 2);
+    assert.equal(heads.some((h) => h.bindingRevisionId === 'b2'), true);
+    assert.equal(heads.some((h) => h.bindingRevisionId === 'b3'), true);
+  });
+
+  // F8. resolver continua retornando binding_ambiguous para os dois heads
+  it('F8. resolver retorna binding_ambiguous para os dois heads sem seleção de pin', async () => {
+    const { resolveAiRole } = await import('../resolver');
+    const registry = createAiRoleRegistry();
+    registry.appendRoleRevision({
+      roleKey: 'local_resident' as AiRoleKey,
+      roleRevisionId: 'role_01' as AiRoleRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      title: 'Resident',
+    });
+
+    registry.appendBindingRevision({
+      bindingKey: 'bind_x' as AiRoleBindingKey,
+      bindingRevisionId: 'b1' as AiRoleBindingRevisionId,
+      roleKey: 'local_resident' as AiRoleKey,
+      roleRevisionId: 'role_01' as AiRoleRevisionId,
+      routeRevisionId: 'route_01' as RouteRevisionId,
+      target: { kind: 'local_model', runtimeKey: 'ollama', modelName: 'model_1' },
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+    });
+
+    registry.appendBindingRevision({
+      bindingKey: 'bind_x' as AiRoleBindingKey,
+      bindingRevisionId: 'b2' as AiRoleBindingRevisionId,
+      roleKey: 'local_resident' as AiRoleKey,
+      roleRevisionId: 'role_01' as AiRoleRevisionId,
+      routeRevisionId: 'route_01' as RouteRevisionId,
+      target: { kind: 'local_model', runtimeKey: 'ollama', modelName: 'model_2' },
+      lifecycle: 'active',
+      supersedesRevisionIds: ['b1' as AiRoleBindingRevisionId],
+    });
+
+    registry.appendBindingRevision({
+      bindingKey: 'bind_x' as AiRoleBindingKey,
+      bindingRevisionId: 'b3' as AiRoleBindingRevisionId,
+      roleKey: 'local_resident' as AiRoleKey,
+      roleRevisionId: 'role_01' as AiRoleRevisionId,
+      routeRevisionId: 'route_01' as RouteRevisionId,
+      target: { kind: 'local_model', runtimeKey: 'ollama', modelName: 'model_3' },
+      lifecycle: 'active',
+      supersedesRevisionIds: ['b1' as AiRoleBindingRevisionId],
+    });
+
+    const result = resolveAiRole({ roleKey: 'local_resident' as AiRoleKey, registry });
+    assert.equal(result.status, 'binding_ambiguous');
+    if (result.status === 'binding_ambiguous') {
+      assert.equal(result.candidateBindingRevisionIds.length, 2);
+    }
+  });
+
+  // F9. forward reference válida, sem ciclo/cross-identity, continua suportada
+  it('F9. forward reference válida sem ciclo nem cross-identity continua suportada', () => {
+    const registry = createAiRoleRegistry();
+    registry.appendRoleRevision({
+      roleKey: 'local_resident' as AiRoleKey,
+      roleRevisionId: 'role_01' as AiRoleRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      title: 'Resident',
+    });
+
+    // Inserção da rev 2 com forward ref para rev 1
+    registry.appendBindingRevision({
+      bindingKey: 'bind_fwd' as AiRoleBindingKey,
+      bindingRevisionId: 'b_rev_02' as AiRoleBindingRevisionId,
+      roleKey: 'local_resident' as AiRoleKey,
+      roleRevisionId: 'role_01' as AiRoleRevisionId,
+      routeRevisionId: 'route_01' as RouteRevisionId,
+      target: { kind: 'local_model', runtimeKey: 'ollama', modelName: 'model_2' },
+      lifecycle: 'active',
+      supersedesRevisionIds: ['b_rev_01' as AiRoleBindingRevisionId],
+    });
+
+    // Inserção posterior da rev 1
+    registry.appendBindingRevision({
+      bindingKey: 'bind_fwd' as AiRoleBindingKey,
+      bindingRevisionId: 'b_rev_01' as AiRoleBindingRevisionId,
+      roleKey: 'local_resident' as AiRoleKey,
+      roleRevisionId: 'role_01' as AiRoleRevisionId,
+      routeRevisionId: 'route_01' as RouteRevisionId,
+      target: { kind: 'local_model', runtimeKey: 'ollama', modelName: 'model_1' },
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+    });
+
+    const heads = registry.getBindingHeadsForRole('role_01' as AiRoleRevisionId);
+    assert.equal(heads.length, 1);
+    assert.equal(heads[0].bindingRevisionId, 'b_rev_02');
+  });
 });
+

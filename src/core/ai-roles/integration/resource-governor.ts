@@ -95,6 +95,13 @@ export function createResourceRequestFromResolvedRole(
     );
   }
 
+  if (resolvedRole.target.runtimeKey.toLowerCase() !== 'ollama') {
+    throw new AiRoleResourceGovernorIntegrationError(
+      `Cannot create ResourceRequest for unsupported local runtime '${resolvedRole.target.runtimeKey}'. Only 'ollama' is supported by the current local lifecycle adapter.`,
+      'UNSUPPORTED_LOCAL_RUNTIME',
+    );
+  }
+
   if (resolvedRole.routeRevisionId !== params.routeRevisionId) {
     throw new AiRoleResourceGovernorIntegrationError(
       `routeRevisionId mismatch: resolvedRole specifies '${resolvedRole.routeRevisionId}' but request parameter is '${params.routeRevisionId}'.`,
