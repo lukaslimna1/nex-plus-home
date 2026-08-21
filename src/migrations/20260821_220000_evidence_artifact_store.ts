@@ -9,7 +9,9 @@ export async function up({ db }: MigrateUpArgs): Promise<void> {
       "name" varchar NOT NULL,
       "location_or_uri" text,
       "safe_metadata" jsonb,
-      "created_at" timestamp(3) with time zone NOT NULL
+      "created_at" timestamp(3) with time zone NOT NULL,
+      CONSTRAINT "nex_src_source_id_chk" CHECK (length(trim("source_id")) > 0),
+      CONSTRAINT "nex_src_name_chk" CHECK (length(trim("name")) > 0)
     );
 
     CREATE INDEX IF NOT EXISTS "nex_src_created_at_idx" ON "nex_source_refs" USING btree ("created_at");
@@ -31,6 +33,12 @@ export async function up({ db }: MigrateUpArgs): Promise<void> {
       "redaction_applied" boolean NOT NULL,
       "redaction_method_ref" varchar,
       "retention_class" varchar NOT NULL CHECK ("retention_class" = 'durable_evidence'),
+      CONSTRAINT "nex_art_id_chk" CHECK (length(trim("artifact_id")) > 0),
+      CONSTRAINT "nex_art_mime_chk" CHECK (length(trim("mime_type")) > 0),
+      CONSTRAINT "nex_art_storage_key_chk" CHECK (
+        "storage_backend" = 'local_fs' AND
+        "storage_key" = ('sha256/' || substr("sha256", 1, 2) || '/' || substr("sha256", 3, 2) || '/' || "sha256")
+      ),
       CONSTRAINT "nex_evidence_redaction_chk" CHECK (
         ("redaction_applied" = true AND "redaction_method_ref" IS NOT NULL AND length(trim("redaction_method_ref")) > 0) OR
         ("redaction_applied" = false)
@@ -45,7 +53,9 @@ export async function up({ db }: MigrateUpArgs): Promise<void> {
       "artifact_id" varchar NOT NULL REFERENCES "nex_evidence_artifacts"("artifact_id") ON DELETE RESTRICT,
       "attempt_id" varchar NOT NULL,
       "linked_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
-      PRIMARY KEY ("artifact_id", "attempt_id")
+      PRIMARY KEY ("artifact_id", "attempt_id"),
+      CONSTRAINT "nex_link_artifact_id_chk" CHECK (length(trim("artifact_id")) > 0),
+      CONSTRAINT "nex_link_attempt_id_chk" CHECK (length(trim("attempt_id")) > 0)
     );
 
     -- 4. VÍNCULOS DE FOREIGN KEYS NAS TABELAS 0.85B

@@ -50,8 +50,11 @@ describe('Escopo 0.85B · Persistência PostgreSQL Append-Only & Projeções (Mi
         ('art_ev_1', 'document', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', 0, 'application/pdf', 'local_fs', 'sha256/e3/b0/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', '2026-08-21T00:00:00.000Z', 'NORMAL', false, false, 'durable_evidence')
         ON CONFLICT DO NOTHING;
       `);
-    } catch {
-      // Ignora caso tabelas 0.85C ainda não existam
+    } catch (err: any) {
+      // Ignora estritamente se for 42P01 (tabelas 0.85C ainda não criadas no schema isolado do 0.85B)
+      if (err?.code !== '42P01') {
+        throw err;
+      }
     }
   });
 

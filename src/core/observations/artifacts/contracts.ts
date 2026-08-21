@@ -1,6 +1,6 @@
 /**
  * NEX+ · Evidence Artifact Store & Integrity Contracts
- * Escopo 0.85 (Bloco 0.85C)
+ * Escopo 0.85 (Bloco 0.85C · Hardening Pós-Red-Team)
  *
  * Contratos canônicos para materialização, persistência, autorização,
  * integridade e backup de artefatos de evidência duráveis.
@@ -29,7 +29,7 @@ export interface EvidenceArtifactRecord {
   readonly kind: NonExecutionEvidenceArtifactKind;
   readonly sourceRefId?: SourceRefId;
   readonly sha256: string; // 64 caracteres hex lowercase
-  readonly byteSize: number; // Safe positive integer
+  readonly byteSize: number; // Safe non-negative integer
   readonly mimeType: string;
   readonly storageBackend: ArtifactStorageBackend;
   readonly storageKey: string; // Ex: sha256/ab/cd/<hash>
@@ -75,7 +75,7 @@ export interface SourceRefRecord {
 }
 
 // ============================================================================
-// 4. AUTORIZAÇÃO E ACL BOUNDARY
+// 4. AUTORIZAÇÃO E ACL BOUNDARY (Fail-Closed Estrutural)
 // ============================================================================
 
 export type ArtifactAccessOperation =
@@ -90,7 +90,6 @@ export interface ArtifactAccessContext {
   readonly operation: ArtifactAccessOperation;
   readonly artifactId?: EvidenceArtifactRefId;
   readonly scope?: string;
-  readonly bypassForTesting?: boolean;
 }
 
 export interface ArtifactAccessDecision {
@@ -100,7 +99,7 @@ export interface ArtifactAccessDecision {
 }
 
 export interface ArtifactAccessAuthorizer {
-  authorize(context: ArtifactAccessContext): Promise<ArtifactAccessDecision>;
+  authorize(context: ArtifactAccessContext, expectedOperation?: ArtifactAccessOperation): Promise<ArtifactAccessDecision>;
 }
 
 // ============================================================================

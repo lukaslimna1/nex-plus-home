@@ -1,44 +1,45 @@
 /**
  * NEX+ · Artifact Access Authorizer & ACL Boundary
- * Escopo 0.85 (Bloco 0.85C)
+ * Escopo 0.85 (Bloco 0.85C · Hardening Pós-Red-Team)
  *
- * Boundary fail-closed para operações de leitura, escrita, backup, restore
- * e inspeção de integridade de artefatos duráveis.
+ * Boundary fail-closed estrutural.
+ * Toda operação governada sem autorização explícita configurada é rejeitada por padrão.
  */
 
 import type {
   ArtifactAccessAuthorizer,
   ArtifactAccessContext,
   ArtifactAccessDecision,
+  ArtifactAccessOperation,
 } from './contracts';
 
 export class DefaultArtifactAccessAuthorizer implements ArtifactAccessAuthorizer {
-  async authorize(context: ArtifactAccessContext): Promise<ArtifactAccessDecision> {
-    // Modo explícito de teste / sistema interno autorizado
-    if (context.bypassForTesting) {
+  async authorize(
+    context: ArtifactAccessContext,
+    expectedOperation?: ArtifactAccessOperation
+  ): Promise<ArtifactAccessDecision> {
+    if (!context) {
       return {
-        granted: true,
-        reasonCode: 'TEST_BYPASS_GRANTED',
-        explanation: 'Explicit test or internal root bypass authorization granted.',
+        granted: false,
+        reasonCode: 'ACCESS_DENIED_MISSING_CONTEXT',
+        explanation: 'ArtifactAccessContext is required for all governed operations.',
       };
     }
 
-    // Se o ator for um humano ou componente de sistema com contexto válido
-    if (context.actor) {
-      if (context.actor.kind === 'system' || context.actor.kind === 'max' || context.actor.kind === 'human') {
-        return {
-          granted: true,
-          reasonCode: 'SYSTEM_ACTOR_AUTHORIZED',
-          explanation: `Actor of kind '${context.actor.kind}' is authorized for operation '${context.operation}'.`,
-        };
-      }
+    if (expectedOperation && context.operation !== expectedOperation) {
+      return {
+        granted: false,
+        reasonCode: 'ACCESS_DENIED_OPERATION_MISMATCH',
+        explanation: `Context operation '${context.operation}' does not match expected operation '${expectedOperation}'.`,
+      };
     }
 
-    // Fail-closed por padrão
+    // Fail-Closed estrito de produção por padrão
+    // A presença de um ator por si só NÃO concede autorização irrestrita
     return {
       granted: false,
-      reasonCode: 'ACCESS_DENIED_NO_VALID_AUTHORIZATION',
-      explanation: `No valid actor or explicit permission provided for operation '${context.operation}'.`,
+      reasonCode: 'ACCESS_DENIED_FAIL_CLOSED',
+      explanation: `Default authorizer denies all operations without explicit role policies configured. Operation '${context.operation}' denied.`,
     };
   }
 }

@@ -1,9 +1,9 @@
 /**
  * NEX+ · Evidence Artifact Service Orchestrator
- * Escopo 0.85 (Bloco 0.85C)
+ * Escopo 0.85 (Bloco 0.85C · Hardening Pós-Red-Team)
  *
  * Serviço de orquestração de materialização, consulta, autorização e integridade
- * de artefatos duráveis de evidência.
+ * de artefatos duráveis de evidência com contexto ACL obrigatório e fail-closed por padrão.
  */
 
 import type {
@@ -27,6 +27,10 @@ import {
   SecretMaterialRejectedError,
   ArtifactInvariantViolationError,
 } from './errors';
+import {
+  buildStorageKeyFromSha256,
+  validateCanonicalStorageKey,
+} from './validators';
 
 export interface EvidenceArtifactServiceOptions {
   readonly blobStore: ArtifactBlobStore;
@@ -47,25 +51,28 @@ export class EvidenceArtifactService {
 
   /**
    * Materializa um artefato durável de evidência física no store e registra seus metadados no PostgreSQL.
+   * Exige accessContext com autorização explícita para 'write'.
    */
   async materializeArtifact(
     data: Buffer | NodeJS.ReadableStream,
     params: MaterializeArtifactParams,
-    accessContext?: ArtifactAccessContext
+    accessContext: ArtifactAccessContext
   ): Promise<EvidenceArtifactRecord> {
-    // 1. Verificação Estrita de Segredos (Fail-Closed)
+    // 1. Autorização Obrigatória de Escrita (Fail-Closed)
+    if (!accessContext) {
+      throw new ArtifactAccessDeniedError('write', 'MISSING_ACCESS_CONTEXT', 'ArtifactAccessContext is required for materializeArtifact.');
+    }
+
+    const authDecision = await this.authorizer.authorize(accessContext, 'write');
+    if (!authDecision.granted) {
+      throw new ArtifactAccessDeniedError('write', authDecision.reasonCode, authDecision.explanation);
+    }
+
+    // 2. Verificação Estrita de Segredos (Fail-Closed)
     if (params.containsSecretMaterial === true) {
       throw new SecretMaterialRejectedError(
         'containsSecretMaterial was explicitly set to true. No durable blob or metadata will be persisted.'
       );
-    }
-
-    // 2. Autorização de escrita se contexto fornecido
-    if (accessContext) {
-      const authDecision = await this.authorizer.authorize(accessContext);
-      if (!authDecision.granted) {
-        throw new ArtifactAccessDeniedError('write', authDecision.reasonCode, authDecision.explanation);
-      }
     }
 
     // 3. Validação de SourceRef prévia
@@ -84,6 +91,9 @@ export class EvidenceArtifactService {
       expectedSha256: params.expectedSha256,
     });
 
+    const expectedStorageKey = buildStorageKeyFromSha256(blobResult.sha256);
+    validateCanonicalStorageKey(blobResult.storageKey, blobResult.sha256);
+
     const capturedAt = params.capturedAt ?? new Date().toISOString();
     const sensitivity = params.sensitivity ?? 'NORMAL';
     const mimeType = params.mimeType ?? 'application/octet-stream';
@@ -96,7 +106,7 @@ export class EvidenceArtifactService {
       byteSize: blobResult.byteSize,
       mimeType,
       storageBackend: 'local_fs',
-      storageKey: blobResult.storageKey,
+      storageKey: expectedStorageKey,
       safeDescription: params.safeDescription,
       capturedAt,
       sensitivity,
@@ -117,8 +127,12 @@ export class EvidenceArtifactService {
     artifactId: EvidenceArtifactRefId,
     accessContext: ArtifactAccessContext
   ): Promise<{ metadata: EvidenceArtifactRecord; bytes: Buffer }> {
-    // 1. Autorização Obrigatória de Leitura
-    const authDecision = await this.authorizer.authorize(accessContext);
+    // 1. Autorização Obrigatória de Leitura (Fail-Closed)
+    if (!accessContext) {
+      throw new ArtifactAccessDeniedError('read', 'MISSING_ACCESS_CONTEXT', 'ArtifactAccessContext is required for readArtifact.');
+    }
+
+    const authDecision = await this.authorizer.authorize(accessContext, 'read');
     if (!authDecision.granted) {
       throw new ArtifactAccessDeniedError('read', authDecision.reasonCode, authDecision.explanation);
     }
@@ -140,44 +154,66 @@ export class EvidenceArtifactService {
 
   async getArtifactMetadata(
     artifactId: EvidenceArtifactRefId,
-    accessContext?: ArtifactAccessContext
+    accessContext: ArtifactAccessContext
   ): Promise<EvidenceArtifactRecord | null> {
-    if (accessContext) {
-      const authDecision = await this.authorizer.authorize(accessContext);
-      if (!authDecision.granted) {
-        throw new ArtifactAccessDeniedError('read', authDecision.reasonCode, authDecision.explanation);
-      }
+    if (!accessContext) {
+      throw new ArtifactAccessDeniedError('read', 'MISSING_ACCESS_CONTEXT', 'ArtifactAccessContext is required for getArtifactMetadata.');
     }
+
+    const authDecision = await this.authorizer.authorize(accessContext, 'read');
+    if (!authDecision.granted) {
+      throw new ArtifactAccessDeniedError('read', authDecision.reasonCode, authDecision.explanation);
+    }
+
     return this.persistence.getArtifactMetadata(artifactId);
   }
 
   async recordSourceRef(
     source: SourceRefRecord,
-    accessContext?: ArtifactAccessContext
+    accessContext: ArtifactAccessContext
   ): Promise<SourceRefRecord> {
-    if (accessContext) {
-      const authDecision = await this.authorizer.authorize(accessContext);
-      if (!authDecision.granted) {
-        throw new ArtifactAccessDeniedError('write', authDecision.reasonCode, authDecision.explanation);
-      }
+    if (!accessContext) {
+      throw new ArtifactAccessDeniedError('write', 'MISSING_ACCESS_CONTEXT', 'ArtifactAccessContext is required for recordSourceRef.');
     }
+
+    const authDecision = await this.authorizer.authorize(accessContext, 'write');
+    if (!authDecision.granted) {
+      throw new ArtifactAccessDeniedError('write', authDecision.reasonCode, authDecision.explanation);
+    }
+
     return this.persistence.recordSourceRef(source);
   }
 
   async getSourceRef(
     sourceId: SourceRefId,
-    accessContext?: ArtifactAccessContext
+    accessContext: ArtifactAccessContext
   ): Promise<SourceRefRecord | null> {
-    if (accessContext) {
-      const authDecision = await this.authorizer.authorize(accessContext);
-      if (!authDecision.granted) {
-        throw new ArtifactAccessDeniedError('read', authDecision.reasonCode, authDecision.explanation);
-      }
+    if (!accessContext) {
+      throw new ArtifactAccessDeniedError('read', 'MISSING_ACCESS_CONTEXT', 'ArtifactAccessContext is required for getSourceRef.');
     }
+
+    const authDecision = await this.authorizer.authorize(accessContext, 'read');
+    if (!authDecision.granted) {
+      throw new ArtifactAccessDeniedError('read', authDecision.reasonCode, authDecision.explanation);
+    }
+
     return this.persistence.getSourceRef(sourceId);
   }
 
-  async linkArtifactToAttempt(artifactId: EvidenceArtifactRefId, attemptId: AttemptId): Promise<void> {
+  async linkArtifactToAttempt(
+    artifactId: EvidenceArtifactRefId,
+    attemptId: AttemptId,
+    accessContext: ArtifactAccessContext
+  ): Promise<void> {
+    if (!accessContext) {
+      throw new ArtifactAccessDeniedError('write', 'MISSING_ACCESS_CONTEXT', 'ArtifactAccessContext is required for linkArtifactToAttempt.');
+    }
+
+    const authDecision = await this.authorizer.authorize(accessContext, 'write');
+    if (!authDecision.granted) {
+      throw new ArtifactAccessDeniedError('write', authDecision.reasonCode, authDecision.explanation);
+    }
+
     return this.persistence.linkArtifactToAttempt(artifactId, attemptId);
   }
 }

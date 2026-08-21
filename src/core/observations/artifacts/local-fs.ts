@@ -1,16 +1,16 @@
 /**
  * NEX+ · Local Filesystem Artifact Blob Store
- * Escopo 0.85 (Bloco 0.85C)
+ * Escopo 0.85 (Bloco 0.85C · Hardening Pós-Red-Team)
  *
  * Implementação de armazenamento físico em filesystem local com content-addressing (SHA-256),
- * staging atômico via temporary files, fsync explícito, proteção contra path traversal
- * e verificação ativa de integridade na leitura.
+ * staging atômico via temporary files, fsync explícito, proteção ativa contra path traversal,
+ * proteção contra symlinks/junctions, pipelines com backpressure e cálculo de hash em streaming O(1).
  */
 
 import { createHash, randomBytes } from 'node:crypto';
 import { createReadStream, createWriteStream, promises as fs } from 'node:fs';
 import * as path from 'node:path';
-import { Readable, pipeline } from 'node:stream';
+import { Transform, pipeline, Readable } from 'node:stream';
 import { promisify } from 'node:util';
 
 import type {
@@ -26,7 +26,11 @@ import {
   ArtifactTooLargeError,
   ArtifactInvariantViolationError,
 } from './errors';
-import { isValidSha256 } from './validators';
+import {
+  isValidSha256,
+  validateCanonicalStorageKey,
+  buildStorageKeyFromSha256,
+} from './validators';
 
 const streamPipeline = promisify(pipeline);
 
@@ -35,9 +39,19 @@ export interface LocalFsArtifactBlobStoreOptions {
   readonly defaultMaxArtifactBytes?: number; // Padrão: 50MB (52_428_800 bytes)
 }
 
+function validateMaxBytes(value: number, name: string): void {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new ArtifactInvariantViolationError(
+      'INVALID_MAX_BYTES',
+      `${name} must be a non-negative safe integer, received '${value}'.`
+    );
+  }
+}
+
 export class LocalFsArtifactBlobStore implements ArtifactBlobStore {
   readonly rootDir: string;
   readonly defaultMaxArtifactBytes: number;
+  private canonicalRootDir: string | null = null;
   private initialized = false;
 
   constructor(options: LocalFsArtifactBlobStoreOptions) {
@@ -45,100 +59,162 @@ export class LocalFsArtifactBlobStore implements ArtifactBlobStore {
       throw new ArtifactInvariantViolationError('INVALID_ROOT_DIR', 'rootDir must be a non-empty string.');
     }
     this.rootDir = path.resolve(options.rootDir);
-    this.defaultMaxArtifactBytes = options.defaultMaxArtifactBytes ?? 52_428_800;
+
+    const maxBytes = options.defaultMaxArtifactBytes ?? 52_428_800;
+    validateMaxBytes(maxBytes, 'defaultMaxArtifactBytes');
+    this.defaultMaxArtifactBytes = maxBytes;
   }
 
-  private async ensureInitialized(): Promise<void> {
-    if (!this.initialized) {
-      await fs.mkdir(path.join(this.rootDir, '_staging'), { recursive: true });
-      await fs.mkdir(path.join(this.rootDir, 'sha256'), { recursive: true });
-      this.initialized = true;
+  private async ensureInitialized(): Promise<string> {
+    if (this.initialized && this.canonicalRootDir) {
+      return this.canonicalRootDir;
     }
+
+    await fs.mkdir(this.rootDir, { recursive: true });
+
+    // Proteção contra symlink / junction no próprio root configurado
+    const rootStat = await fs.lstat(this.rootDir);
+    if (rootStat.isSymbolicLink()) {
+      throw new ArtifactStorageError(`Live store root directory cannot be a symbolic link or junction: '${this.rootDir}'.`);
+    }
+
+    this.canonicalRootDir = await fs.realpath(this.rootDir);
+
+    await fs.mkdir(path.join(this.canonicalRootDir, '_staging'), { recursive: true });
+    await fs.mkdir(path.join(this.canonicalRootDir, 'sha256'), { recursive: true });
+
+    this.initialized = true;
+    return this.canonicalRootDir;
   }
 
   /**
-   * Constrói e valida o path absoluto a partir da storageKey, assegurando confinamento dentro de rootDir.
+   * Constrói e valida o path absoluto a partir da storageKey, assegurando confinamento estrito
+   * no canonicalRootDir e ausência de symlinks/junctions em toda a árvore de diretórios.
    */
-  private resolveStoragePath(storageKey: string): string {
-    if (!storageKey || typeof storageKey !== 'string') {
-      throw new ArtifactStorageError('Invalid storageKey.');
+  private async resolveStoragePath(storageKey: string): Promise<string> {
+    const canonicalRoot = await this.ensureInitialized();
+
+    validateCanonicalStorageKey(storageKey);
+
+    const parts = storageKey.split('/'); // ['sha256', 'ab', 'cd', '<64hex>']
+    const relativePath = path.join(...parts);
+    const absolutePath = path.join(canonicalRoot, relativePath);
+
+    // Validação de confinamento físico contra symlinks intermediários
+    let currentCheckPath = canonicalRoot;
+    for (let i = 0; i < parts.length - 1; i++) {
+      currentCheckPath = path.join(currentCheckPath, parts[i]);
+      try {
+        const stat = await fs.lstat(currentCheckPath);
+        if (stat.isSymbolicLink()) {
+          throw new ArtifactStorageError(`Symlink or junction detected in storage path at '${currentCheckPath}'.`);
+        }
+      } catch (err: any) {
+        if (err?.code !== 'ENOENT') {
+          throw err;
+        }
+        // Diretório ainda não existe, será criado legitimamente
+        break;
+      }
     }
 
-    if (path.isAbsolute(storageKey)) {
-      throw new ArtifactStorageError(`Absolute path not allowed for storageKey '${storageKey}'.`);
-    }
-
-    const absolutePath = path.resolve(this.rootDir, storageKey);
-    const relative = path.relative(this.rootDir, absolutePath);
-
-    if (relative.startsWith('..') || path.isAbsolute(relative)) {
-      throw new ArtifactStorageError(`Path traversal attempt detected for storageKey '${storageKey}'.`);
+    // Se o diretório-pai já existir, valida realpath para garantir confinamento
+    const parentDir = path.dirname(absolutePath);
+    try {
+      const realParent = await fs.realpath(parentDir);
+      const relToRoot = path.relative(canonicalRoot, realParent);
+      if (relToRoot.startsWith('..') || path.isAbsolute(relToRoot)) {
+        throw new ArtifactStorageError(`Path traversal or junction escape detected for storageKey '${storageKey}'.`);
+      }
+    } catch (err: any) {
+      if (err?.code !== 'ENOENT') {
+        throw err;
+      }
     }
 
     return absolutePath;
+  }
+
+  /**
+   * Calcula o hash SHA-256 e tamanho de um arquivo via streaming com O(1) de memória.
+   */
+  private async calculateFileSha256(filePath: string): Promise<{ sha256: string; byteSize: number }> {
+    const hash = createHash('sha256');
+    let byteSize = 0;
+
+    const readStream = createReadStream(filePath);
+    await new Promise<void>((resolve, reject) => {
+    readStream.on('data', (chunk: Buffer | string) => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      byteSize += buf.length;
+      hash.update(buf);
+    });
+      readStream.on('end', () => resolve());
+      readStream.on('error', (err) => reject(err));
+    });
+
+    return {
+      sha256: hash.digest('hex'),
+      byteSize,
+    };
   }
 
   async putBlob(
     data: Buffer | NodeJS.ReadableStream,
     options?: PutBlobOptions
   ): Promise<PutBlobResult> {
-    await this.ensureInitialized();
+    const canonicalRoot = await this.ensureInitialized();
 
     const maxBytes = options?.maxBytes ?? this.defaultMaxArtifactBytes;
-    const stagingFileName = `${Date.now()}_${randomBytes(8).toString('hex')}.tmp`;
-    const stagingPath = path.join(this.rootDir, '_staging', stagingFileName);
+    validateMaxBytes(maxBytes, 'options.maxBytes');
 
-    const hash = createHash('sha256');
-    let byteSize = 0;
+    const stagingFileName = `${Date.now()}_${randomBytes(12).toString('hex')}.tmp`;
+    const stagingPath = path.join(canonicalRoot, '_staging', stagingFileName);
 
+    let calculatedSha256 = '';
+    let totalBytes = 0;
     let fileHandle: fs.FileHandle | null = null;
 
     try {
-      fileHandle = await fs.open(stagingPath, 'wx'); // Cria exclusivamente
+      fileHandle = await fs.open(stagingPath, 'wx'); // Criação exclusiva
+
+      const hash = createHash('sha256');
 
       if (Buffer.isBuffer(data)) {
-        byteSize = data.length;
-        if (byteSize > maxBytes) {
-          throw new ArtifactTooLargeError(byteSize, maxBytes);
+        totalBytes = data.length;
+        if (totalBytes > maxBytes) {
+          throw new ArtifactTooLargeError(totalBytes, maxBytes);
         }
         hash.update(data);
         await fileHandle.writeFile(data);
       } else {
-        // Leitura via Stream com contagem e limite progressivo
-        const writeStream = createWriteStream('', { fd: fileHandle.fd, autoClose: false });
-
-        const countingStream = new Readable({
-          read() {},
-        });
-
-        const inputStream = data as Readable;
-
-        await new Promise<void>((resolve, reject) => {
-          inputStream.on('data', (chunk: Buffer) => {
-            byteSize += chunk.length;
-            if (byteSize > maxBytes) {
-              inputStream.destroy();
-              reject(new ArtifactTooLargeError(byteSize, maxBytes));
+        // Pipeline com Transform Stream respeitando backpressure e contagem estrita
+        const countingHashTransform = new Transform({
+          transform(chunk: Buffer, _encoding, callback) {
+            totalBytes += chunk.length;
+            if (totalBytes > maxBytes) {
+              callback(new ArtifactTooLargeError(totalBytes, maxBytes));
               return;
             }
             hash.update(chunk);
-            writeStream.write(chunk);
-          });
-
-          inputStream.on('end', () => {
-            writeStream.end(() => resolve());
-          });
-
-          inputStream.on('error', (err) => reject(err));
-          writeStream.on('error', (err) => reject(err));
+            callback(null, chunk);
+          },
         });
+
+        const fileWriteStream = createWriteStream('', { fd: fileHandle.fd, autoClose: false });
+
+        await streamPipeline(
+          data as Readable,
+          countingHashTransform,
+          fileWriteStream
+        );
       }
 
       await fileHandle.sync(); // Garante flush físico em disco
       await fileHandle.close();
       fileHandle = null;
 
-      const calculatedSha256 = hash.digest('hex');
+      calculatedSha256 = hash.digest('hex');
 
       if (options?.expectedSha256) {
         const expected = options.expectedSha256.toLowerCase();
@@ -152,44 +228,66 @@ export class LocalFsArtifactBlobStore implements ArtifactBlobStore {
         }
       }
 
-      const storageKey = `sha256/${calculatedSha256.slice(0, 2)}/${calculatedSha256.slice(2, 4)}/${calculatedSha256}`;
-      const finalPath = this.resolveStoragePath(storageKey);
+      const storageKey = buildStorageKeyFromSha256(calculatedSha256);
+      const finalPath = await this.resolveStoragePath(storageKey);
 
-      // Garante diretório de destino
       await fs.mkdir(path.dirname(finalPath), { recursive: true });
 
-      // Verificação de blob já existente por content-addressing
+      // Verificação rigorosa se destino já existe
       try {
-        const existingStat = await fs.stat(finalPath);
-        if (existingStat.isFile() && existingStat.size === byteSize) {
-          // Arquivo idêntico já existe intacto
+        const existingStat = await fs.lstat(finalPath);
+        if (existingStat.isSymbolicLink() || !existingStat.isFile()) {
+          throw new ArtifactStorageError(`Destination path '${finalPath}' exists and is not a regular file.`);
+        }
+
+        // Calcula o hash completo do arquivo existente para garantir integridade absoluta
+        const existingCheck = await this.calculateFileSha256(finalPath);
+        if (existingCheck.byteSize === totalBytes && existingCheck.sha256 === calculatedSha256) {
           await fs.unlink(stagingPath).catch(() => {});
           return {
             sha256: calculatedSha256,
-            byteSize,
+            byteSize: totalBytes,
             storageKey,
             alreadyExisted: true,
           };
+        } else {
+          // Arquivo existente está corrompido! Não sobrescrever silenciosamente.
+          throw new ArtifactIntegrityError({
+            storageKey,
+            expectedSha256: calculatedSha256,
+            actualSha256: existingCheck.sha256,
+            message: `Destination file at '${storageKey}' exists but is corrupted (hash mismatch). Cannot overwrite historical evidence.`,
+          });
         }
-      } catch {
-        // Não existe, prossegue com a instalação
+      } catch (statErr: any) {
+        if (statErr instanceof ArtifactIntegrityError || statErr instanceof ArtifactStorageError) {
+          throw statErr;
+        }
+        // Se ENOENT, segue para rename normal
       }
 
-      // Move atômico do staging para o destino final
+      // Move atômico de staging para destino final
       try {
         await fs.rename(stagingPath, finalPath);
       } catch (renameErr: any) {
-        // Fallback defensivo para Windows se rename falhar
+        // Fallback defensivo para concorrência (EEXIST / EPERM)
         if (renameErr?.code === 'EEXIST' || renameErr?.code === 'EPERM') {
-          const verifyExisting = await this.verifyBlob(storageKey, calculatedSha256, byteSize);
+          const verifyExisting = await this.verifyBlob(storageKey, calculatedSha256, totalBytes);
           if (verifyExisting.valid) {
             await fs.unlink(stagingPath).catch(() => {});
             return {
               sha256: calculatedSha256,
-              byteSize,
+              byteSize: totalBytes,
               storageKey,
               alreadyExisted: true,
             };
+          } else {
+            throw new ArtifactIntegrityError({
+              storageKey,
+              expectedSha256: calculatedSha256,
+              actualSha256: verifyExisting.actualSha256,
+              message: `Destination file corrupted after rename race on '${storageKey}'.`,
+            });
           }
         }
         throw renameErr;
@@ -197,7 +295,7 @@ export class LocalFsArtifactBlobStore implements ArtifactBlobStore {
 
       return {
         sha256: calculatedSha256,
-        byteSize,
+        byteSize: totalBytes,
         storageKey,
         alreadyExisted: false,
       };
@@ -211,21 +309,29 @@ export class LocalFsArtifactBlobStore implements ArtifactBlobStore {
   }
 
   async getBlob(storageKey: string, expectedSha256?: string): Promise<Buffer> {
-    const finalPath = this.resolveStoragePath(storageKey);
+    const finalPath = await this.resolveStoragePath(storageKey);
+
+    try {
+      const stat = await fs.lstat(finalPath);
+      if (stat.isSymbolicLink() || !stat.isFile()) {
+        throw new ArtifactStorageError(`Target storage object '${storageKey}' is not a regular file.`);
+      }
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') {
+        throw new ArtifactNotFoundError(storageKey);
+      }
+      throw err;
+    }
 
     let data: Buffer;
     try {
       data = await fs.readFile(finalPath);
     } catch (err: any) {
-      if (err?.code === 'ENOENT') {
-        throw new ArtifactNotFoundError(storageKey);
-      }
       throw new ArtifactStorageError(`Failed to read artifact blob at '${storageKey}': ${err.message}`, err);
     }
 
     const calculatedSha256 = createHash('sha256').update(data).digest('hex');
-
-    const expectedHash = expectedSha256?.toLowerCase() ?? (storageKey.startsWith('sha256/') ? storageKey.split('/').pop() : undefined);
+    const expectedHash = expectedSha256?.toLowerCase() ?? storageKey.split('/').pop()?.toLowerCase();
 
     if (expectedHash && isValidSha256(expectedHash)) {
       if (calculatedSha256 !== expectedHash) {
@@ -242,28 +348,33 @@ export class LocalFsArtifactBlobStore implements ArtifactBlobStore {
   }
 
   async getBlobStream(storageKey: string, expectedSha256?: string): Promise<NodeJS.ReadableStream> {
-    const finalPath = this.resolveStoragePath(storageKey);
+    const finalPath = await this.resolveStoragePath(storageKey);
 
-    try {
-      await fs.access(finalPath);
-    } catch (err: any) {
-      if (err?.code === 'ENOENT') {
-        throw new ArtifactNotFoundError(storageKey);
-      }
-      throw err;
+    const expectedHash = expectedSha256?.toLowerCase() ?? storageKey.split('/').pop()?.toLowerCase();
+    if (!expectedHash || !isValidSha256(expectedHash)) {
+      throw new ArtifactInvariantViolationError('INVALID_SHA256', `Cannot get stream with invalid hash '${expectedHash}'.`);
     }
 
-    // Para verificação de integridade no stream, lemos os dados e emitimos
-    // garantindo que não passem dados corrompidos
-    const buffer = await this.getBlob(storageKey, expectedSha256);
-    return Readable.from(buffer);
+    // Verificação de integridade via streaming antes de fornecer o stream ao caller
+    const verify = await this.verifyBlob(storageKey, expectedHash);
+    if (!verify.valid) {
+      throw new ArtifactIntegrityError({
+        storageKey,
+        expectedSha256: expectedHash,
+        actualSha256: verify.actualSha256,
+        message: `Active integrity verification failed for '${storageKey}': ${verify.error}`,
+      });
+    }
+
+    // Retorna ReadStream real de arquivo em disco sem carregar tudo na memória
+    return createReadStream(finalPath);
   }
 
   async hasBlob(storageKey: string): Promise<boolean> {
     try {
-      const finalPath = this.resolveStoragePath(storageKey);
-      const stat = await fs.stat(finalPath);
-      return stat.isFile();
+      const finalPath = await this.resolveStoragePath(storageKey);
+      const stat = await fs.lstat(finalPath);
+      return stat.isFile() && !stat.isSymbolicLink();
     } catch {
       return false;
     }
@@ -275,11 +386,14 @@ export class LocalFsArtifactBlobStore implements ArtifactBlobStore {
     expectedSize?: number
   ): Promise<VerifyBlobResult> {
     try {
-      const finalPath = this.resolveStoragePath(storageKey);
-      const stat = await fs.stat(finalPath);
+      const finalPath = await this.resolveStoragePath(storageKey);
+      const stat = await fs.lstat(finalPath);
 
-      if (!stat.isFile()) {
-        return { valid: false, error: 'Target path is not a file.' };
+      if (stat.isSymbolicLink() || !stat.isFile()) {
+        return {
+          valid: false,
+          error: `Target path '${storageKey}' is not a regular file (symlinks/junctions rejected).`,
+        };
       }
 
       if (expectedSize !== undefined && stat.size !== expectedSize) {
@@ -291,24 +405,33 @@ export class LocalFsArtifactBlobStore implements ArtifactBlobStore {
         };
       }
 
-      const data = await fs.readFile(finalPath);
-      const actualSha256 = createHash('sha256').update(data).digest('hex');
+      // Verificação em streaming constante O(1)
+      const fileCheck = await this.calculateFileSha256(finalPath);
 
-      if (actualSha256 !== expectedSha256.toLowerCase()) {
+      if (fileCheck.sha256 !== expectedSha256.toLowerCase()) {
         return {
           valid: false,
-          actualSha256,
-          actualSize: stat.size,
-          error: `Hash mismatch: expected ${expectedSha256}, found ${actualSha256}.`,
+          actualSha256: fileCheck.sha256,
+          expectedSha256: expectedSha256.toLowerCase(),
+          actualSize: fileCheck.byteSize,
+          error: `Hash mismatch: expected ${expectedSha256}, found ${fileCheck.sha256}.`,
         };
       }
 
       return {
         valid: true,
-        actualSha256,
-        actualSize: stat.size,
+        actualSha256: fileCheck.sha256,
+        expectedSha256: expectedSha256.toLowerCase(),
+        actualSize: fileCheck.byteSize,
+        expectedSize: expectedSize ?? fileCheck.byteSize,
       };
     } catch (err: any) {
+      if (err?.code === 'ENOENT') {
+        return {
+          valid: false,
+          error: `Blob file does not exist on disk for '${storageKey}'.`,
+        };
+      }
       return {
         valid: false,
         error: err?.message ?? 'Unknown verification error.',
@@ -317,8 +440,8 @@ export class LocalFsArtifactBlobStore implements ArtifactBlobStore {
   }
 
   async listStorageKeys(): Promise<string[]> {
-    await this.ensureInitialized();
-    const shaRoot = path.join(this.rootDir, 'sha256');
+    const canonicalRoot = await this.ensureInitialized();
+    const shaRoot = path.join(canonicalRoot, 'sha256');
     const storageKeys: string[] = [];
 
     async function walk(dir: string, prefix: string) {
@@ -333,7 +456,13 @@ export class LocalFsArtifactBlobStore implements ArtifactBlobStore {
         if (entry.isDirectory()) {
           await walk(path.join(dir, entry.name), `${prefix}/${entry.name}`);
         } else if (entry.isFile() && isValidSha256(entry.name)) {
-          storageKeys.push(`${prefix}/${entry.name}`);
+          const key = `${prefix}/${entry.name}`;
+          try {
+            validateCanonicalStorageKey(key);
+            storageKeys.push(key);
+          } catch {
+            // Ignora arquivos que não sejam chaves canônicas válidas
+          }
         }
       }
     }
