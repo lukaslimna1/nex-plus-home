@@ -58,6 +58,12 @@ export function parseEdgeServerConfig(rawUrl?: string | null): EdgeServerConfig 
     );
   }
 
+  if (parsedUrl.username || parsedUrl.password) {
+    throw new Error(
+      `[EDGE_CONFIG_ERROR] PAYLOAD_PUBLIC_SERVER_URL não deve conter credenciais/userinfo (username/password).`,
+    );
+  }
+
   if (parsedUrl.pathname !== '' && parsedUrl.pathname !== '/') {
     throw new Error(
       `[EDGE_CONFIG_ERROR] PAYLOAD_PUBLIC_SERVER_URL não deve conter path funcional: '${parsedUrl.pathname}'. Informe apenas a origem base (ex: 'https://nex.starlevel.com.br').`,

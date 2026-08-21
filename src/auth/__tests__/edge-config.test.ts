@@ -112,6 +112,21 @@ describe('NEX+ Auth · Edge & Cookie Configuration Hardening (0.8B-L)', () => {
       () => parseEdgeServerConfig('https://nex.starlevel.com.br#section'),
       (err: Error) => err.message.includes('não deve conter fragmento'),
     );
+
+    // Rejeição determinística de userinfo / credenciais na URL
+    const userinfoUrls = [
+      'https://user@nex.starlevel.com.br',
+      'https://user:pass@nex.starlevel.com.br',
+      'https://nex.starlevel.com.br@evil.example',
+      'http://admin:secret@localhost:3000',
+    ];
+    for (const url of userinfoUrls) {
+      assert.throws(
+        () => parseEdgeServerConfig(url),
+        (err: Error) => err.message.includes('não deve conter credenciais/userinfo'),
+        `Deve rejeitar URL com userinfo: ${url}`,
+      );
+    }
   });
 
   it('L4. Configuração de cookie seguro aplica-se à coleção Users', () => {

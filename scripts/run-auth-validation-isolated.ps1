@@ -32,6 +32,11 @@ if (-not (Get-Command psql -ErrorAction SilentlyContinue) -or -not (Get-Command 
 }
 
 # 2. Leitura segura de credenciais do .env (sem exibir segredos)
+$hadOriginalEdgeUrl = [System.Environment]::GetEnvironmentVariables().ContainsKey("PAYLOAD_PUBLIC_SERVER_URL")
+$originalEdgeUrl = $env:PAYLOAD_PUBLIC_SERVER_URL
+# Neutralizar imediatamente no processo do script para garantir modo local
+$env:PAYLOAD_PUBLIC_SERVER_URL = ""
+
 $envLines = Get-Content $envFilePath
 $dbUrlLine = $envLines | Where-Object { $_ -match '^DATABASE_URL=' }
 $payloadSecretLine = $envLines | Where-Object { $_ -match '^PAYLOAD_SECRET=' }
@@ -58,8 +63,9 @@ if ($operationalHost -ne "127.0.0.1" -and $operationalHost -ne "localhost") {
 }
 
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host " NEX+ · HARNESS DE VALIDAÇÃO ISOLADO (ESCOPO 0.8A)" -ForegroundColor Cyan
+Write-Host " NEX+ · HARNESS DE VALIDAÇÃO ISOLADO (ESCOPO 0.8A / 0.8B-L)" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
+Write-Host "Modo: LOCAL AUTH VALIDATION MODE (PAYLOAD_PUBLIC_SERVER_URL neutralizada deliberadamente)" -ForegroundColor Yellow
 Write-Host "Host: $operationalHost | Porta: $operationalPort | Banco Operacional: $operationalDbName (PROTEGIDO)"
 
 # 3. Geração do nome do Database Descartável
@@ -97,6 +103,7 @@ try {
     $env:PAYLOAD_SECRET = $payloadSecret
     $env:NEX_E2E_ISOLATED = "1"
     $env:PORT = "3108"
+    $env:PAYLOAD_PUBLIC_SERVER_URL = ""
 
     # 5. Executar Migrations UP no banco descartável
     Write-Host "`n[2/7] Executando migrations (UP) no banco descartável..." -ForegroundColor Yellow
@@ -167,6 +174,13 @@ finally {
         Write-Host "Banco descartável '$disposableDbName' removido com sucesso." -ForegroundColor Green
     } else {
         Write-Host "[SECURITY_WARN] Nome do banco não passou na validação de drop: $disposableDbName" -ForegroundColor Red
+    }
+
+    # 11. Restauração do ambiente original
+    if ($hadOriginalEdgeUrl) {
+        $env:PAYLOAD_PUBLIC_SERVER_URL = $originalEdgeUrl
+    } else {
+        Remove-Item env:\PAYLOAD_PUBLIC_SERVER_URL -ErrorAction SilentlyContinue
     }
 }
 
