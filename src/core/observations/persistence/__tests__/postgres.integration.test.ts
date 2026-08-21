@@ -34,6 +34,25 @@ describe('Escopo 0.85B · Persistência PostgreSQL Append-Only & Projeções (Mi
     if (!databaseUrl) return;
     pool = new Pool({ connectionString: databaseUrl });
     adapter = new PgObservationPersistenceAdapter(pool);
+
+    // Se as tabelas do 0.85C estiverem presentes (schema com FKs), garante fixtures básicas para compatibilidade
+    try {
+      await pool.query(`
+        INSERT INTO nex_source_refs (source_id, kind, name, created_at)
+        VALUES ('src_fornecedor_1', 'url', 'Fornecedor Test Fixture', '2026-08-21T00:00:00.000Z')
+        ON CONFLICT DO NOTHING;
+
+        INSERT INTO nex_evidence_artifacts (
+          artifact_id, kind, sha256, byte_size, mime_type, storage_backend, storage_key,
+          captured_at, sensitivity, contains_secret_material, redaction_applied, retention_class
+        ) VALUES
+        ('art_screenshot_1', 'screenshot', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', 0, 'image/png', 'local_fs', 'sha256/e3/b0/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', '2026-08-21T00:00:00.000Z', 'NORMAL', false, false, 'durable_evidence'),
+        ('art_ev_1', 'document', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', 0, 'application/pdf', 'local_fs', 'sha256/e3/b0/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', '2026-08-21T00:00:00.000Z', 'NORMAL', false, false, 'durable_evidence')
+        ON CONFLICT DO NOTHING;
+      `);
+    } catch {
+      // Ignora caso tabelas 0.85C ainda não existam
+    }
   });
 
   after(async () => {
