@@ -1,0 +1,894 @@
+import { describe, it, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import pg from 'pg';
+
+import type {
+  ObservationRecord,
+  ObservationRecordId,
+  ObservationSubject,
+  SourceRefId,
+  EvidenceArtifactRefId,
+  ReviewEventId,
+  CanonicalProjectionRevisionId,
+  NonCanonicalReviewEvent,
+  CanonicalPromotedReviewEvent,
+  CanonicalReclassifiedReviewEvent,
+  CanonicalProjection,
+} from '../../contracts';
+import { PgObservationPersistenceAdapter } from '../postgres';
+import {
+  IdempotencyConflictError,
+  StaleCanonicalBaseConflictError,
+  PersistenceInvariantViolationError,
+} from '../errors';
+
+const { Pool } = pg;
+
+const databaseUrl = process.env.DATABASE_URL;
+
+describe('Escopo 0.85B · Persistência PostgreSQL Append-Only & Projeções', { skip: !databaseUrl }, () => {
+  let pool: pg.Pool;
+  let adapter: PgObservationPersistenceAdapter;
+
+  before(async () => {
+    if (!databaseUrl) return;
+    pool = new Pool({ connectionString: databaseUrl });
+    adapter = new PgObservationPersistenceAdapter(pool);
+  });
+
+  after(async () => {
+    if (pool) {
+      await pool.end();
+    }
+  });
+
+  describe('ObservationRecord & Ingestão Idempotente', () => {
+    it('A, B, C: ObservationRecord round-trip preserva rawValue null e timestamps UTC Z', async () => {
+      const obsId = `obs_test_roundtrip_${Date.now()}` as ObservationRecordId;
+      const subject: ObservationSubject = {
+        domain: 'catalog',
+        entityType: 'product_price',
+        entityId: 'sku_camisa_azul',
+      };
+
+      const record: ObservationRecord = {
+        observationId: obsId,
+        subject,
+        observedClaim: 'supplier_discount_rate',
+        rawValue: null, // Teste do rawValue null explícito
+        normalizedValue: null,
+        actor: {
+          kind: 'human',
+          humanId: 'user_lucas',
+          role: 'director',
+        },
+        channel: 'email_attachment',
+        acquisitionMethod: 'manual_entry',
+        sourceRefs: ['src_fornecedor_1' as SourceRefId],
+        evidenceRefs: ['art_screenshot_1' as EvidenceArtifactRefId],
+        occurredAt: '2026-08-21T10:00:00.000Z',
+        observedAt: '2026-08-21T10:15:00.000Z',
+        capturedAt: '2026-08-21T10:20:00.000Z',
+        receivedAt: '2026-08-21T10:05:00.000Z',
+      };
+
+      const res = await adapter.recordObservation(record);
+      assert.equal(res.deduplicated, false);
+      assert.equal(res.record.observationId, obsId);
+
+      const fetched = await adapter.getObservation(obsId);
+      assert.ok(fetched);
+      assert.equal(fetched.observationId, obsId);
+      assert.equal(fetched.rawValue, null);
+      assert.equal(fetched.normalizedValue, null);
+      assert.equal(fetched.occurredAt, '2026-08-21T10:00:00.000Z');
+      assert.equal(fetched.observedAt, '2026-08-21T10:15:00.000Z');
+      assert.equal(fetched.capturedAt, '2026-08-21T10:20:00.000Z');
+      assert.equal(fetched.receivedAt, '2026-08-21T10:05:00.000Z');
+      assert.equal(fetched.sourceRefs.length, 1);
+      assert.equal(fetched.evidenceRefs.length, 1);
+    });
+
+    it('D: Duas observações com mesmo subject e mesmo valor em instantes distintos permanecem duas linhas', async () => {
+      const subject: ObservationSubject = {
+        domain: 'pricing',
+        entityType: 'sku',
+        entityId: 'item_same_val',
+      };
+
+      const obs1: ObservationRecord = {
+        observationId: `obs_val_1_${Date.now()}` as ObservationRecordId,
+        subject,
+        observedClaim: 'price',
+        rawValue: 42.0,
+        actor: { kind: 'system', component: 'scraper' },
+        sourceRefs: [],
+        evidenceRefs: [],
+        observedAt: '2026-08-21T08:00:00.000Z',
+        capturedAt: '2026-08-21T08:01:00.000Z',
+      };
+
+      const obs2: ObservationRecord = {
+        observationId: `obs_val_2_${Date.now()}` as ObservationRecordId,
+        subject,
+        observedClaim: 'price',
+        rawValue: 42.0, // Mesmo valor!
+        actor: { kind: 'system', component: 'scraper' },
+        sourceRefs: [],
+        evidenceRefs: [],
+        observedAt: '2026-08-21T09:00:00.000Z', // Momento posterior
+        capturedAt: '2026-08-21T09:01:00.000Z',
+      };
+
+      await adapter.recordObservation(obs1);
+      await adapter.recordObservation(obs2);
+
+      const history = await adapter.listObservationsBySubject(subject);
+      const ids = history.map((h) => h.observationId);
+      assert.ok(ids.includes(obs1.observationId));
+      assert.ok(ids.includes(obs2.observationId));
+      assert.ok(history.length >= 2);
+    });
+
+    it('E: Mesma chave de idempotência repetida com mesmo ID retorna registro existente (deduplicated: true)', async () => {
+      const obsId = `obs_idem_ok_${Date.now()}` as ObservationRecordId;
+      const idempotency = { scope: 'test_scope_e', key: `key_e_${Date.now()}` };
+
+      const record: ObservationRecord = {
+        observationId: obsId,
+        subject: { domain: 'd', entityType: 't', entityId: 'e' },
+        observedClaim: 'test_claim',
+        rawValue: { sample: 'data' },
+        actor: { kind: 'max', maxVersion: '1.0' },
+        sourceRefs: [],
+        evidenceRefs: [],
+        observedAt: '2026-08-21T10:00:00.000Z',
+        capturedAt: '2026-08-21T10:00:01.000Z',
+      };
+
+      const first = await adapter.recordObservation(record, idempotency);
+      assert.equal(first.deduplicated, false);
+
+      const second = await adapter.recordObservation(record, idempotency);
+      assert.equal(second.deduplicated, true);
+      assert.equal(second.record.observationId, obsId);
+    });
+
+    it('F: Mesma chave de idempotência reaproveitada para observationId diferente gera IdempotencyConflictError', async () => {
+      const idempotency = { scope: 'test_scope_f', key: `key_f_${Date.now()}` };
+
+      const record1: ObservationRecord = {
+        observationId: `obs_f_1_${Date.now()}` as ObservationRecordId,
+        subject: { domain: 'd', entityType: 't', entityId: 'f' },
+        observedClaim: 'c1',
+        rawValue: 10,
+        actor: { kind: 'max', maxVersion: '1.0' },
+        sourceRefs: [],
+        evidenceRefs: [],
+        observedAt: '2026-08-21T10:00:00.000Z',
+        capturedAt: '2026-08-21T10:00:01.000Z',
+      };
+
+      const record2: ObservationRecord = {
+        observationId: `obs_f_2_${Date.now()}` as ObservationRecordId,
+        subject: { domain: 'd', entityType: 't', entityId: 'f' },
+        observedClaim: 'c2',
+        rawValue: 20,
+        actor: { kind: 'max', maxVersion: '1.0' },
+        sourceRefs: [],
+        evidenceRefs: [],
+        observedAt: '2026-08-21T10:00:00.000Z',
+        capturedAt: '2026-08-21T10:00:01.000Z',
+      };
+
+      await adapter.recordObservation(record1, idempotency);
+
+      await assert.rejects(
+        async () => {
+          await adapter.recordObservation(record2, idempotency);
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof IdempotencyConflictError);
+          assert.equal(err.scope, idempotency.scope);
+          assert.equal(err.key, idempotency.key);
+          assert.equal(err.existingObservationId, record1.observationId);
+          assert.equal(err.attemptedObservationId, record2.observationId);
+          return true;
+        }
+      );
+    });
+
+    it('G: Concorrência com mesma idempotency key não duplica inserção', async () => {
+      const obsId = `obs_concurrent_idem_${Date.now()}` as ObservationRecordId;
+      const idempotency = { scope: 'test_scope_g', key: `key_g_${Date.now()}` };
+
+      const record: ObservationRecord = {
+        observationId: obsId,
+        subject: { domain: 'd', entityType: 't', entityId: 'g' },
+        observedClaim: 'concurrent_claim',
+        rawValue: 100,
+        actor: { kind: 'integration', provider: 'bling' },
+        sourceRefs: [],
+        evidenceRefs: [],
+        observedAt: '2026-08-21T10:00:00.000Z',
+        capturedAt: '2026-08-21T10:00:01.000Z',
+      };
+
+      const [res1, res2] = await Promise.all([
+        adapter.recordObservation(record, idempotency),
+        adapter.recordObservation(record, idempotency),
+      ]);
+
+      const deduplicatedCount = [res1.deduplicated, res2.deduplicated].filter((d) => d).length;
+      assert.equal(deduplicatedCount, 1);
+    });
+  });
+
+  describe('ReviewEvent (Append-Only) & Vínculos Relacionais', () => {
+    it('H, I, J, K: ReviewEvent round-trip preserva targetObservationIds, previousReviewIds e evidenceRefs', async () => {
+      const obsId1 = `obs_rev_target_1_${Date.now()}` as ObservationRecordId;
+      const obsId2 = `obs_rev_target_2_${Date.now()}` as ObservationRecordId;
+
+      await adapter.recordObservation({
+        observationId: obsId1,
+        subject: { domain: 'd', entityType: 't', entityId: 'h' },
+        observedClaim: 'c1',
+        rawValue: 1,
+        actor: { kind: 'max', maxVersion: '1.0' },
+        sourceRefs: [],
+        evidenceRefs: [],
+        observedAt: '2026-08-21T10:00:00.000Z',
+        capturedAt: '2026-08-21T10:00:01.000Z',
+      });
+
+      await adapter.recordObservation({
+        observationId: obsId2,
+        subject: { domain: 'd', entityType: 't', entityId: 'h' },
+        observedClaim: 'c2',
+        rawValue: 2,
+        actor: { kind: 'max', maxVersion: '1.0' },
+        sourceRefs: [],
+        evidenceRefs: [],
+        observedAt: '2026-08-21T10:00:00.000Z',
+        capturedAt: '2026-08-21T10:00:01.000Z',
+      });
+
+      const prevReviewId = `rev_prev_${Date.now()}` as ReviewEventId;
+      const prevReview: NonCanonicalReviewEvent = {
+        reviewId: prevReviewId,
+        actor: { kind: 'max', maxVersion: '1.0' },
+        targetObservationIds: [obsId1],
+        decision: 'provisional',
+        justification: 'Análise preliminar',
+        reviewedAt: '2026-08-21T11:00:00.000Z',
+      };
+      await adapter.recordNonCanonicalReview(prevReview);
+
+      const mainReviewId = `rev_main_${Date.now()}` as ReviewEventId;
+      const mainReview: NonCanonicalReviewEvent = {
+        reviewId: mainReviewId,
+        actor: { kind: 'human', humanId: 'user_lucas', role: 'auditor' },
+        targetObservationIds: [obsId1, obsId2],
+        previousReviewIds: [prevReviewId],
+        consideredEvidenceIds: ['art_ev_1' as EvidenceArtifactRefId],
+        decision: 'corroborated',
+        justification: 'Corroborado após conferência cruzada',
+        reviewedAt: '2026-08-21T11:30:00.000Z',
+      };
+
+      await adapter.recordNonCanonicalReview(mainReview);
+
+      const fetched = await adapter.getReview(mainReviewId);
+      assert.ok(fetched);
+      assert.equal(fetched.reviewId, mainReviewId);
+      assert.equal(fetched.targetObservationIds.length, 2);
+      assert.ok(fetched.targetObservationIds.includes(obsId1));
+      assert.ok(fetched.targetObservationIds.includes(obsId2));
+      assert.deepEqual(fetched.previousReviewIds, [prevReviewId]);
+      assert.deepEqual(fetched.consideredEvidenceIds, ['art_ev_1']);
+      assert.equal(fetched.decision, 'corroborated');
+    });
+
+    it('W: ReviewEvent referenciando observationId inexistente falha por integridade referencial', async () => {
+      const invalidReview: NonCanonicalReviewEvent = {
+        reviewId: `rev_invalid_fk_${Date.now()}` as ReviewEventId,
+        actor: { kind: 'max', maxVersion: '1.0' },
+        targetObservationIds: ['obs_non_existent_12345' as ObservationRecordId],
+        decision: 'divergent',
+        justification: 'FK inválida',
+        reviewedAt: '2026-08-21T12:00:00.000Z',
+      };
+
+      await assert.rejects(async () => {
+        await adapter.recordNonCanonicalReview(invalidReview);
+      });
+    });
+  });
+
+  describe('Promoção Canônica, Head e Concorrência Otimista', () => {
+    it('L, M, N, O: Primeira promoção cria Head V1; segunda supersedes e cria Head V2 com histórico intacto', async () => {
+      const subject: ObservationSubject = {
+        domain: 'catalog',
+        entityType: 'sku_pricing',
+        entityId: `sku_promo_${Date.now()}`,
+      };
+
+      const obsId1 = `obs_promo_1_${Date.now()}` as ObservationRecordId;
+      await adapter.recordObservation({
+        observationId: obsId1,
+        subject,
+        observedClaim: 'base_price',
+        rawValue: 50.0,
+        actor: { kind: 'system', component: 'feeder' },
+        sourceRefs: [],
+        evidenceRefs: [],
+        observedAt: '2026-08-21T10:00:00.000Z',
+        capturedAt: '2026-08-21T10:01:00.000Z',
+      });
+
+      // 1. PRIMEIRA PROMOÇÃO CANÔNICA (Criação inicial de Head)
+      const rev1Id = `rev_promo_1_${Date.now()}` as ReviewEventId;
+      const proj1Id = `proj_rev_1_${Date.now()}` as CanonicalProjectionRevisionId;
+
+      const review1: CanonicalPromotedReviewEvent = {
+        reviewId: rev1Id,
+        actor: { kind: 'human', humanId: 'user_lucas', authorityRef: 'AUTH_DIR' },
+        targetObservationIds: [obsId1],
+        decision: 'canonical_promoted',
+        canonicalEffect: {
+          action: 'promote',
+          targetCanonicalState: { price: 50.0, approved: true },
+        },
+        justification: 'Aprovação inicial do preço base',
+        reviewedAt: '2026-08-21T11:00:00.000Z',
+      };
+
+      const projection1: CanonicalProjection = {
+        projectionRevisionId: proj1Id,
+        subject,
+        canonicalState: { price: 50.0, approved: true },
+        underlyingObservationIds: [obsId1],
+        authorizingReviewIds: [rev1Id],
+        materializedAt: '2026-08-21T11:05:00.000Z',
+        explanation: 'Primeira projeção canônica aprovada por Lucas',
+      };
+
+      const commit1Res = await adapter.commitCanonicalPromotion({
+        review: review1,
+        projection: projection1,
+        expectedBaseRevisionId: undefined, // Base inicial inexistente
+      });
+
+      assert.equal(commit1Res.head.currentProjectionRevisionId, proj1Id);
+      assert.equal(commit1Res.head.version, BigInt(1));
+
+      const head1 = await adapter.getCurrentCanonicalHead(subject);
+      assert.ok(head1);
+      assert.equal(head1.currentProjectionRevisionId, proj1Id);
+      assert.equal(head1.version, BigInt(1));
+
+      // 2. SEGUNDA PROMOÇÃO CANÔNICA (Supersession de V1 para V2)
+      const obsId2 = `obs_promo_2_${Date.now()}` as ObservationRecordId;
+      await adapter.recordObservation({
+        observationId: obsId2,
+        subject,
+        observedClaim: 'base_price',
+        rawValue: 55.0,
+        actor: { kind: 'system', component: 'feeder' },
+        sourceRefs: [],
+        evidenceRefs: [],
+        observedAt: '2026-08-21T12:00:00.000Z',
+        capturedAt: '2026-08-21T12:01:00.000Z',
+      });
+
+      const rev2Id = `rev_promo_2_${Date.now()}` as ReviewEventId;
+      const proj2Id = `proj_rev_2_${Date.now()}` as CanonicalProjectionRevisionId;
+
+      const review2: CanonicalPromotedReviewEvent = {
+        reviewId: rev2Id,
+        actor: { kind: 'human', humanId: 'user_lucas', authorityRef: 'AUTH_DIR' },
+        targetObservationIds: [obsId2],
+        targetBaseRevisionId: proj1Id, // Avaliado sobre V1
+        decision: 'canonical_promoted',
+        canonicalEffect: {
+          action: 'promote',
+          targetCanonicalState: { price: 55.0, approved: true },
+        },
+        justification: 'Reajuste anual de preço aprovado',
+        reviewedAt: '2026-08-21T13:00:00.000Z',
+      };
+
+      const projection2: CanonicalProjection = {
+        projectionRevisionId: proj2Id,
+        subject,
+        canonicalState: { price: 55.0, approved: true },
+        underlyingObservationIds: [obsId2],
+        authorizingReviewIds: [rev2Id],
+        supersedesRevisionId: proj1Id, // Supersedes V1
+        materializedAt: '2026-08-21T13:05:00.000Z',
+        explanation: 'Segunda projeção canônica reajustada',
+      };
+
+      const commit2Res = await adapter.commitCanonicalPromotion({
+        review: review2,
+        projection: projection2,
+        expectedBaseRevisionId: proj1Id, // Concorrência otimista sobre V1
+      });
+
+      assert.equal(commit2Res.head.currentProjectionRevisionId, proj2Id);
+      assert.equal(commit2Res.head.version, BigInt(2));
+
+      // N: Primeira revision continua consultável intacta (Append-only)
+      const fetchedProj1 = await adapter.getCanonicalProjectionRevision(proj1Id);
+      assert.ok(fetchedProj1);
+      assert.equal(fetchedProj1.canonicalState.price, 50.0);
+
+      // O: Current projection retorna a segunda revision (55.0)
+      const currentProj = await adapter.getCurrentCanonicalProjection(subject);
+      assert.ok(currentProj);
+      assert.equal(currentProj.projectionRevisionId, proj2Id);
+      assert.equal(currentProj.canonicalState.price, 55.0);
+      assert.equal(currentProj.supersedesRevisionId, proj1Id);
+    });
+
+    it('P, Q, R: Promoção avaliada contra base stale é rejeitada e não deixa estado parcial', async () => {
+      const subject: ObservationSubject = {
+        domain: 'catalog',
+        entityType: 'stale_test',
+        entityId: `stale_item_${Date.now()}`,
+      };
+
+      const obsId = `obs_stale_1_${Date.now()}` as ObservationRecordId;
+      await adapter.recordObservation({
+        observationId: obsId,
+        subject,
+        observedClaim: 'val',
+        rawValue: 10,
+        actor: { kind: 'max', maxVersion: '1.0' },
+        sourceRefs: [],
+        evidenceRefs: [],
+        observedAt: '2026-08-21T10:00:00.000Z',
+        capturedAt: '2026-08-21T10:00:01.000Z',
+      });
+
+      // 1. Cria Head V1
+      const rev1Id = `rev_stale_1_${Date.now()}` as ReviewEventId;
+      const proj1Id = `proj_stale_1_${Date.now()}` as CanonicalProjectionRevisionId;
+
+      await adapter.commitCanonicalPromotion({
+        review: {
+          reviewId: rev1Id,
+          actor: { kind: 'human', humanId: 'user_1', authorityRef: 'AUTH_1' },
+          targetObservationIds: [obsId],
+          decision: 'canonical_promoted',
+          canonicalEffect: { action: 'promote', targetCanonicalState: { v: 1 } },
+          justification: 'V1',
+          reviewedAt: '2026-08-21T10:00:00.000Z',
+        },
+        projection: {
+          projectionRevisionId: proj1Id,
+          subject,
+          canonicalState: { v: 1 },
+          underlyingObservationIds: [obsId],
+          authorizingReviewIds: [rev1Id],
+          materializedAt: '2026-08-21T10:01:00.000Z',
+          explanation: 'V1',
+        },
+        expectedBaseRevisionId: undefined,
+      });
+
+      // 2. Cria Head V2
+      const rev2Id = `rev_stale_2_${Date.now()}` as ReviewEventId;
+      const proj2Id = `proj_stale_2_${Date.now()}` as CanonicalProjectionRevisionId;
+
+      await adapter.commitCanonicalPromotion({
+        review: {
+          reviewId: rev2Id,
+          actor: { kind: 'human', humanId: 'user_1', authorityRef: 'AUTH_1' },
+          targetObservationIds: [obsId],
+          targetBaseRevisionId: proj1Id,
+          decision: 'canonical_promoted',
+          canonicalEffect: { action: 'promote', targetCanonicalState: { v: 2 } },
+          justification: 'V2',
+          reviewedAt: '2026-08-21T11:00:00.000Z',
+        },
+        projection: {
+          projectionRevisionId: proj2Id,
+          subject,
+          canonicalState: { v: 2 },
+          underlyingObservationIds: [obsId],
+          authorizingReviewIds: [rev2Id],
+          supersedesRevisionId: proj1Id,
+          materializedAt: '2026-08-21T11:01:00.000Z',
+          explanation: 'V2',
+        },
+        expectedBaseRevisionId: proj1Id,
+      });
+
+      // 3. Tenta promover V3 baseada na V1 (enquanto a Head atual já é V2)
+      const rev3Id = `rev_stale_3_failing_${Date.now()}` as ReviewEventId;
+      const proj3Id = `proj_stale_3_failing_${Date.now()}` as CanonicalProjectionRevisionId;
+
+      await assert.rejects(
+        async () => {
+          await adapter.commitCanonicalPromotion({
+            review: {
+              reviewId: rev3Id,
+              actor: { kind: 'human', humanId: 'user_2', authorityRef: 'AUTH_2' },
+              targetObservationIds: [obsId],
+              targetBaseRevisionId: proj1Id, // Stale base!
+              decision: 'canonical_promoted',
+              canonicalEffect: { action: 'promote', targetCanonicalState: { v: 3 } },
+              justification: 'Tentativa concorrente sobre V1',
+              reviewedAt: '2026-08-21T12:00:00.000Z',
+            },
+            projection: {
+              projectionRevisionId: proj3Id,
+              subject,
+              canonicalState: { v: 3 },
+              underlyingObservationIds: [obsId],
+              authorizingReviewIds: [rev3Id],
+              supersedesRevisionId: proj1Id, // Stale base!
+              materializedAt: '2026-08-21T12:01:00.000Z',
+              explanation: 'V3 stale',
+            },
+            expectedBaseRevisionId: proj1Id, // Stale!
+          });
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof StaleCanonicalBaseConflictError);
+          assert.equal(err.expectedBaseRevisionId, proj1Id);
+          assert.equal(err.currentHeadRevisionId, proj2Id);
+          return true;
+        }
+      );
+
+      // Q: Nenhum ReviewEvent parcial ficou gravado
+      const orphanReview = await adapter.getReview(rev3Id);
+      assert.equal(orphanReview, null);
+
+      // R: Nenhuma CanonicalProjectionRevision parcial ficou gravada
+      const orphanProjection = await adapter.getCanonicalProjectionRevision(proj3Id);
+      assert.equal(orphanProjection, null);
+
+      // Head continua sendo V2 intacta
+      const head = await adapter.getCurrentCanonicalHead(subject);
+      assert.ok(head);
+      assert.equal(head.currentProjectionRevisionId, proj2Id);
+      assert.equal(head.version, BigInt(2));
+    });
+
+    it('S: Duas promoções concorrentes sobre a mesma base: exatamente uma vence e a outra recebe StaleCanonicalBaseConflictError', async () => {
+      const subject: ObservationSubject = {
+        domain: 'catalog',
+        entityType: 'concurrency_test',
+        entityId: `concurrent_item_${Date.now()}`,
+      };
+
+      const obsId = `obs_conc_${Date.now()}` as ObservationRecordId;
+      await adapter.recordObservation({
+        observationId: obsId,
+        subject,
+        observedClaim: 'c',
+        rawValue: 100,
+        actor: { kind: 'max', maxVersion: '1.0' },
+        sourceRefs: [],
+        evidenceRefs: [],
+        observedAt: '2026-08-21T10:00:00.000Z',
+        capturedAt: '2026-08-21T10:00:01.000Z',
+      });
+
+      // Cria V1 inicial
+      const baseRevId = `rev_base_${Date.now()}` as ReviewEventId;
+      const baseProjId = `proj_base_${Date.now()}` as CanonicalProjectionRevisionId;
+
+      await adapter.commitCanonicalPromotion({
+        review: {
+          reviewId: baseRevId,
+          actor: { kind: 'human', humanId: 'user_1', authorityRef: 'AUTH_1' },
+          targetObservationIds: [obsId],
+          decision: 'canonical_promoted',
+          canonicalEffect: { action: 'promote', targetCanonicalState: { val: 'base' } },
+          justification: 'Base V1',
+          reviewedAt: '2026-08-21T10:00:00.000Z',
+        },
+        projection: {
+          projectionRevisionId: baseProjId,
+          subject,
+          canonicalState: { val: 'base' },
+          underlyingObservationIds: [obsId],
+          authorizingReviewIds: [baseRevId],
+          materializedAt: '2026-08-21T10:01:00.000Z',
+          explanation: 'Base V1',
+        },
+      });
+
+      // Duas promoções concorrentes (A e B) disputando a mesma base V1
+      const promoA = {
+        review: {
+          reviewId: `rev_conc_a_${Date.now()}` as ReviewEventId,
+          actor: { kind: 'human' as const, humanId: 'user_a', authorityRef: 'AUTH_A' },
+          targetObservationIds: [obsId],
+          targetBaseRevisionId: baseProjId,
+          decision: 'canonical_promoted' as const,
+          canonicalEffect: { action: 'promote' as const, targetCanonicalState: { val: 'A' } },
+          justification: 'Promo A',
+          reviewedAt: '2026-08-21T11:00:00.000Z',
+        },
+        projection: {
+          projectionRevisionId: `proj_conc_a_${Date.now()}` as CanonicalProjectionRevisionId,
+          subject,
+          canonicalState: { val: 'A' },
+          underlyingObservationIds: [obsId],
+          authorizingReviewIds: [`rev_conc_a_${Date.now()}` as ReviewEventId],
+          supersedesRevisionId: baseProjId,
+          materializedAt: '2026-08-21T11:01:00.000Z',
+          explanation: 'Proj A',
+        },
+        expectedBaseRevisionId: baseProjId,
+      };
+
+      const promoB = {
+        review: {
+          reviewId: `rev_conc_b_${Date.now()}` as ReviewEventId,
+          actor: { kind: 'human' as const, humanId: 'user_b', authorityRef: 'AUTH_B' },
+          targetObservationIds: [obsId],
+          targetBaseRevisionId: baseProjId,
+          decision: 'canonical_promoted' as const,
+          canonicalEffect: { action: 'promote' as const, targetCanonicalState: { val: 'B' } },
+          justification: 'Promo B',
+          reviewedAt: '2026-08-21T11:00:00.000Z',
+        },
+        projection: {
+          projectionRevisionId: `proj_conc_b_${Date.now()}` as CanonicalProjectionRevisionId,
+          subject,
+          canonicalState: { val: 'B' },
+          underlyingObservationIds: [obsId],
+          authorizingReviewIds: [`rev_conc_b_${Date.now()}` as ReviewEventId],
+          supersedesRevisionId: baseProjId,
+          materializedAt: '2026-08-21T11:01:00.000Z',
+          explanation: 'Proj B',
+        },
+        expectedBaseRevisionId: baseProjId,
+      };
+
+      const results = await Promise.allSettled([
+        adapter.commitCanonicalPromotion(promoA),
+        adapter.commitCanonicalPromotion(promoB),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+
+      assert.equal(fulfilled.length, 1);
+      assert.equal(rejected.length, 1);
+
+      const rejectedReason = (rejected[0] as PromiseRejectedResult).reason;
+      assert.ok(rejectedReason instanceof StaleCanonicalBaseConflictError);
+
+      const head = await adapter.getCurrentCanonicalHead(subject);
+      assert.ok(head);
+      assert.equal(head.version, BigInt(2));
+    });
+
+    it('T: Duas promoções concorrentes para a primeira head: apenas uma vence', async () => {
+      const subject: ObservationSubject = {
+        domain: 'catalog',
+        entityType: 'initial_head_concurrency',
+        entityId: `init_item_${Date.now()}`,
+      };
+
+      const obsId = `obs_init_${Date.now()}` as ObservationRecordId;
+      await adapter.recordObservation({
+        observationId: obsId,
+        subject,
+        observedClaim: 'init',
+        rawValue: 1,
+        actor: { kind: 'max', maxVersion: '1.0' },
+        sourceRefs: [],
+        evidenceRefs: [],
+        observedAt: '2026-08-21T10:00:00.000Z',
+        capturedAt: '2026-08-21T10:00:01.000Z',
+      });
+
+      const promoA = {
+        review: {
+          reviewId: `rev_init_a_${Date.now()}` as ReviewEventId,
+          actor: { kind: 'human' as const, humanId: 'user_a', authorityRef: 'AUTH_A' },
+          targetObservationIds: [obsId],
+          decision: 'canonical_promoted' as const,
+          canonicalEffect: { action: 'promote' as const, targetCanonicalState: { init: 'A' } },
+          justification: 'Init A',
+          reviewedAt: '2026-08-21T10:00:00.000Z',
+        },
+        projection: {
+          projectionRevisionId: `proj_init_a_${Date.now()}` as CanonicalProjectionRevisionId,
+          subject,
+          canonicalState: { init: 'A' },
+          underlyingObservationIds: [obsId],
+          authorizingReviewIds: [`rev_init_a_${Date.now()}` as ReviewEventId],
+          materializedAt: '2026-08-21T10:01:00.000Z',
+          explanation: 'Init Proj A',
+        },
+      };
+
+      const promoB = {
+        review: {
+          reviewId: `rev_init_b_${Date.now()}` as ReviewEventId,
+          actor: { kind: 'human' as const, humanId: 'user_b', authorityRef: 'AUTH_B' },
+          targetObservationIds: [obsId],
+          decision: 'canonical_promoted' as const,
+          canonicalEffect: { action: 'promote' as const, targetCanonicalState: { init: 'B' } },
+          justification: 'Init B',
+          reviewedAt: '2026-08-21T10:00:00.000Z',
+        },
+        projection: {
+          projectionRevisionId: `proj_init_b_${Date.now()}` as CanonicalProjectionRevisionId,
+          subject,
+          canonicalState: { init: 'B' },
+          underlyingObservationIds: [obsId],
+          authorizingReviewIds: [`rev_init_b_${Date.now()}` as ReviewEventId],
+          materializedAt: '2026-08-21T10:01:00.000Z',
+          explanation: 'Init Proj B',
+        },
+      };
+
+      const results = await Promise.allSettled([
+        adapter.commitCanonicalPromotion(promoA),
+        adapter.commitCanonicalPromotion(promoB),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+
+      assert.equal(fulfilled.length, 1);
+      assert.equal(rejected.length, 1);
+
+      const head = await adapter.getCurrentCanonicalHead(subject);
+      assert.ok(head);
+      assert.equal(head.version, BigInt(1));
+    });
+
+    it('U: canonical_reclassified cria nova revision com action reclassify e preserva anterior', async () => {
+      const subject: ObservationSubject = {
+        domain: 'catalog',
+        entityType: 'reclassify_test',
+        entityId: `reclass_item_${Date.now()}`,
+      };
+
+      const obsId = `obs_reclass_${Date.now()}` as ObservationRecordId;
+      await adapter.recordObservation({
+        observationId: obsId,
+        subject,
+        observedClaim: 'category',
+        rawValue: 'draft_cat',
+        actor: { kind: 'max', maxVersion: '1.0' },
+        sourceRefs: [],
+        evidenceRefs: [],
+        observedAt: '2026-08-21T10:00:00.000Z',
+        capturedAt: '2026-08-21T10:00:01.000Z',
+      });
+
+      // 1. Promoção inicial
+      const rev1Id = `rev_rec_1_${Date.now()}` as ReviewEventId;
+      const proj1Id = `proj_rec_1_${Date.now()}` as CanonicalProjectionRevisionId;
+
+      await adapter.commitCanonicalPromotion({
+        review: {
+          reviewId: rev1Id,
+          actor: { kind: 'human', humanId: 'user_lucas', authorityRef: 'AUTH_1' },
+          targetObservationIds: [obsId],
+          decision: 'canonical_promoted',
+          canonicalEffect: { action: 'promote', targetCanonicalState: { category: 'Standard' } },
+          justification: 'Aprovado Standard',
+          reviewedAt: '2026-08-21T10:00:00.000Z',
+        },
+        projection: {
+          projectionRevisionId: proj1Id,
+          subject,
+          canonicalState: { category: 'Standard' },
+          underlyingObservationIds: [obsId],
+          authorizingReviewIds: [rev1Id],
+          materializedAt: '2026-08-21T10:01:00.000Z',
+          explanation: 'Standard',
+        },
+      });
+
+      // 2. Reclassificação canônica
+      const rev2Id = `rev_rec_2_${Date.now()}` as ReviewEventId;
+      const proj2Id = `proj_rec_2_${Date.now()}` as CanonicalProjectionRevisionId;
+
+      const reclassReview: CanonicalReclassifiedReviewEvent = {
+        reviewId: rev2Id,
+        actor: { kind: 'human', humanId: 'user_lucas', authorityRef: 'AUTH_BOARD' },
+        targetObservationIds: [obsId],
+        targetBaseRevisionId: proj1Id,
+        decision: 'canonical_reclassified',
+        canonicalEffect: { action: 'reclassify', targetCanonicalState: { category: 'Premium' } },
+        justification: 'Reclassificado formalmente para Premium após nova inspeção técnica',
+        reviewedAt: '2026-08-21T14:00:00.000Z',
+      };
+
+      const reclassProj: CanonicalProjection = {
+        projectionRevisionId: proj2Id,
+        subject,
+        canonicalState: { category: 'Premium' },
+        underlyingObservationIds: [obsId],
+        authorizingReviewIds: [rev2Id],
+        supersedesRevisionId: proj1Id,
+        materializedAt: '2026-08-21T14:05:00.000Z',
+        explanation: 'Reclassificação canônica para Premium',
+      };
+
+      await adapter.commitCanonicalPromotion({
+        review: reclassReview,
+        projection: reclassProj,
+        expectedBaseRevisionId: proj1Id,
+      });
+
+      // V1 continua existindo intacta
+      const v1 = await adapter.getCanonicalProjectionRevision(proj1Id);
+      assert.ok(v1);
+      assert.equal(v1.canonicalState.category, 'Standard');
+
+      // V2 é a projeção vigente
+      const v2 = await adapter.getCurrentCanonicalProjection(subject);
+      assert.ok(v2);
+      assert.equal(v2.canonicalState.category, 'Premium');
+      assert.equal(v2.supersedesRevisionId, proj1Id);
+    });
+
+    it('X: Falha durante a transação de promoção faz rollback total sem deixar lixo', async () => {
+      const subject: ObservationSubject = {
+        domain: 'catalog',
+        entityType: 'rollback_test',
+        entityId: `rollback_item_${Date.now()}`,
+      };
+
+      const obsId = `obs_rb_${Date.now()}` as ObservationRecordId;
+      await adapter.recordObservation({
+        observationId: obsId,
+        subject,
+        observedClaim: 'rb',
+        rawValue: 1,
+        actor: { kind: 'max', maxVersion: '1.0' },
+        sourceRefs: [],
+        evidenceRefs: [],
+        observedAt: '2026-08-21T10:00:00.000Z',
+        capturedAt: '2026-08-21T10:00:01.000Z',
+      });
+
+      const failingReviewId = `rev_rb_fail_${Date.now()}` as ReviewEventId;
+      const failingProjId = `proj_rb_fail_${Date.now()}` as CanonicalProjectionRevisionId;
+
+      // Forçar erro de validação/invariante no objeto da projeção (underlyingObservationIds vazio)
+      await assert.rejects(async () => {
+        await adapter.commitCanonicalPromotion({
+          review: {
+            reviewId: failingReviewId,
+            actor: { kind: 'human', humanId: 'user_1', authorityRef: 'AUTH_1' },
+            targetObservationIds: [obsId],
+            decision: 'canonical_promoted',
+            canonicalEffect: { action: 'promote', targetCanonicalState: { a: 1 } },
+            justification: 'RB Test',
+            reviewedAt: '2026-08-21T10:00:00.000Z',
+          },
+          projection: {
+            projectionRevisionId: failingProjId,
+            subject,
+            canonicalState: { a: 1 },
+            underlyingObservationIds: [], // Erro! Invariante falha
+            authorizingReviewIds: [failingReviewId],
+            materializedAt: '2026-08-21T10:00:00.000Z',
+            explanation: 'Fail',
+          },
+        });
+      });
+
+      // Confirmação de Rollback total
+      assert.equal(await adapter.getReview(failingReviewId), null);
+      assert.equal(await adapter.getCanonicalProjectionRevision(failingProjId), null);
+      assert.equal(await adapter.getCurrentCanonicalHead(subject), null);
+    });
+  });
+});
