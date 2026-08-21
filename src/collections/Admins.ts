@@ -1,6 +1,8 @@
 import type { Access, CollectionConfig } from 'payload'
+import { getEdgeServerConfig } from '../auth/edge-config'
 
 const isAdmin: Access = ({ req: { user } }) => Boolean(user?.collection === 'admins')
+const edgeConfig = getEdgeServerConfig()
 
 export const Admins: CollectionConfig = {
   slug: 'admins',
@@ -15,7 +17,9 @@ export const Admins: CollectionConfig = {
   admin: {
     useAsTitle: 'email',
   },
-  auth: true,
+  auth: {
+    cookies: edgeConfig.cookies,
+  },
   fields: [
     // Email added by default
     // Add more fields as needed

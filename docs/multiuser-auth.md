@@ -95,3 +95,26 @@ npm run test:e2e:auth:isolated
 5. **Limpeza Automática no `finally`**:
    - Encerra conexões ativas e remove o banco descartável via `dropdb`.
    - O banco de dados operacional **nunca** recebe comandos `migrate:down`, `migrate:reset` ou `dropdb`.
+
+---
+
+## 7. Hardening de Borda / Edge Remoto & Cookies Seguros (Escopo 0.8B-L)
+
+Para preparar o NEX+ para publicação remota sob Cloudflare Tunnel/Access com HTTPS sem acoplamento estático e preservando o acesso local independente:
+
+1. **Variável de Configuração Canônica (`PAYLOAD_PUBLIC_SERVER_URL`)**:
+   - Helper puro e testável em `src/auth/edge-config.ts` (`parseEdgeServerConfig` / `getEdgeServerConfig`).
+   - Valida estritamente a URL: aceita unicamente protocolos `http:` ou `https:`, rejeita caminhos funcionais arbitrários (`/admin`, etc.), query strings e fragmentos (fail-closed).
+   - Sem a variável configurada (desenvolvimento / testes locais): `serverURL` e `csrf` permanecem desativados e os cookies de autenticação operam com `secure: false`.
+   - Com a variável configurada (ex: `PAYLOAD_PUBLIC_SERVER_URL=https://nex.starlevel.com.br`):
+     - `serverURL`: definida como a origem canônica resolvida (`https://nex.starlevel.com.br`).
+     - `csrf`: aceita explicitamente a origem pública para proteção contra CSRF em requisições de autenticação e cookies.
+     - `cookies`: ativa `secure: true` para todas as coleções de autenticação (`users` e `admins`).
+
+2. **Aplicação Unificada de Cookies (`users` e `admins`)**:
+   - Ambas as auth collections configuram `cookies: edgeConfig.cookies` (`sameSite: 'Lax'`, `secure: boolean`, cookie host-only sem `Domain` amplo).
+   - Preserva o workaround da versão 3.88.0 do Payload (`removeTokenFromResponses` omitido na collection `Users`).
+
+3. **Acesso Local Independente e Compatibilidade com Cookies Seguros**:
+   - Conforme RFC 6265bis e especificação W3C Secure Contexts, navegadores modernos tratam `http://localhost:<porta>` como origem potencialmente confiável (Trustworthy Origin), permitindo a transmissão de cookies com flag `Secure`.
+   - A aplicação continua acessível localmente mesmo quando configurada para a borda remota.

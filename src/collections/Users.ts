@@ -1,6 +1,8 @@
 import type { Access, CollectionConfig } from 'payload';
+import { getEdgeServerConfig } from '../auth/edge-config';
 
 const isAdmin: Access = ({ req: { user } }) => Boolean(user?.collection === 'admins');
+const edgeConfig = getEdgeServerConfig();
 
 export const Users: CollectionConfig = {
   slug: 'users',
@@ -18,6 +20,7 @@ export const Users: CollectionConfig = {
   },
   auth: {
     useSessions: true,
+    cookies: edgeConfig.cookies,
     // Workaround deliberado para Payload 3.88.0:
     // @payloadcms/next/auth login() depende de result.token para materializar o cookie HTTP-only.
     // Quando removeTokenFromResponses é true na 3.88.0, o token é removido antes do helper Next criar o cookie.

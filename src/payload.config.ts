@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url'
 
 import { Admins } from './collections/Admins'
 import { Users } from './collections/Users'
+import { getEdgeServerConfig } from './auth/edge-config'
 
 const filename = fileURLToPath(import.meta.url)
 const dirname = path.dirname(filename)
@@ -17,6 +18,8 @@ function getRequiredEnv(name: string): string {
   return val
 }
 
+const edgeConfig = getEdgeServerConfig()
+
 export default buildConfig({
   admin: {
     user: Admins.slug,
@@ -26,6 +29,8 @@ export default buildConfig({
   },
   collections: [Admins, Users],
   secret: getRequiredEnv('PAYLOAD_SECRET'),
+  ...(edgeConfig.serverURL ? { serverURL: edgeConfig.serverURL } : {}),
+  ...(edgeConfig.csrf ? { csrf: edgeConfig.csrf } : {}),
   typescript: {
     outputFile: path.resolve(dirname, 'payload-types.ts'),
   },

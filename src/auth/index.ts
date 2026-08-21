@@ -6,3 +6,4 @@
 export * from './identity';
 export * from './current-user';
 export * from './actions';
+export * from './edge-config';
