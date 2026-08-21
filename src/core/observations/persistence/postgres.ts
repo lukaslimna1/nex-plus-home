@@ -1,9 +1,13 @@
 /**
  * NEX+ · PostgreSQL Adapter para Observações, Revisões & Projeções
- * Escopo 0.85 (Bloco 0.85B)
+ * Escopo 0.85 (Bloco 0.85B - Micro-Hardening)
  *
- * Implementação append-only com concorrência otimista e integridade relacional estrita.
+ * Implementação append-only com concorrência otimista, advisory locks transacionais
+ * e validação estrita de coerência cruzada Review ↔ Projection.
  */
+
+import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 
 import type { FactProvenance } from '../../capabilities/contracts';
 import type {
@@ -15,6 +19,8 @@ import type {
   ReviewEvent,
   ReviewEventId,
   NonCanonicalReviewEvent,
+  CanonicalPromotedReviewEvent,
+  CanonicalReclassifiedReviewEvent,
   CanonicalProjection,
   CanonicalProjectionRevisionId,
   Actor,
@@ -60,6 +66,138 @@ export interface PgPoolLike extends PgExecutor {
   connect(): Promise<PgClientWithTransaction>;
 }
 
+/**
+ * Gera chave bigint determinística com sinal para pg_advisory_xact_lock.
+ */
+export function generateSubjectLockKey(subject: ObservationSubject): string {
+  const hash = createHash('sha256')
+    .update(`canonical_subject:${subject.domain}:${subject.entityType}:${subject.entityId}`)
+    .digest();
+  return hash.readBigInt64BE(0).toString();
+}
+
+/**
+ * Gera chave bigint determinística com sinal para idempotência (namespace isolado).
+ */
+export function generateIdempotencyLockKey(scope: string, key: string): string {
+  const hash = createHash('sha256')
+    .update(`observation_idempotency:${scope}:${key}`)
+    .digest();
+  return hash.readBigInt64BE(0).toString();
+}
+
+/**
+ * Validação profunda de coerência relacional e semântica entre ReviewEvent e CanonicalProjection.
+ * Executada estritamente dentro da transação ativa.
+ */
+export async function validateCanonicalCommitCoherence(
+  client: PgExecutor,
+  review: CanonicalPromotedReviewEvent | CanonicalReclassifiedReviewEvent,
+  projection: CanonicalProjection
+): Promise<void> {
+  const { domain, entityType, entityId } = projection.subject;
+
+  // 1. Coerência Estrutural do Estado Canônico (Node isDeepStrictEqual)
+  if (!isDeepStrictEqual(review.canonicalEffect.targetCanonicalState, projection.canonicalState)) {
+    throw new PersistenceInvariantViolationError(
+      'CANONICAL_STATE_MISMATCH',
+      `Review targetCanonicalState and Projection canonicalState must be structurally equal.`
+    );
+  }
+
+  // 2. Review Corrente DEVE constar na lista de authorizingReviewIds da Projeção
+  if (!projection.authorizingReviewIds.includes(review.reviewId)) {
+    throw new PersistenceInvariantViolationError(
+      'CURRENT_REVIEW_NOT_AUTHORIZING_PROJECTION',
+      `Current review '${review.reviewId}' must be included in projection.authorizingReviewIds.`
+    );
+  }
+
+  // 3. Validação das Authorizing Reviews Anteriores (Devem existir e ser canônicas)
+  const previousAuthorizerIds = projection.authorizingReviewIds.filter((id) => id !== review.reviewId);
+  if (previousAuthorizerIds.length > 0) {
+    const prevReviewsRes = await client.query<{ review_id: string; decision: string }>(
+      `SELECT review_id, decision FROM nex_review_events WHERE review_id = ANY($1::varchar[])`,
+      [previousAuthorizerIds]
+    );
+
+    if (prevReviewsRes.rows.length !== previousAuthorizerIds.length) {
+      const foundIds = new Set(prevReviewsRes.rows.map((r) => r.review_id));
+      const missing = previousAuthorizerIds.filter((id) => !foundIds.has(id));
+      throw new PersistenceInvariantViolationError(
+        'AUTHORIZING_REVIEW_NOT_FOUND',
+        `Authorizing review(s) not found in persistence: ${missing.join(', ')}.`
+      );
+    }
+
+    for (const r of prevReviewsRes.rows) {
+      if (r.decision !== 'canonical_promoted' && r.decision !== 'canonical_reclassified') {
+        throw new PersistenceInvariantViolationError(
+          'AUTHORIZING_REVIEW_NOT_CANONICAL',
+          `Authorizing review '${r.review_id}' has non-canonical decision '${r.decision}'. Only canonical decisions can authorize projections.`
+        );
+      }
+    }
+  }
+
+  // 4. Validação de Coerência de Subject das Observações (Cross-Subject Violation Check)
+  const allObsIds = Array.from(
+    new Set([...review.targetObservationIds, ...projection.underlyingObservationIds])
+  );
+
+  const obsCheckRes = await client.query<{
+    observation_id: string;
+    domain: string;
+    entity_type: string;
+    entity_id: string;
+  }>(
+    `SELECT observation_id, domain, entity_type, entity_id
+     FROM nex_observation_records
+     WHERE observation_id = ANY($1::varchar[])`,
+    [allObsIds]
+  );
+
+  if (obsCheckRes.rows.length !== allObsIds.length) {
+    const foundIds = new Set(obsCheckRes.rows.map((r) => r.observation_id));
+    const missing = allObsIds.filter((id) => !foundIds.has(id));
+    throw new PersistenceInvariantViolationError(
+      'OBSERVATION_NOT_FOUND',
+      `Observation(s) not found in persistence: ${missing.join(', ')}.`
+    );
+  }
+
+  for (const row of obsCheckRes.rows) {
+    if (row.domain !== domain || row.entity_type !== entityType || row.entity_id !== entityId) {
+      throw new PersistenceInvariantViolationError(
+        'CROSS_SUBJECT_OBSERVATION_MISMATCH',
+        `Observation '${row.observation_id}' belongs to subject (${row.domain}, ${row.entity_type}, ${row.entity_id}), but projection is for subject (${domain}, ${entityType}, ${entityId}).`
+      );
+    }
+  }
+
+  // 5. Cobertura de Observações Subjacentes por Authorizing Reviews (Histórico Cumulativo)
+  const authorizedObsSet = new Set<string>(review.targetObservationIds);
+
+  if (previousAuthorizerIds.length > 0) {
+    const prevObsRes = await client.query<{ observation_id: string }>(
+      `SELECT observation_id FROM nex_review_event_observations WHERE review_id = ANY($1::varchar[])`,
+      [previousAuthorizerIds]
+    );
+    for (const r of prevObsRes.rows) {
+      authorizedObsSet.add(r.observation_id);
+    }
+  }
+
+  for (const obsId of projection.underlyingObservationIds) {
+    if (!authorizedObsSet.has(obsId)) {
+      throw new PersistenceInvariantViolationError(
+        'UNDERLYING_OBSERVATION_NOT_AUTHORIZED',
+        `Underlying observation '${obsId}' is not authorized by any of the authorizing reviews for this projection.`
+      );
+    }
+  }
+}
+
 export class PgObservationPersistenceAdapter implements ObservationPersistenceAdapter {
   private readonly pool: PgPoolLike;
 
@@ -88,12 +226,14 @@ export class PgObservationPersistenceAdapter implements ObservationPersistenceAd
     try {
       await client.query('BEGIN');
 
-      // 1. Verificação de idempotência pré-existente
+      // 1. Advisory Lock transacional por chave de idempotência (Serialização determinística)
       if (idempotency) {
+        const idemLockKey = generateIdempotencyLockKey(idempotency.scope, idempotency.key);
+        await client.query('SELECT pg_advisory_xact_lock($1::bigint)', [idemLockKey]);
+
         const existingKeyRes = await client.query<{ observation_id: string }>(
           `SELECT observation_id FROM nex_observation_ingest_keys
-           WHERE idempotency_scope = $1 AND idempotency_key = $2
-           FOR UPDATE`,
+           WHERE idempotency_scope = $1 AND idempotency_key = $2`,
           [idempotency.scope, idempotency.key]
         );
 
@@ -128,39 +268,56 @@ export class PgObservationPersistenceAdapter implements ObservationPersistenceAd
       const actorPayloadJson = serializeToPgJsonb(record.actor, 'actor');
       const provenanceJson = record.provenance ? serializeToPgJsonb(record.provenance, 'provenance') : null;
 
-      await client.query(
-        `INSERT INTO nex_observation_records (
-          observation_id, domain, entity_type, entity_id, observed_claim,
-          raw_value, has_normalized_value, normalized_value, actor_kind,
-          actor_payload, channel, acquisition_method, provenance,
-          execution_evidence_ref, occurred_at, observed_at, captured_at, received_at
-        ) VALUES (
-          $1, $2, $3, $4, $5,
-          $6::jsonb, $7, $8::jsonb, $9,
-          $10::jsonb, $11, $12, $13::jsonb,
-          $14, $15, $16, $17, $18
-        )`,
-        [
-          record.observationId,
-          record.subject.domain,
-          record.subject.entityType,
-          record.subject.entityId,
-          record.observedClaim,
-          rawValueJson,
-          hasNormVal,
-          normValJson,
-          record.actor.kind,
-          actorPayloadJson,
-          record.channel ?? null,
-          record.acquisitionMethod ?? null,
-          provenanceJson,
-          record.executionEvidenceRef ?? null,
-          record.occurredAt ?? null,
-          record.observedAt,
-          record.capturedAt,
-          record.receivedAt ?? null,
-        ]
-      );
+      try {
+        await client.query(
+          `INSERT INTO nex_observation_records (
+            observation_id, domain, entity_type, entity_id, observed_claim,
+            raw_value, has_normalized_value, normalized_value, actor_kind,
+            actor_payload, channel, acquisition_method, provenance,
+            execution_evidence_ref, occurred_at, observed_at, captured_at, received_at
+          ) VALUES (
+            $1, $2, $3, $4, $5,
+            $6::jsonb, $7, $8::jsonb, $9,
+            $10::jsonb, $11, $12, $13::jsonb,
+            $14, $15, $16, $17, $18
+          )`,
+          [
+            record.observationId,
+            record.subject.domain,
+            record.subject.entityType,
+            record.subject.entityId,
+            record.observedClaim,
+            rawValueJson,
+            hasNormVal,
+            normValJson,
+            record.actor.kind,
+            actorPayloadJson,
+            record.channel ?? null,
+            record.acquisitionMethod ?? null,
+            provenanceJson,
+            record.executionEvidenceRef ?? null,
+            record.occurredAt ?? null,
+            record.observedAt,
+            record.capturedAt,
+            record.receivedAt ?? null,
+          ]
+        );
+      } catch (insertObsErr: any) {
+        if (insertObsErr?.code === '23505' && idempotency) {
+          // Colisão de PK quando já gravado por chamada concorrente
+          const existingKeyRes = await client.query<{ observation_id: string }>(
+            `SELECT observation_id FROM nex_observation_ingest_keys
+             WHERE idempotency_scope = $1 AND idempotency_key = $2`,
+            [idempotency.scope, idempotency.key]
+          );
+          if (existingKeyRes.rows.length > 0 && existingKeyRes.rows[0].observation_id === record.observationId) {
+            await client.query('COMMIT');
+            const existingRecord = await this.getObservation(record.observationId);
+            if (existingRecord) return { record: existingRecord, deduplicated: true };
+          }
+        }
+        throw insertObsErr;
+      }
 
       // 3. Inserção de Sources vinculadas
       for (const sourceRefId of record.sourceRefs) {
@@ -192,7 +349,6 @@ export class PgObservationPersistenceAdapter implements ObservationPersistenceAd
           );
         } catch (insertErr: any) {
           if (insertErr?.code === '23505') {
-            // Colisão de unique key concorrente
             await client.query('ROLLBACK');
             const checkRes = await this.pool.query<{ observation_id: string }>(
               `SELECT observation_id FROM nex_observation_ingest_keys
@@ -306,6 +462,14 @@ export class PgObservationPersistenceAdapter implements ObservationPersistenceAd
       throw new PersistenceInvariantViolationError(
         'INVALID_REVIEW_EVENT',
         validation.errors.join('; ')
+      );
+    }
+
+    const rawDecision = (review as any).decision;
+    if (rawDecision === 'canonical_promoted' || rawDecision === 'canonical_reclassified') {
+      throw new PersistenceInvariantViolationError(
+        'CANONICAL_PROMOTION_REQUIRES_TRANSACTION',
+        `Canonical decision '${rawDecision}' must be committed via commitCanonicalPromotion().`
       );
     }
 
@@ -488,7 +652,11 @@ export class PgObservationPersistenceAdapter implements ObservationPersistenceAd
 
       const { domain, entityType, entityId } = projection.subject;
 
-      // 1. Lock exclusivo da head do subject
+      // 1. Advisory Lock transacional do subject (Protege mesmo quando a Head não existe)
+      const subjectLockKey = generateSubjectLockKey(projection.subject);
+      await client.query('SELECT pg_advisory_xact_lock($1::bigint)', [subjectLockKey]);
+
+      // 2. Lock exclusivo da head do subject
       const headRes = await client.query<{
         current_projection_revision_id: string;
         version: string;
@@ -504,9 +672,8 @@ export class PgObservationPersistenceAdapter implements ObservationPersistenceAd
       const existingHead = headRes.rows.length > 0 ? headRes.rows[0] : null;
       const currentHeadRevisionId = existingHead?.current_projection_revision_id as CanonicalProjectionRevisionId | undefined;
 
-      // 2. Validação estrita de concorrência / base obsoleta
+      // 3. Validação estrita de concorrência / base obsoleta
       if (existingHead) {
-        // Se a head existe, a base esperada DEVE bater exatamente com a head atual
         if (
           expectedBaseRevisionId !== currentHeadRevisionId ||
           projection.supersedesRevisionId !== currentHeadRevisionId ||
@@ -522,7 +689,6 @@ export class PgObservationPersistenceAdapter implements ObservationPersistenceAd
           });
         }
       } else {
-        // Se a head NÃO existe (criação inicial), nenhum dos 3 pode apontar para base inexistente
         if (
           expectedBaseRevisionId !== undefined ||
           projection.supersedesRevisionId !== undefined ||
@@ -539,7 +705,10 @@ export class PgObservationPersistenceAdapter implements ObservationPersistenceAd
         }
       }
 
-      // 3. Persistência do ReviewEvent
+      // 4. Validação Cruzada de Coerência ReviewEvent ↔ CanonicalProjection dentro da transação
+      await validateCanonicalCommitCoherence(client, review as any, projection);
+
+      // 5. Persistência do ReviewEvent
       const actorPayloadJson = serializeToPgJsonb(review.actor, 'actor');
       const canonicalStateJson = serializeToPgJsonb(review.canonicalEffect.targetCanonicalState, 'targetCanonicalState');
 
@@ -594,7 +763,7 @@ export class PgObservationPersistenceAdapter implements ObservationPersistenceAd
         }
       }
 
-      // 4. Persistência da CanonicalProjectionRevision
+      // 6. Persistência da CanonicalProjectionRevision
       const projStateJson = serializeToPgJsonb(projection.canonicalState, 'canonicalState');
 
       await client.query(
@@ -636,30 +805,46 @@ export class PgObservationPersistenceAdapter implements ObservationPersistenceAd
         );
       }
 
-      // 5. Atualização ou Criação da Head
+      // 7. Atualização ou Criação da Head (com fallback defensivo para 23505)
       let finalVersion: bigint;
       let finalUpdatedAt: string;
 
-      if (existingHead) {
-        const updateRes = await client.query<{ version: string; updated_at: Date }>(
-          `UPDATE nex_canonical_projection_heads
-           SET current_projection_revision_id = $1, version = version + 1, updated_at = NOW()
-           WHERE domain = $2 AND entity_type = $3 AND entity_id = $4
-           RETURNING version, updated_at`,
-          [projection.projectionRevisionId, domain, entityType, entityId]
-        );
-        finalVersion = BigInt(updateRes.rows[0].version);
-        finalUpdatedAt = formatPgTimestampToUtcInstant(updateRes.rows[0].updated_at);
-      } else {
-        const insertHeadRes = await client.query<{ version: string; updated_at: Date }>(
-          `INSERT INTO nex_canonical_projection_heads (
-            domain, entity_type, entity_id, current_projection_revision_id, version, updated_at
-          ) VALUES ($1, $2, $3, $4, 1, NOW())
-          RETURNING version, updated_at`,
-          [domain, entityType, entityId, projection.projectionRevisionId]
-        );
-        finalVersion = BigInt(insertHeadRes.rows[0].version);
-        finalUpdatedAt = formatPgTimestampToUtcInstant(insertHeadRes.rows[0].updated_at);
+      try {
+        if (existingHead) {
+          const updateRes = await client.query<{ version: string; updated_at: Date }>(
+            `UPDATE nex_canonical_projection_heads
+             SET current_projection_revision_id = $1, version = version + 1, updated_at = NOW()
+             WHERE domain = $2 AND entity_type = $3 AND entity_id = $4
+             RETURNING version, updated_at`,
+            [projection.projectionRevisionId, domain, entityType, entityId]
+          );
+          finalVersion = BigInt(updateRes.rows[0].version);
+          finalUpdatedAt = formatPgTimestampToUtcInstant(updateRes.rows[0].updated_at);
+        } else {
+          const insertHeadRes = await client.query<{ version: string; updated_at: Date }>(
+            `INSERT INTO nex_canonical_projection_heads (
+              domain, entity_type, entity_id, current_projection_revision_id, version, updated_at
+            ) VALUES ($1, $2, $3, $4, 1, NOW())
+            RETURNING version, updated_at`,
+            [domain, entityType, entityId, projection.projectionRevisionId]
+          );
+          finalVersion = BigInt(insertHeadRes.rows[0].version);
+          finalUpdatedAt = formatPgTimestampToUtcInstant(insertHeadRes.rows[0].updated_at);
+        }
+      } catch (headErr: any) {
+        if (headErr?.code === '23505') {
+          // Colisão na PK da Head em cenário concorrente de primeira head
+          await client.query('ROLLBACK');
+          const latestHead = await this.getCurrentCanonicalHead(projection.subject);
+          throw new StaleCanonicalBaseConflictError({
+            domain,
+            entityType,
+            entityId,
+            expectedBaseRevisionId,
+            currentHeadRevisionId: latestHead?.currentProjectionRevisionId,
+          });
+        }
+        throw headErr;
       }
 
       await client.query('COMMIT');
