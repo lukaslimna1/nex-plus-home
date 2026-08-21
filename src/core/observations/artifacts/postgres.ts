@@ -467,13 +467,37 @@ export class PgEvidenceArtifactPersistenceAdapter {
         }
       }
 
-      // 3. Restaura AttemptLinks dentro da transação única
+      // 3. Restaura AttemptLinks dentro da transação única com validação estrita de linkedAt
       for (const link of validated.attemptLinks) {
-        await client.query(
-          `INSERT INTO nex_evidence_artifact_attempt_links (artifact_id, attempt_id, linked_at)
-           VALUES ($1, $2, $3) ON CONFLICT (artifact_id, attempt_id) DO NOTHING`,
-          [link.artifactId, link.attemptId, link.linkedAt]
-        );
+        await client.query('SAVEPOINT sp_restore_link');
+        try {
+          await client.query(
+            `INSERT INTO nex_evidence_artifact_attempt_links (artifact_id, attempt_id, linked_at)
+             VALUES ($1, $2, $3)`,
+            [link.artifactId, link.attemptId, link.linkedAt]
+          );
+          await client.query('RELEASE SAVEPOINT sp_restore_link');
+        } catch (linkErr: any) {
+          if (linkErr?.code === '23505') {
+            await client.query('ROLLBACK TO SAVEPOINT sp_restore_link');
+            const exRes = await client.query(
+              `SELECT artifact_id, attempt_id, linked_at FROM nex_evidence_artifact_attempt_links
+               WHERE artifact_id = $1 AND attempt_id = $2`,
+              [link.artifactId, link.attemptId]
+            );
+            if (exRes.rows.length > 0) {
+              const existingLinkedAt = formatPgTimestampToUtcInstant(exRes.rows[0].linked_at);
+              if (existingLinkedAt === link.linkedAt) {
+                continue; // Idempotente
+              }
+            }
+            throw new ArtifactIdentityConflictError(
+              link.artifactId,
+              `AttemptLink for artifactId '${link.artifactId}' and attemptId '${link.attemptId}' already exists with divergent linkedAt.`
+            );
+          }
+          throw linkErr;
+        }
       }
 
       await client.query('COMMIT');

@@ -275,5 +275,78 @@ describe('Escopo 0.85C · LocalFsArtifactBlobStore (Hardening Pós-Red-Team)', (
       assert.equal(verifyRes.valid, true);
       assert.equal(verifyRes.actualSha256, hash);
     });
+
+    it('ST-7: getBlobStream Verified Read Snapshot resiste a TOCTOU (adulteração do live source não contamina o stream verificado)', async () => {
+      const originalContent = Buffer.from('Original authentic content for TOCTOU resistance test');
+      const hash = createHash('sha256').update(originalContent).digest('hex');
+      const putRes = await store.putBlob(originalContent);
+
+      // Abre o stream com snapshot verificado
+      const stream = await store.getBlobStream(putRes.storageKey, hash);
+
+      // Adultera o arquivo físico original em disco logo após abrir o stream
+      const livePath = path.join(tempRoot, ...putRes.storageKey.split('/'));
+      await fs.writeFile(livePath, Buffer.from('TAMPERED AFTER STREAM OPENED!'));
+
+      // Lê os bytes do stream aberto
+      const readChunks: Buffer[] = [];
+      await new Promise<void>((resolve, reject) => {
+        stream.on('data', (c: Buffer) => readChunks.push(c));
+        stream.on('end', () => resolve());
+        stream.on('error', (err) => reject(err));
+      });
+
+      // Prova que os bytes consumidos são os bytes originais verificados e não o conteúdo adulterado
+      assert.deepEqual(Buffer.concat(readChunks), originalContent);
+
+      // Restaura o arquivo original
+      await fs.writeFile(livePath, originalContent);
+    });
+
+    it('ST-8: Snapshot temporário é completamente limpo do staging após o consumo', async () => {
+      const content = Buffer.from('Snapshot cleanup verification test 2026');
+      const hash = createHash('sha256').update(content).digest('hex');
+      const putRes = await store.putBlob(content);
+
+      const stream = await store.getBlobStream(putRes.storageKey, hash);
+      await new Promise<void>((resolve, reject) => {
+        stream.on('data', () => {});
+        stream.on('end', () => resolve());
+        stream.on('error', (err) => reject(err));
+      });
+
+      // Aguarda tick para conclusão dos handlers de close/end
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const stagingFiles = await fs.readdir(path.join(tempRoot, '_staging'));
+      const snapshotFiles = stagingFiles.filter((f) => f.startsWith('_snap_'));
+      assert.equal(snapshotFiles.length, 0);
+    });
+
+    it('ST-9: getBlobStream falha se o blob estiver corrompido e limpa staging', async () => {
+      const content = Buffer.from('Valid Content');
+      const hash = createHash('sha256').update(content).digest('hex');
+      const putRes = await store.putBlob(content);
+
+      // Corrompe o arquivo antes de chamar getBlobStream
+      const livePath = path.join(tempRoot, ...putRes.storageKey.split('/'));
+      await fs.writeFile(livePath, Buffer.from('Corrupted Before Open'));
+
+      await assert.rejects(
+        async () => {
+          await store.getBlobStream(putRes.storageKey, hash);
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof ArtifactIntegrityError);
+          return true;
+        }
+      );
+
+      const stagingFiles = await fs.readdir(path.join(tempRoot, '_staging'));
+      const snapshotFiles = stagingFiles.filter((f) => f.startsWith('_snap_'));
+      assert.equal(snapshotFiles.length, 0);
+
+      await fs.writeFile(livePath, content);
+    });
   });
 });

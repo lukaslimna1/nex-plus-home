@@ -1,8 +1,8 @@
 /**
  * NEX+ · Evidence Artifact Store Backup & Restore
- * Escopo 0.85 (Bloco 0.85C · Hardening Pós-Red-Team)
+ * Escopo 0.85 (Bloco 0.85C · Micro-Hardening Final Pós-Reauditoria)
  *
- * Módulo de exportação de backup com integridade integral de todos os registros
+ * Módulo de exportação de backup com confinamento físico de diretórios internos (anti-junction)
  * e restore transacional atômico com preflight prévio total.
  */
 
@@ -56,6 +56,76 @@ async function calculateStreamSha256(filePath: string): Promise<{ sha256: string
   };
 }
 
+/**
+ * Valida rigorosamente cada segmento físico de storageKey contra symlinks/junctions
+ * garantindo confinamento absoluto dentro do canonicalRoot.
+ */
+async function resolveContainedPhysicalPath(
+  canonicalRoot: string,
+  storageKey: string,
+  options: { allowCreate?: boolean; requireFile?: boolean }
+): Promise<string> {
+  validateCanonicalStorageKey(storageKey);
+
+  const parts = storageKey.split('/'); // ['sha256', 'ab', 'cd', '<64hex>']
+  let currentCheckPath = canonicalRoot;
+
+  for (let i = 0; i < parts.length - 1; i++) {
+    currentCheckPath = path.join(currentCheckPath, parts[i]);
+    try {
+      const stat = await fs.lstat(currentCheckPath);
+      if (stat.isSymbolicLink()) {
+        throw new ArtifactStorageError(`Symlink or junction detected in physical path at '${currentCheckPath}'.`);
+      }
+      if (!stat.isDirectory()) {
+        throw new ArtifactStorageError(`Path component is not a directory at '${currentCheckPath}'.`);
+      }
+      const realComp = await fs.realpath(currentCheckPath);
+      const relToRoot = path.relative(canonicalRoot, realComp);
+      if (relToRoot.startsWith('..') || path.isAbsolute(relToRoot)) {
+        throw new ArtifactStorageError(`Path traversal or junction escape detected at '${currentCheckPath}'.`);
+      }
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') {
+        if (!options.allowCreate) {
+          throw err;
+        }
+        await fs.mkdir(currentCheckPath, { recursive: true });
+        const newStat = await fs.lstat(currentCheckPath);
+        if (newStat.isSymbolicLink() || !newStat.isDirectory()) {
+          throw new ArtifactStorageError(`Created directory component is invalid or symlink: '${currentCheckPath}'.`);
+        }
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  const finalPath = path.join(canonicalRoot, ...parts);
+  const parentDir = path.dirname(finalPath);
+  const realParent = await fs.realpath(parentDir);
+  const relParent = path.relative(canonicalRoot, realParent);
+  if (relParent.startsWith('..') || path.isAbsolute(relParent)) {
+    throw new ArtifactStorageError(`Parent directory of final target escapes canonical root: '${finalPath}'.`);
+  }
+
+  try {
+    const finalStat = await fs.lstat(finalPath);
+    if (finalStat.isSymbolicLink()) {
+      throw new ArtifactStorageError(`Final physical target is a symbolic link or junction: '${finalPath}'.`);
+    }
+    if (options.requireFile && !finalStat.isFile()) {
+      throw new ArtifactStorageError(`Final target is not a regular file: '${finalPath}'.`);
+    }
+  } catch (err: any) {
+    if (options.requireFile || err?.code !== 'ENOENT') {
+      throw err;
+    }
+  }
+
+  return finalPath;
+}
+
 export async function backupArtifactStore(
   service: EvidenceArtifactService,
   destinationDir: string,
@@ -97,13 +167,15 @@ export async function backupArtifactStore(
     throw new ArtifactStorageError(`Backup destination cannot be a symbolic link or junction: '${destResolved}'.`);
   }
 
+  const canonicalDestRoot = await fs.realpath(destResolved);
+
   const artifacts = await service.persistence.listAllArtifactMetadata();
   const sourceRefs = await service.persistence.listAllSourceRefs();
   const attemptLinks = await service.persistence.listAllAttemptLinks();
 
   let bytesTransferred = 0;
 
-  // Cópia com verificação rígida: Se QUALQUER artefato registrado estiver ausente ou corrompido, FALHA O BACKUP
+  // Cópia com verificação rígida e confinamento físico de diretórios
   for (const artifact of artifacts) {
     const canonicalKey = buildStorageKeyFromSha256(artifact.sha256);
     if (artifact.storageKey !== canonicalKey) {
@@ -122,9 +194,10 @@ export async function backupArtifactStore(
     }
 
     const blobBuffer = await service.blobStore.getBlob(artifact.storageKey, artifact.sha256);
-    const destBlobPath = path.join(destResolved, artifact.storageKey);
+    const destBlobPath = await resolveContainedPhysicalPath(canonicalDestRoot, artifact.storageKey, {
+      allowCreate: true,
+    });
 
-    await fs.mkdir(path.dirname(destBlobPath), { recursive: true });
     await fs.writeFile(destBlobPath, blobBuffer);
 
     // Validação de integridade no destino copiado
@@ -152,11 +225,11 @@ export async function backupArtifactStore(
   const manifestJson = JSON.stringify(manifest, null, 2);
   const manifestSha256 = createHash('sha256').update(manifestJson).digest('hex');
 
-  const stagingManifestPath = path.join(destResolved, `_staging_manifest_${Date.now()}.tmp`);
-  const stagingHashPath = path.join(destResolved, `_staging_hash_${Date.now()}.tmp`);
+  const stagingManifestPath = path.join(canonicalDestRoot, `_staging_manifest_${Date.now()}.tmp`);
+  const stagingHashPath = path.join(canonicalDestRoot, `_staging_hash_${Date.now()}.tmp`);
 
-  const manifestPath = path.join(destResolved, MANIFEST_FILE_NAME);
-  const manifestHashPath = path.join(destResolved, MANIFEST_HASH_FILE_NAME);
+  const manifestPath = path.join(canonicalDestRoot, MANIFEST_FILE_NAME);
+  const manifestHashPath = path.join(canonicalDestRoot, MANIFEST_HASH_FILE_NAME);
 
   // Escrita em staging e rename atômico final (Manifest só aparece após conclusão total)
   await fs.writeFile(stagingManifestPath, manifestJson, 'utf-8');
@@ -166,7 +239,7 @@ export async function backupArtifactStore(
   await fs.rename(stagingHashPath, manifestHashPath);
 
   return {
-    backupDir: destResolved,
+    backupDir: canonicalDestRoot,
     manifestPath,
     manifestSha256,
     artifactsCount: artifacts.length,
@@ -251,21 +324,17 @@ export async function restoreArtifactStore(
 
     validateCanonicalStorageKey(artifact.storageKey, artifact.sha256);
 
-    const parts = artifact.storageKey.split('/');
-    const backupBlobPath = path.join(canonicalBackupRoot, ...parts);
-
-    // Validação de confinamento do path no backup root
-    const rel = path.relative(canonicalBackupRoot, backupBlobPath);
-    if (rel.startsWith('..') || path.isAbsolute(rel)) {
-      throw new ArtifactStorageError(`Path traversal attempt in backup manifest for '${artifact.storageKey}'.`);
-    }
-
+    // Validação física rigorosa do path do blob de backup (anti-junction)
+    let backupBlobPath: string;
     try {
-      const bStat = await fs.lstat(backupBlobPath);
-      if (bStat.isSymbolicLink() || !bStat.isFile()) {
-        throw new ArtifactStorageError(`Backup blob '${artifact.storageKey}' is not a regular file (symlinks rejected).`);
-      }
+      backupBlobPath = await resolveContainedPhysicalPath(canonicalBackupRoot, artifact.storageKey, {
+        allowCreate: false,
+        requireFile: true,
+      });
     } catch (err: any) {
+      if (err instanceof ArtifactStorageError) {
+        throw err;
+      }
       throw new ArtifactNotFoundError(`Backup blob '${artifact.storageKey}' was not found in backup package: ${err.message}`);
     }
 

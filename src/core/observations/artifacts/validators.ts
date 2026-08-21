@@ -1,6 +1,6 @@
 /**
  * NEX+ · Evidence Artifact Runtime Validators & Guard Boundaries
- * Escopo 0.85 (Bloco 0.85C · Hardening Pós-Red-Team)
+ * Escopo 0.85 (Bloco 0.85C · Micro-Hardening Final Pós-Reauditoria)
  */
 
 import { isCanonicalUtcInstant } from '../invariants';
@@ -260,6 +260,24 @@ export function validateSourceRefRecord(source: unknown): SourceRefRecord {
           );
         }
       }
+
+      // Checa se algum fragment / hash parameter name é um segredo conhecido
+      if (parsedUrl.hash) {
+        const rawHash = parsedUrl.hash.replace(/^#/, '');
+        if (rawHash.includes('=') || rawHash.includes('&') || rawHash.includes('?')) {
+          const hashSearch = rawHash.includes('?') ? rawHash.slice(rawHash.indexOf('?') + 1) : rawHash;
+          const hashParams = new URLSearchParams(hashSearch);
+          for (const paramName of hashParams.keys()) {
+            const normParam = paramName.toLowerCase().replace(/[-_]/g, '');
+            if (FORBIDDEN_SECRET_KEY_NAMES.has(normParam)) {
+              throw new ArtifactInvariantViolationError(
+                'LOCATION_URI_SECRET_FRAGMENT_FORBIDDEN',
+                `locationOrUri contains sensitive credential parameter in URI fragment.`
+              );
+            }
+          }
+        }
+      }
     } catch (e: any) {
       if (e instanceof ArtifactInvariantViolationError) {
         throw e;
@@ -354,6 +372,60 @@ export function validateEvidenceBackupManifest(manifest: unknown): EvidenceBacku
   const validatedArtifacts = m.artifacts.map((a: unknown) => validateEvidenceArtifactRecord(a));
   const validatedSourceRefs = m.sourceRefs.map((s: unknown) => validateSourceRefRecord(s));
   const validatedAttemptLinks = m.attemptLinks.map((l: unknown) => validateEvidenceArtifactAttemptLink(l));
+
+  // 1. Validação de Unicidade Estrutural no Manifest
+  const seenArtifactIds = new Set<string>();
+  for (const art of validatedArtifacts) {
+    if (seenArtifactIds.has(art.artifactId)) {
+      throw new ArtifactInvariantViolationError(
+        'MANIFEST_DUPLICATE_ARTIFACT_ID',
+        `Manifest contains duplicate artifactId: '${art.artifactId}'.`
+      );
+    }
+    seenArtifactIds.add(art.artifactId);
+  }
+
+  const seenSourceIds = new Set<string>();
+  for (const src of validatedSourceRefs) {
+    if (seenSourceIds.has(src.sourceId)) {
+      throw new ArtifactInvariantViolationError(
+        'MANIFEST_DUPLICATE_SOURCE_ID',
+        `Manifest contains duplicate sourceId: '${src.sourceId}'.`
+      );
+    }
+    seenSourceIds.add(src.sourceId);
+  }
+
+  const seenAttemptPairs = new Set<string>();
+  for (const link of validatedAttemptLinks) {
+    const pairKey = `${link.artifactId}::${link.attemptId}`;
+    if (seenAttemptPairs.has(pairKey)) {
+      throw new ArtifactInvariantViolationError(
+        'MANIFEST_DUPLICATE_ATTEMPT_LINK',
+        `Manifest contains duplicate attempt link for artifactId '${link.artifactId}' and attemptId '${link.attemptId}'.`
+      );
+    }
+    seenAttemptPairs.add(pairKey);
+  }
+
+  // 2. Validação de Referências Cruzadas
+  for (const art of validatedArtifacts) {
+    if (art.sourceRefId && !seenSourceIds.has(art.sourceRefId)) {
+      throw new ArtifactInvariantViolationError(
+        'MANIFEST_DANGLING_SOURCE_REF',
+        `Manifest artifact '${art.artifactId}' references non-existent sourceRefId '${art.sourceRefId}'.`
+      );
+    }
+  }
+
+  for (const link of validatedAttemptLinks) {
+    if (!seenArtifactIds.has(link.artifactId)) {
+      throw new ArtifactInvariantViolationError(
+        'MANIFEST_DANGLING_ATTEMPT_LINK_ARTIFACT',
+        `Manifest attempt link references non-existent artifactId '${link.artifactId}'.`
+      );
+    }
+  }
 
   return {
     schemaVersion: '1.0',

@@ -348,6 +348,7 @@ export class LocalFsArtifactBlobStore implements ArtifactBlobStore {
   }
 
   async getBlobStream(storageKey: string, expectedSha256?: string): Promise<NodeJS.ReadableStream> {
+    const canonicalRoot = await this.ensureInitialized();
     const finalPath = await this.resolveStoragePath(storageKey);
 
     const expectedHash = expectedSha256?.toLowerCase() ?? storageKey.split('/').pop()?.toLowerCase();
@@ -355,19 +356,74 @@ export class LocalFsArtifactBlobStore implements ArtifactBlobStore {
       throw new ArtifactInvariantViolationError('INVALID_SHA256', `Cannot get stream with invalid hash '${expectedHash}'.`);
     }
 
-    // Verificação de integridade via streaming antes de fornecer o stream ao caller
-    const verify = await this.verifyBlob(storageKey, expectedHash);
-    if (!verify.valid) {
-      throw new ArtifactIntegrityError({
-        storageKey,
-        expectedSha256: expectedHash,
-        actualSha256: verify.actualSha256,
-        message: `Active integrity verification failed for '${storageKey}': ${verify.error}`,
-      });
+    try {
+      const stat = await fs.lstat(finalPath);
+      if (stat.isSymbolicLink() || !stat.isFile()) {
+        throw new ArtifactStorageError(`Target storage object '${storageKey}' is not a regular file.`);
+      }
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') {
+        throw new ArtifactNotFoundError(storageKey);
+      }
+      throw err;
     }
 
-    // Retorna ReadStream real de arquivo em disco sem carregar tudo na memória
-    return createReadStream(finalPath);
+    // Criação de snapshot temporário verificado e isolado contra TOCTOU
+    const snapshotName = `_snap_${Date.now()}_${randomBytes(8).toString('hex')}.tmp`;
+    const snapshotPath = path.join(canonicalRoot, '_staging', snapshotName);
+
+    let totalBytes = 0;
+    const hash = createHash('sha256');
+
+    const sourceStream = createReadStream(finalPath);
+    const countingTransform = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        totalBytes += chunk.length;
+        hash.update(chunk);
+        callback(null, chunk);
+      },
+    });
+
+    const fileHandle = await fs.open(snapshotPath, 'wx');
+    const snapshotWriteStream = createWriteStream('', { fd: fileHandle.fd, autoClose: false });
+
+    try {
+      await streamPipeline(sourceStream, countingTransform, snapshotWriteStream);
+      await fileHandle.sync();
+      await fileHandle.close();
+
+      const calculatedHash = hash.digest('hex');
+      if (calculatedHash !== expectedHash) {
+        await fs.unlink(snapshotPath).catch(() => {});
+        throw new ArtifactIntegrityError({
+          storageKey,
+          expectedSha256: expectedHash,
+          actualSha256: calculatedHash,
+          message: `Active integrity verification failed for '${storageKey}': expected hash '${expectedHash}', got '${calculatedHash}'.`,
+        });
+      }
+
+      // Abre stream sobre o snapshot verificado
+      const snapshotReadStream = createReadStream(snapshotPath);
+
+      // Limpeza segura ao término/erro do stream
+      let cleaned = false;
+      const cleanup = async () => {
+        if (cleaned) return;
+        cleaned = true;
+        await fs.unlink(snapshotPath).catch(() => {});
+      };
+
+      snapshotReadStream.on('close', cleanup);
+      snapshotReadStream.on('error', cleanup);
+      snapshotReadStream.on('end', cleanup);
+
+      return snapshotReadStream;
+    } catch (err) {
+      await fileHandle.close().catch(() => {});
+      await fs.unlink(snapshotPath).catch(() => {});
+      throw err;
+    }
   }
 
   async hasBlob(storageKey: string): Promise<boolean> {

@@ -29,7 +29,7 @@ import {
 import { PgObservationPersistenceAdapter } from '../../persistence/postgres';
 import { AllowAllTestArtifactAuthorizer } from './authorizer.test';
 import type { ArtifactAccessContext } from '../contracts';
-import { buildStorageKeyFromSha256 } from '../validators';
+import { buildStorageKeyFromSha256, validateEvidenceBackupManifest } from '../validators';
 
 const { Pool } = pg;
 const databaseUrl = process.env.DATABASE_URL;
@@ -356,6 +356,63 @@ describe('Escopo 0.85C · Evidence Artifact Store & Integridade (Integração Po
         }
       );
     });
+
+    it('Rejeita fragmentos de URI que contenham parâmetros de segredo estruturados e aceita fragmentos inocentes', async () => {
+      const now = Date.now();
+
+      // Fragmentos Proibidos
+      const badFragments = [
+        'https://exemplo.com/#token=secret123',
+        'https://exemplo.com/#access_token=secret123',
+        'https://exemplo.com/#api_key=secret123',
+        'https://exemplo.com/#authorization=Bearer_secret',
+        'https://exemplo.com/#foo=1&cookie=secret123',
+        'https://exemplo.com/#section?token=secret123',
+      ];
+
+      for (let i = 0; i < badFragments.length; i++) {
+        await assert.rejects(
+          async () => {
+            await service.recordSourceRef(
+              {
+                sourceId: `src_bad_frag_${now}_${i}` as SourceRefId,
+                kind: 'url',
+                name: 'Bad Frag',
+                locationOrUri: badFragments[i],
+                createdAt: '2026-08-21T10:00:00.000Z',
+              },
+              testAuthContext
+            );
+          },
+          (err: unknown) => {
+            assert.ok(err instanceof ArtifactInvariantViolationError);
+            assert.equal(err.violationType, 'LOCATION_URI_SECRET_FRAGMENT_FORBIDDEN');
+            return true;
+          }
+        );
+      }
+
+      // Fragmentos Inocentes Permitidos
+      const goodFragments = [
+        'https://exemplo.com/#overview',
+        'https://exemplo.com/#tokenization',
+        'https://exemplo.com/#cookie-policy',
+      ];
+
+      for (let i = 0; i < goodFragments.length; i++) {
+        const okSource = await service.recordSourceRef(
+          {
+            sourceId: `src_good_frag_${now}_${i}` as SourceRefId,
+            kind: 'url',
+            name: 'Good Frag',
+            locationOrUri: goodFragments[i],
+            createdAt: '2026-08-21T10:00:00.000Z',
+          },
+          testAuthContext
+        );
+        assert.ok(okSource);
+      }
+    });
   });
 
   describe('3. Concorrência e Idempotência de Metadados', () => {
@@ -652,6 +709,155 @@ describe('Escopo 0.85C · Evidence Artifact Store & Integridade (Integração Po
         await fs.rm(backupDir, { recursive: true, force: true }).catch(() => {});
         await fs.rm(restoreRoot, { recursive: true, force: true }).catch(() => {});
       }
+    });
+
+    it('RS-11: AttemptLink com linkedAt divergente no restore gera ArtifactIdentityConflictError e aborta transação', async () => {
+      const now = Date.now();
+      const artId = `art_link_conflict_${now}` as EvidenceArtifactRefId;
+      const attId = `att_link_conflict_${now}` as AttemptId;
+
+      const materialized = await service.materializeArtifact(
+        Buffer.from('Attempt Link conflict payload'),
+        {
+          artifactId: artId,
+          kind: 'document',
+          containsSecretMaterial: false,
+          attemptId: attId,
+        },
+        testAuthContext
+      );
+
+      // Manifest contendo o mesmo artifact e mesmo link mas com linkedAt divergente
+      const manifestPayload = {
+        schemaVersion: '1.0',
+        createdAt: '2026-08-21T12:00:00.000Z',
+        artifacts: [materialized],
+        sourceRefs: [],
+        attemptLinks: [
+          {
+            artifactId: artId,
+            attemptId: attId,
+            linkedAt: '2026-08-21T00:00:00.000Z', // Divergente do registrado
+          },
+        ],
+      };
+
+      await assert.rejects(
+        async () => {
+          await persistence.restoreManifestMetadataAtomically(manifestPayload as any);
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof ArtifactIdentityConflictError);
+          assert.ok(err.message.includes('divergent linkedAt'));
+          return true;
+        }
+      );
+    });
+
+    it('RS-12 & RS-13: Manifest com duplicatas ou dangling references é rejeitado pelo validador', () => {
+      const now = Date.now();
+      const artId = `art_manifest_dup_${now}` as EvidenceArtifactRefId;
+      const srcId = `src_manifest_dup_${now}` as SourceRefId;
+
+      const dummyArt = {
+        artifactId: artId,
+        kind: 'document',
+        sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+        byteSize: 0,
+        mimeType: 'application/pdf',
+        storageBackend: 'local_fs',
+        storageKey: 'sha256/e3/b0/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+        capturedAt: '2026-08-21T12:00:00.000Z',
+        sensitivity: 'NORMAL',
+        containsSecretMaterial: false,
+        redactionApplied: false,
+        retentionClass: 'durable_evidence',
+      };
+
+      const dummySrc = {
+        sourceId: srcId,
+        kind: 'url',
+        name: 'Dummy Source',
+        createdAt: '2026-08-21T12:00:00.000Z',
+      };
+
+      // 1. Duplicate artifactId
+      assert.throws(
+        () => {
+          validateEvidenceBackupManifest({
+            schemaVersion: '1.0',
+            createdAt: '2026-08-21T12:00:00.000Z',
+            artifacts: [dummyArt, dummyArt] as any,
+            sourceRefs: [],
+            attemptLinks: [],
+          });
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof ArtifactInvariantViolationError);
+          assert.equal(err.violationType, 'MANIFEST_DUPLICATE_ARTIFACT_ID');
+          return true;
+        }
+      );
+
+      // 2. Duplicate sourceId
+      assert.throws(
+        () => {
+          validateEvidenceBackupManifest({
+            schemaVersion: '1.0',
+            createdAt: '2026-08-21T12:00:00.000Z',
+            artifacts: [],
+            sourceRefs: [dummySrc, dummySrc] as any,
+            attemptLinks: [],
+          });
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof ArtifactInvariantViolationError);
+          assert.equal(err.violationType, 'MANIFEST_DUPLICATE_SOURCE_ID');
+          return true;
+        }
+      );
+
+      // 3. Dangling sourceRefId
+      assert.throws(
+        () => {
+          validateEvidenceBackupManifest({
+            schemaVersion: '1.0',
+            createdAt: '2026-08-21T12:00:00.000Z',
+            artifacts: [{ ...dummyArt, sourceRefId: 'non_existent_src' }] as any,
+            sourceRefs: [],
+            attemptLinks: [],
+          });
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof ArtifactInvariantViolationError);
+          assert.equal(err.violationType, 'MANIFEST_DANGLING_SOURCE_REF');
+          return true;
+        }
+      );
+
+      // 4. Dangling AttemptLink.artifactId
+      assert.throws(
+        () => {
+          validateEvidenceBackupManifest({
+            schemaVersion: '1.0',
+            createdAt: '2026-08-21T12:00:00.000Z',
+            artifacts: [],
+            sourceRefs: [],
+            attemptLinks: [
+              {
+                artifactId: 'non_existent_art',
+                attemptId: 'att_1',
+                linkedAt: '2026-08-21T12:00:00.000Z',
+              },
+            ] as any,
+          });
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof ArtifactInvariantViolationError);
+          assert.equal(err.violationType, 'MANIFEST_DANGLING_ATTEMPT_LINK_ARTIFACT');
+          return true;
+        }
+      );
     });
   });
 
