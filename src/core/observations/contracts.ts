@@ -1,11 +1,10 @@
 /**
  * NEX+ · Contratos Canônicos de Observação, Revisão & Temporalidade
- * Escopo 0.85 (Bloco 0.85A)
+ * Escopo 0.85 (Bloco 0.85A · Hardening Pós-Auditoria)
  *
  * Núcleo transversal de governança de dados:
- * Imutabilidade estrita, identificadores opacos (branded), separação de eixos
- * (Freshness != Review Status != Confidence), rastreabilidade temporal e
- * barreira estrita contra promoção canônica sem autoridade humana.
+ * Imutabilidade estrita, identificadores opacos (branded), discriminated unions
+ * com narrowing estrito em compile-time e validadores runtime fechados.
  */
 
 import type { FactProvenance } from '../capabilities/contracts';
@@ -24,7 +23,7 @@ export type CanonicalProjectionRevisionId = string & { readonly __brand?: 'Canon
 export type ContextualPrecedentRefId = string & { readonly __brand?: 'ContextualPrecedentRefId' };
 
 // ============================================================================
-// 2. ATORES E AUTORIDADE (Discriminated Union)
+// 2. ATORES E AUTORIDADE (Discriminated Union Fechada)
 // ============================================================================
 
 export interface HumanActor {
@@ -53,6 +52,7 @@ export interface IntegrationActor {
 }
 
 export type Actor = HumanActor | MaxActor | SystemActor | IntegrationActor;
+export type ActorKind = Actor['kind'];
 
 // ============================================================================
 // 3. SUJEITO DA OBSERVAÇÃO / PROJEÇÃO
@@ -65,7 +65,7 @@ export interface ObservationSubject {
 }
 
 // ============================================================================
-// 4. FONTES E ARTEFATOS DE EVIDÊNCIA
+// 4. FONTES E ARTEFATOS DE EVIDÊNCIA (Discriminated Union)
 // ============================================================================
 
 export type SourceRefKind =
@@ -84,27 +84,37 @@ export interface SourceRef {
   readonly safeMetadata?: Readonly<Record<string, unknown>>;
 }
 
-export type EvidenceArtifactKind =
+export interface BaseEvidenceArtifactRef {
+  readonly artifactId: EvidenceArtifactRefId;
+  readonly sourceRefId?: SourceRefId;
+  readonly sha256?: string;
+  readonly mimeType?: string;
+  readonly locationRef?: string;
+  readonly safeDescription?: string;
+  readonly capturedAt: string; // ISO 8601 UTC ('Z')
+}
+
+export type NonExecutionEvidenceArtifactKind =
   | 'url_resource'
   | 'api_response'
   | 'document'
   | 'screenshot'
   | 'snapshot'
   | 'text_snippet'
-  | 'human_message'
-  | 'execution_evidence_ref';
+  | 'human_message';
 
-export interface EvidenceArtifactRef {
-  readonly artifactId: EvidenceArtifactRefId;
-  readonly kind: EvidenceArtifactKind;
-  readonly sourceRefId?: SourceRefId;
-  readonly executionEvidenceId?: ExecutionEvidenceId;
-  readonly sha256?: string;
-  readonly mimeType?: string;
-  readonly locationRef?: string;
-  readonly safeDescription?: string;
-  readonly capturedAt: string; // ISO 8601 UTC
+export interface GenericEvidenceArtifactRef extends BaseEvidenceArtifactRef {
+  readonly kind: NonExecutionEvidenceArtifactKind;
+  readonly executionEvidenceId?: never;
 }
+
+export interface ExecutionEvidenceArtifactRef extends BaseEvidenceArtifactRef {
+  readonly kind: 'execution_evidence_ref';
+  readonly executionEvidenceId: ExecutionEvidenceId; // Obrigatório nesta variante
+}
+
+export type EvidenceArtifactRef = GenericEvidenceArtifactRef | ExecutionEvidenceArtifactRef;
+export type EvidenceArtifactKind = EvidenceArtifactRef['kind'];
 
 // ============================================================================
 // 5. OBSERVATION RECORD (Registro Factual de Observação)
@@ -124,11 +134,11 @@ export interface ObservationRecord {
   readonly provenance?: FactProvenance;
   readonly executionEvidenceRef?: ExecutionEvidenceId;
 
-  // Temporalidade explícita e descolada
-  readonly occurredAt?: string; // ISO 8601 UTC (quando o fato ocorreu no mundo real, se conhecido)
-  readonly observedAt: string;  // ISO 8601 UTC (quando o ator observou)
-  readonly capturedAt: string;  // ISO 8601 UTC (quando o sistema registrou)
-  readonly receivedAt?: string;  // ISO 8601 UTC (quando foi recebido externamente)
+  // Temporalidade explícita e canônica (UTC 'Z')
+  readonly occurredAt?: string; // ISO 8601 UTC ('Z') - quando o fato ocorreu no mundo real
+  readonly observedAt: string;  // ISO 8601 UTC ('Z') - quando o ator observou
+  readonly capturedAt: string;  // ISO 8601 UTC ('Z') - quando o sistema gravou
+  readonly receivedAt?: string;  // ISO 8601 UTC ('Z') - quando recebido externamente
 }
 
 // ============================================================================
@@ -139,8 +149,8 @@ export type FreshnessState = 'fresh' | 'stale' | 'unknown';
 
 export interface FreshnessInfo {
   readonly state: FreshnessState;
-  readonly evaluatedAt: string; // ISO 8601 UTC
-  readonly recheckAfter?: string; // ISO 8601 UTC
+  readonly evaluatedAt: string; // ISO 8601 UTC ('Z')
+  readonly recheckAfter?: string; // ISO 8601 UTC ('Z')
   readonly reason?: string;
 }
 
@@ -148,67 +158,114 @@ export type ConfidenceLevel = 'low' | 'medium' | 'high' | 'unassessed';
 
 export interface ConfidenceAssessment {
   readonly level: ConfidenceLevel;
-  readonly assessedAt: string; // ISO 8601 UTC
+  readonly assessedAt: string; // ISO 8601 UTC ('Z')
   readonly basis?: string;
   readonly limitations?: readonly string[];
 }
 
 // ============================================================================
-// 7. REVIEW EVENT & DECISÃO DE GOVERNANÇA
+// 7. REVIEW EVENT & CANONICAL EFFECT (Discriminated Union Estrita)
 // ============================================================================
 
-export type ReviewDecision =
+export type NonCanonicalReviewDecision =
   | 'provisional'
   | 'corroborated'
   | 'contested'
   | 'divergent'
   | 'awaiting_evidence'
   | 'inconclusive'
-  | 'canonical_promoted'
-  | 'canonical_reclassified'
   | 'rejected';
 
-export interface CanonicalEffect {
-  readonly action: 'promote' | 'reclassify' | 'deprecate';
+export interface PromoteCanonicalEffect {
+  readonly action: 'promote';
   readonly targetCanonicalState: Readonly<Record<string, unknown>>;
 }
 
-export interface ReviewEvent {
+export interface ReclassifyCanonicalEffect {
+  readonly action: 'reclassify';
+  readonly targetCanonicalState: Readonly<Record<string, unknown>>;
+}
+
+export type CanonicalEffect = PromoteCanonicalEffect | ReclassifyCanonicalEffect;
+
+export interface BaseReviewEvent {
   readonly reviewId: ReviewEventId;
-  readonly actor: Actor;
   readonly targetObservationIds: readonly ObservationRecordId[];
   readonly previousReviewIds?: readonly ReviewEventId[];
   readonly consideredEvidenceIds?: readonly EvidenceArtifactRefId[];
   readonly targetBaseRevisionId?: CanonicalProjectionRevisionId;
-  readonly decision: ReviewDecision;
-  readonly canonicalEffect?: CanonicalEffect;
   readonly justification: string; // Obrigatória e não vazia
-  readonly reviewedAt: string;    // ISO 8601 UTC
+  readonly reviewedAt: string;    // ISO 8601 UTC ('Z')
 }
 
+export interface NonCanonicalReviewEvent extends BaseReviewEvent {
+  readonly actor: Actor;
+  readonly decision: NonCanonicalReviewDecision;
+  readonly canonicalEffect?: never; // Estritamente proibido em decisões não-canônicas
+}
+
+export interface CanonicalPromotedReviewEvent extends BaseReviewEvent {
+  readonly actor: HumanActor; // Exige ator humano
+  readonly decision: 'canonical_promoted';
+  readonly canonicalEffect: PromoteCanonicalEffect; // Obrigatório action 'promote'
+}
+
+export interface CanonicalReclassifiedReviewEvent extends BaseReviewEvent {
+  readonly actor: HumanActor; // Exige ator humano
+  readonly decision: 'canonical_reclassified';
+  readonly canonicalEffect: ReclassifyCanonicalEffect; // Obrigatório action 'reclassify'
+}
+
+export type ReviewEvent =
+  | NonCanonicalReviewEvent
+  | CanonicalPromotedReviewEvent
+  | CanonicalReclassifiedReviewEvent;
+
+export type ReviewDecision = ReviewEvent['decision'];
+
 // ============================================================================
-// 8. RECONCILIATION CASE (Divergências e Conflitos)
+// 8. RECONCILIATION CASE (Discriminated Union por Lifecycle)
 // ============================================================================
 
-export type ReconciliationStatus =
+export type ReconciliationLifecycle = 'open' | 'resolved';
+
+export type OpenReconciliationStatus =
   | 'open'
+  | 'awaiting_evidence'
+  | 'divergent'
+  | 'inconclusive';
+
+export type ResolvedReconciliationStatus =
   | 'validated'
   | 'partially_validated'
   | 'divergent'
   | 'inconclusive'
-  | 'awaiting_evidence'
   | 'reclassified';
 
-export interface ReconciliationCase {
+export interface BaseReconciliationCase {
   readonly caseId: ReconciliationCaseId;
   readonly subject: ObservationSubject;
-  readonly status: ReconciliationStatus;
   readonly observationIds: readonly ObservationRecordId[];
   readonly reviewIds: readonly ReviewEventId[];
-  readonly openedAt: string; // ISO 8601 UTC
-  readonly resolvedAt?: string; // ISO 8601 UTC
-  readonly resolutionSummary?: string;
+  readonly openedAt: string; // ISO 8601 UTC ('Z')
 }
+
+export interface OpenReconciliationCase extends BaseReconciliationCase {
+  readonly lifecycle: 'open';
+  readonly status: OpenReconciliationStatus;
+  readonly resolvedAt?: never; // Proibido enquanto o caso estiver aberto
+  readonly resolutionSummary?: string; // Contexto/anotação corrente opcional
+}
+
+export interface ResolvedReconciliationCase extends BaseReconciliationCase {
+  readonly lifecycle: 'resolved';
+  readonly status: ResolvedReconciliationStatus;
+  readonly resolvedAt: string; // Obrigatório no encerramento
+  readonly resolutionSummary: string; // Obrigatório no encerramento
+}
+
+export type ReconciliationCase = OpenReconciliationCase | ResolvedReconciliationCase;
+export type ReconciliationStatus = ReconciliationCase['status'];
 
 // ============================================================================
 // 9. CANONICAL PROJECTION (Projeção Auditável do Histórico)
@@ -222,7 +279,7 @@ export interface CanonicalProjection {
   readonly authorizingReviewIds: readonly ReviewEventId[];
   readonly reconciliationCaseId?: ReconciliationCaseId;
   readonly supersedesRevisionId?: CanonicalProjectionRevisionId;
-  readonly materializedAt: string; // ISO 8601 UTC
+  readonly materializedAt: string; // ISO 8601 UTC ('Z')
   readonly explanation: string;    // Justificativa explicável
 }
 
@@ -235,5 +292,5 @@ export interface ContextualPrecedent {
   readonly reviewEventId: ReviewEventId;
   readonly contextSummary: string;
   readonly applicabilityConditions: readonly string[];
-  readonly policyProposalRef?: string; // Proposta de policy (se houver), nunca virando regra automática
+  readonly policyProposalRef?: string; // Proposta de policy (se houver), nunca regra automática
 }
