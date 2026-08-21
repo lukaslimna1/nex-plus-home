@@ -31,6 +31,7 @@ export default buildConfig({
   secret: getRequiredEnv('PAYLOAD_SECRET'),
   ...(edgeConfig.serverURL ? { serverURL: edgeConfig.serverURL } : {}),
   ...(edgeConfig.csrf ? { csrf: edgeConfig.csrf } : {}),
+  ...(edgeConfig.cors ? { cors: edgeConfig.cors } : {}),
   typescript: {
     outputFile: path.resolve(dirname, 'payload-types.ts'),
   },

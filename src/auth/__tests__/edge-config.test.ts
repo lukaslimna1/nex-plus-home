@@ -164,20 +164,203 @@ describe('NEX+ Auth · Edge & Cookie Configuration Hardening (0.8B-L)', () => {
   });
 
   it('getEdgeServerConfig consome process.env.PAYLOAD_PUBLIC_SERVER_URL', () => {
-    const originalEnv = process.env.PAYLOAD_PUBLIC_SERVER_URL;
+    const originalPublicEnv = process.env.PAYLOAD_PUBLIC_SERVER_URL;
+    const originalTrustedEnv = process.env.PAYLOAD_TRUSTED_ORIGINS;
     try {
       delete process.env.PAYLOAD_PUBLIC_SERVER_URL;
+      delete process.env.PAYLOAD_TRUSTED_ORIGINS;
       assert.equal(getEdgeServerConfig().isSecureCookie, false);
+      assert.equal(getEdgeServerConfig().serverURL, undefined);
+      assert.equal(getEdgeServerConfig().csrf, undefined);
+      assert.equal(getEdgeServerConfig().cors, undefined);
 
       process.env.PAYLOAD_PUBLIC_SERVER_URL = 'https://nex.starlevel.com.br';
       assert.equal(getEdgeServerConfig().isSecureCookie, true);
       assert.equal(getEdgeServerConfig().serverURL, 'https://nex.starlevel.com.br');
+      assert.deepEqual(getEdgeServerConfig().csrf, ['https://nex.starlevel.com.br']);
+      assert.deepEqual(getEdgeServerConfig().cors, ['https://nex.starlevel.com.br']);
+
+      process.env.PAYLOAD_TRUSTED_ORIGINS = 'https://admin.nex.starlevel.com.br';
+      assert.equal(getEdgeServerConfig().serverURL, 'https://nex.starlevel.com.br');
+      assert.deepEqual(getEdgeServerConfig().csrf, [
+        'https://nex.starlevel.com.br',
+        'https://admin.nex.starlevel.com.br',
+      ]);
+      assert.deepEqual(getEdgeServerConfig().cors, [
+        'https://nex.starlevel.com.br',
+        'https://admin.nex.starlevel.com.br',
+      ]);
     } finally {
-      if (originalEnv !== undefined) {
-        process.env.PAYLOAD_PUBLIC_SERVER_URL = originalEnv;
+      if (originalPublicEnv !== undefined) {
+        process.env.PAYLOAD_PUBLIC_SERVER_URL = originalPublicEnv;
       } else {
         delete process.env.PAYLOAD_PUBLIC_SERVER_URL;
       }
+      if (originalTrustedEnv !== undefined) {
+        process.env.PAYLOAD_TRUSTED_ORIGINS = originalTrustedEnv;
+      } else {
+        delete process.env.PAYLOAD_TRUSTED_ORIGINS;
+      }
+    }
+  });
+
+  it('L7. PAYLOAD_TRUSTED_ORIGINS: suporta origem única e múltiplas origens adicionais para CSRF e CORS', () => {
+    // 1. Somente serverURL
+    const config1 = parseEdgeServerConfig('https://nex.starlevel.com.br');
+    assert.equal(config1.serverURL, 'https://nex.starlevel.com.br');
+    assert.deepEqual(config1.csrf, ['https://nex.starlevel.com.br']);
+    assert.deepEqual(config1.cors, ['https://nex.starlevel.com.br']);
+
+    // 2. serverURL + 1 trusted origin
+    const config2 = parseEdgeServerConfig(
+      'https://nex.starlevel.com.br',
+      'https://admin.nex.starlevel.com.br',
+    );
+    assert.equal(config2.serverURL, 'https://nex.starlevel.com.br');
+    assert.deepEqual(config2.csrf, [
+      'https://nex.starlevel.com.br',
+      'https://admin.nex.starlevel.com.br',
+    ]);
+    assert.deepEqual(config2.cors, [
+      'https://nex.starlevel.com.br',
+      'https://admin.nex.starlevel.com.br',
+    ]);
+
+    // 3. serverURL + múltiplas trusted origins
+    const config3 = parseEdgeServerConfig(
+      'https://nex.starlevel.com.br',
+      'https://admin.nex.starlevel.com.br, https://api.nex.starlevel.com.br, https://app.nex.starlevel.com.br:8443',
+    );
+    assert.equal(config3.serverURL, 'https://nex.starlevel.com.br');
+    assert.deepEqual(config3.csrf, [
+      'https://nex.starlevel.com.br',
+      'https://admin.nex.starlevel.com.br',
+      'https://api.nex.starlevel.com.br',
+      'https://app.nex.starlevel.com.br:8443',
+    ]);
+    assert.deepEqual(config3.cors, [
+      'https://nex.starlevel.com.br',
+      'https://admin.nex.starlevel.com.br',
+      'https://api.nex.starlevel.com.br',
+      'https://app.nex.starlevel.com.br:8443',
+    ]);
+
+    // 4. Sem serverURL (modo local), mas com trusted origins
+    const config4 = parseEdgeServerConfig(null, 'http://localhost:3000, http://127.0.0.1:3000');
+    assert.equal(config4.serverURL, undefined);
+    assert.deepEqual(config4.csrf, ['http://localhost:3000', 'http://127.0.0.1:3000']);
+    assert.deepEqual(config4.cors, ['http://localhost:3000', 'http://127.0.0.1:3000']);
+    assert.equal(config4.isSecureCookie, false);
+  });
+
+  it('L8. Deduplicação e normalização determinística de origens em CSRF e CORS', () => {
+    // 1. Origem repetida entre serverURL e trusted origins
+    const config1 = parseEdgeServerConfig(
+      'https://nex.starlevel.com.br',
+      'https://nex.starlevel.com.br, https://admin.nex.starlevel.com.br',
+    );
+    assert.deepEqual(config1.csrf, [
+      'https://nex.starlevel.com.br',
+      'https://admin.nex.starlevel.com.br',
+    ]);
+    assert.deepEqual(config1.cors, [
+      'https://nex.starlevel.com.br',
+      'https://admin.nex.starlevel.com.br',
+    ]);
+
+    // 2. Origem repetida em trusted origins com variações de trailing slash e espaços
+    const config2 = parseEdgeServerConfig(
+      'https://nex.starlevel.com.br/',
+      ' https://admin.nex.starlevel.com.br/ , https://admin.nex.starlevel.com.br , https://nex.starlevel.com.br ',
+    );
+    assert.equal(config2.serverURL, 'https://nex.starlevel.com.br');
+    assert.deepEqual(config2.csrf, [
+      'https://nex.starlevel.com.br',
+      'https://admin.nex.starlevel.com.br',
+    ]);
+    assert.deepEqual(config2.cors, [
+      'https://nex.starlevel.com.br',
+      'https://admin.nex.starlevel.com.br',
+    ]);
+
+    // 3. Validação de que serverURL não é alterada pela inclusão de trusted origins
+    assert.equal(config2.serverURL, 'https://nex.starlevel.com.br');
+  });
+
+  it('L9. Rejeição determinística de entradas inválidas ou maliciosas em PAYLOAD_TRUSTED_ORIGINS (fail-closed)', () => {
+    // 1. Protocolo não suportado
+    assert.throws(
+      () =>
+        parseEdgeServerConfig(
+          'https://nex.starlevel.com.br',
+          'ftp://admin.nex.starlevel.com.br',
+        ),
+      (err: Error) => err.message.includes('Protocolo não suportado'),
+    );
+
+    // 2. URL malformada
+    assert.throws(
+      () =>
+        parseEdgeServerConfig(
+          'https://nex.starlevel.com.br',
+          'https://admin.nex.starlevel.com.br, not-a-url',
+        ),
+      (err: Error) => err.message.includes('inválida'),
+    );
+
+    // 3. Userinfo / credenciais na URL
+    assert.throws(
+      () =>
+        parseEdgeServerConfig(
+          'https://nex.starlevel.com.br',
+          'https://admin:secret@admin.nex.starlevel.com.br',
+        ),
+      (err: Error) => err.message.includes('não deve conter credenciais/userinfo'),
+    );
+
+    // 4. Path funcional
+    assert.throws(
+      () =>
+        parseEdgeServerConfig(
+          'https://nex.starlevel.com.br',
+          'https://admin.nex.starlevel.com.br/admin',
+        ),
+      (err: Error) => err.message.includes('não deve conter path funcional'),
+    );
+
+    // 5. Query string
+    assert.throws(
+      () =>
+        parseEdgeServerConfig(
+          'https://nex.starlevel.com.br',
+          'https://admin.nex.starlevel.com.br?debug=true',
+        ),
+      (err: Error) => err.message.includes('não deve conter query string'),
+    );
+
+    // 6. Fragmento
+    assert.throws(
+      () =>
+        parseEdgeServerConfig(
+          'https://nex.starlevel.com.br',
+          'https://admin.nex.starlevel.com.br#top',
+        ),
+      (err: Error) => err.message.includes('não deve conter fragmento'),
+    );
+
+    // 7. Entrada vazia na lista separada por vírgulas (ex: vírgula solta / elemento vazio)
+    const emptyEntries = [
+      'https://admin.nex.starlevel.com.br,',
+      ',https://admin.nex.starlevel.com.br',
+      'https://a.com, ,https://b.com',
+      'https://a.com,,https://b.com',
+    ];
+    for (const entry of emptyEntries) {
+      assert.throws(
+        () => parseEdgeServerConfig('https://nex.starlevel.com.br', entry),
+        (err: Error) => err.message.includes('contém entrada vazia inválida'),
+        `Deve rejeitar entrada com token vazio na lista: '${entry}'`,
+      );
     }
   });
 });

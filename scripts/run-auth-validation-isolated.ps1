@@ -34,8 +34,12 @@ if (-not (Get-Command psql -ErrorAction SilentlyContinue) -or -not (Get-Command 
 # 2. Leitura segura de credenciais do .env (sem exibir segredos)
 $hadOriginalEdgeUrl = [System.Environment]::GetEnvironmentVariables().ContainsKey("PAYLOAD_PUBLIC_SERVER_URL")
 $originalEdgeUrl = $env:PAYLOAD_PUBLIC_SERVER_URL
+$hadOriginalTrustedOrigins = [System.Environment]::GetEnvironmentVariables().ContainsKey("PAYLOAD_TRUSTED_ORIGINS")
+$originalTrustedOrigins = $env:PAYLOAD_TRUSTED_ORIGINS
+
 # Neutralizar imediatamente no processo do script para garantir modo local
 $env:PAYLOAD_PUBLIC_SERVER_URL = ""
+$env:PAYLOAD_TRUSTED_ORIGINS = ""
 
 $envLines = Get-Content $envFilePath
 $dbUrlLine = $envLines | Where-Object { $_ -match '^DATABASE_URL=' }
@@ -104,6 +108,7 @@ try {
     $env:NEX_E2E_ISOLATED = "1"
     $env:PORT = "3108"
     $env:PAYLOAD_PUBLIC_SERVER_URL = ""
+    $env:PAYLOAD_TRUSTED_ORIGINS = ""
 
     # 5. Executar Migrations UP no banco descartável
     Write-Host "`n[2/7] Executando migrations (UP) no banco descartável..." -ForegroundColor Yellow
@@ -181,6 +186,11 @@ finally {
         $env:PAYLOAD_PUBLIC_SERVER_URL = $originalEdgeUrl
     } else {
         Remove-Item env:\PAYLOAD_PUBLIC_SERVER_URL -ErrorAction SilentlyContinue
+    }
+    if ($hadOriginalTrustedOrigins) {
+        $env:PAYLOAD_TRUSTED_ORIGINS = $originalTrustedOrigins
+    } else {
+        Remove-Item env:\PAYLOAD_TRUSTED_ORIGINS -ErrorAction SilentlyContinue
     }
 }
 
