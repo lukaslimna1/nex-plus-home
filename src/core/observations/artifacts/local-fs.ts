@@ -384,16 +384,17 @@ export class LocalFsArtifactBlobStore implements ArtifactBlobStore {
       },
     });
 
-    const fileHandle = await fs.open(snapshotPath, 'wx');
-    const snapshotWriteStream = createWriteStream('', { fd: fileHandle.fd, autoClose: false });
+    // Abertura exclusiva para escrita E leitura (wx+)
+    const fileHandle = await fs.open(snapshotPath, 'wx+');
+    const snapshotWriteStream = fileHandle.createWriteStream({ autoClose: false });
 
     try {
       await streamPipeline(sourceStream, countingTransform, snapshotWriteStream);
       await fileHandle.sync();
-      await fileHandle.close();
 
       const calculatedHash = hash.digest('hex');
       if (calculatedHash !== expectedHash) {
+        await fileHandle.close().catch(() => {});
         await fs.unlink(snapshotPath).catch(() => {});
         throw new ArtifactIntegrityError({
           storageKey,
@@ -403,20 +404,16 @@ export class LocalFsArtifactBlobStore implements ArtifactBlobStore {
         });
       }
 
-      // Abre stream sobre o snapshot verificado
-      const snapshotReadStream = createReadStream(snapshotPath);
+      // Cria ReadStream diretamente vinculado ao FileHandle já verificado (sem reabertura por path)
+      const snapshotReadStream = fileHandle.createReadStream({
+        start: 0,
+        autoClose: true,
+      });
 
-      // Limpeza segura ao término/erro do stream
-      let cleaned = false;
-      const cleanup = async () => {
-        if (cleaned) return;
-        cleaned = true;
-        await fs.unlink(snapshotPath).catch(() => {});
-      };
-
-      snapshotReadStream.on('close', cleanup);
-      snapshotReadStream.on('error', cleanup);
-      snapshotReadStream.on('end', cleanup);
+      // Remoção garantida do snapshot após o fechamento do ReadStream / FileHandle
+      snapshotReadStream.on('close', () => {
+        fs.unlink(snapshotPath).catch(() => {});
+      });
 
       return snapshotReadStream;
     } catch (err) {

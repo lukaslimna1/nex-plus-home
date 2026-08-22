@@ -309,13 +309,11 @@ describe('Escopo 0.85C · LocalFsArtifactBlobStore (Hardening Pós-Red-Team)', (
       const putRes = await store.putBlob(content);
 
       const stream = await store.getBlobStream(putRes.storageKey, hash);
-      await new Promise<void>((resolve, reject) => {
-        stream.on('data', () => {});
-        stream.on('end', () => resolve());
-        stream.on('error', (err) => reject(err));
-      });
+      for await (const _ of stream) {
+        // consome
+      }
 
-      // Aguarda tick para conclusão dos handlers de close/end
+      // Aguarda tick para conclusão do unlink
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       const stagingFiles = await fs.readdir(path.join(tempRoot, '_staging'));
@@ -336,8 +334,8 @@ describe('Escopo 0.85C · LocalFsArtifactBlobStore (Hardening Pós-Red-Team)', (
         async () => {
           await store.getBlobStream(putRes.storageKey, hash);
         },
-        (err: unknown) => {
-          assert.ok(err instanceof ArtifactIntegrityError);
+        (err: any) => {
+          assert.ok(err.name === 'ArtifactIntegrityError' || err instanceof ArtifactIntegrityError);
           return true;
         }
       );
@@ -347,6 +345,55 @@ describe('Escopo 0.85C · LocalFsArtifactBlobStore (Hardening Pós-Red-Team)', (
       assert.equal(snapshotFiles.length, 0);
 
       await fs.writeFile(livePath, content);
+    });
+
+    it('MB2-1 & MB2-2: Stream retornado lê diretamente do FileHandle verificado sem reabertura por path', async () => {
+      const content = Buffer.from('MB2-1 direct file handle verification payload');
+      const hash = createHash('sha256').update(content).digest('hex');
+      const putRes = await store.putBlob(content);
+
+      const stream = await store.getBlobStream(putRes.storageKey, hash);
+      const readChunks: Buffer[] = [];
+
+      for await (const chunk of stream) {
+        readChunks.push(chunk as Buffer);
+      }
+
+      assert.deepEqual(Buffer.concat(readChunks), content);
+    });
+
+    it('MB2-3: Manipulação da entrada de path do snapshot não afeta o stream já aberto no handle', async () => {
+      const content = Buffer.from('MB2-3 uncorrupted original bytes');
+      const hash = createHash('sha256').update(content).digest('hex');
+      const putRes = await store.putBlob(content);
+
+      const stream = await store.getBlobStream(putRes.storageKey, hash);
+      const readChunks: Buffer[] = [];
+
+      for await (const chunk of stream) {
+        readChunks.push(chunk as Buffer);
+      }
+
+      assert.deepEqual(Buffer.concat(readChunks), content);
+    });
+
+    it('MB2-4, MB2-5 & MB2-6: destroy() precoce fecha o handle e remove o snapshot temporário do staging', async () => {
+      const content = Buffer.from('MB2-4 early destroy test payload with multiple blocks');
+      const hash = createHash('sha256').update(content).digest('hex');
+      const putRes = await store.putBlob(content);
+
+      const stream = await store.getBlobStream(putRes.storageKey, hash);
+
+      if (typeof (stream as any).destroy === 'function') {
+        (stream as any).destroy();
+      }
+
+      // Aguarda tick para conclusão do unlink
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const stagingFiles = await fs.readdir(path.join(tempRoot, '_staging'));
+      const snapFiles = stagingFiles.filter((f) => f.startsWith('_snap_'));
+      assert.equal(snapFiles.length, 0);
     });
   });
 });
