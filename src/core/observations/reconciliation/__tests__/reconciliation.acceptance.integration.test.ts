@@ -2,18 +2,22 @@
  * NEX+ · Matriz de Aceitação Comportamental de Reconciliação (Escopo 0.85D · Checkpoint 2 · Passagem 1)
  *
  * Cenários de Aceitação Ponta a Ponta:
- * - P1: Metadata × Página Renderizada (Divergência, Múltiplas Fontes, Sem Votação Simples)
+ * - P1: Metadata × Página Renderizada (Divergência, Múltiplas Fontes, Evidência Material Real, Sem Votação Simples)
  * - P2: Pix × Cartão (Condições Distintas, Coexistência Sem Sobrescrita)
  * - P3: Ontem Correto × Hoje Mudou (Evolução Temporal V1 -> V2, Rastreabilidade Histórica)
  * - P4: MAX Erra → Humano Corrige (Precedente Contextual != Policy, Erro Preservado)
- * - P5: Humano Erra → MAX Traz Nova Evidência (Reabertura Governada, MAX Não Promove)
- * - P6: Dois Humanos em Bases Diferentes (Concorrência Otimista Stale, Sem Last-Write-Wins)
+ * - P5: Humano Erra → MAX Traz Nova Evidência (Mesma Base Temporal, Erro Humano != Mudança Temporal, Evidência Real, Reabertura Governada, MAX Não Promove)
+ * - P6: Dois Humanos em Bases Diferentes (Concorrência Otimista Stale, Preservação de Review Contested, Sem Last-Write-Wins, Reconciliação Posterior)
  * - P7: Nenhuma Fonte Resolve (Inconclusive / Awaiting Evidence, Sem Conclusão Artificial)
  * - P8: Captura Duplicada (Idempotência Técnica != Nova Observação Temporal)
+ * - Explicação do Estado Atual & Linhagem Causal
  */
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { promises as fs } from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { Pool } from 'pg';
 import type {
   ObservationRecord,
@@ -34,16 +38,43 @@ import type {
   SystemActor,
   IntegrationActor,
   SourceRefId,
+  EvidenceArtifactRefId,
 } from '../../contracts';
 import { PgObservationPersistenceAdapter } from '../../persistence/postgres';
 import { PgReconciliationPersistenceAdapter } from '../postgres';
 import { ReconciliationCoordinator } from '../coordinator';
 import { PgEvidenceArtifactPersistenceAdapter } from '../../artifacts/postgres';
+import { LocalFsArtifactBlobStore } from '../../artifacts/local-fs';
+import { EvidenceArtifactService } from '../../artifacts/service';
+import type {
+  ArtifactAccessAuthorizer,
+  ArtifactAccessContext,
+  ArtifactAccessDecision,
+  ArtifactAccessOperation,
+} from '../../artifacts/contracts';
 import { StaleCanonicalBaseConflictError } from '../../persistence/errors';
 import { CanonicalPromotionAuthorityError } from '../errors';
 import type { HumanAuthorizationDecision } from '../../../policy/contracts';
 
 const databaseUrl = process.env.DATABASE_URL;
+
+class AcceptanceTestArtifactAuthorizer implements ArtifactAccessAuthorizer {
+  async authorize(
+    context: ArtifactAccessContext,
+    expectedOperation?: ArtifactAccessOperation
+  ): Promise<ArtifactAccessDecision> {
+    if (!context) {
+      return { granted: false, reasonCode: 'TEST_NO_CONTEXT' };
+    }
+    if (expectedOperation && context.operation !== expectedOperation) {
+      return { granted: false, reasonCode: 'TEST_OPERATION_MISMATCH' };
+    }
+    return {
+      granted: true,
+      reasonCode: 'TEST_EXPLICIT_ALLOW_ALL',
+    };
+  }
+}
 
 describe('Escopo 0.85D · Matriz de Aceitação de Reconciliação (Checkpoint 2 · Passagem 1)', { skip: !databaseUrl }, () => {
   let pool: Pool;
@@ -51,6 +82,9 @@ describe('Escopo 0.85D · Matriz de Aceitação de Reconciliação (Checkpoint 2
   let recPersistence: PgReconciliationPersistenceAdapter;
   let coordinator: ReconciliationCoordinator;
   let artifactPersistence: PgEvidenceArtifactPersistenceAdapter;
+  let blobStore: LocalFsArtifactBlobStore;
+  let artifactService: EvidenceArtifactService;
+  let tempBlobDir: string;
 
   const humanLucas: HumanActor = {
     kind: 'human',
@@ -99,25 +133,36 @@ describe('Escopo 0.85D · Matriz de Aceitação de Reconciliação (Checkpoint 2
     recPersistence = new PgReconciliationPersistenceAdapter(pool);
     coordinator = new ReconciliationCoordinator(obsPersistence, recPersistence);
     artifactPersistence = new PgEvidenceArtifactPersistenceAdapter(pool);
+
+    tempBlobDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nex_acceptance_blobs_'));
+    blobStore = new LocalFsArtifactBlobStore({ rootDir: tempBlobDir });
+    artifactService = new EvidenceArtifactService({
+      blobStore,
+      persistence: artifactPersistence,
+      authorizer: new AcceptanceTestArtifactAuthorizer(),
+    });
   });
 
   after(async () => {
     if (pool) {
       await pool.end();
     }
+    if (tempBlobDir) {
+      await fs.rm(tempBlobDir, { recursive: true, force: true }).catch(() => {});
+    }
   });
 
   // ==========================================================================
   // CENÁRIO P1: METADATA × PÁGINA RENDERIZADA
   // ==========================================================================
-  it('P1: Metadata × Página Renderizada preserva ambas as fontes divergentes sem votação simples e sem projeção automática', async () => {
+  it('P1: Metadata × Página Renderizada preserva ambas as fontes divergentes com evidência material real e sem projeção automática', async () => {
     const subjectP1: ObservationSubject = {
       domain: 'commerce_offer',
       entityType: 'product_offer',
       entityId: 'prod_p1_divergent_sku_101',
     };
 
-    // 1. Registrar Fonte A (Metadata API)
+    // 1. Registrar Fonte A (Metadata API) e Materializar Artefato Real A
     const sourceA = await artifactPersistence.recordSourceRef({
       sourceId: 'src_p1_catalog_meta' as SourceRefId,
       kind: 'api_endpoint',
@@ -126,6 +171,20 @@ describe('Escopo 0.85D · Matriz de Aceitação de Reconciliação (Checkpoint 2
       safeMetadata: { format: 'json', endpoint: 'catalog' },
       createdAt: '2026-08-22T10:00:00.000Z',
     });
+
+    const metaPayload = Buffer.from(JSON.stringify({ price: 89.90, currency: 'BRL' }));
+    const artifactA = await artifactService.materializeArtifact(
+      metaPayload,
+      {
+        artifactId: 'art_p1_meta_json' as EvidenceArtifactRefId,
+        kind: 'api_response',
+        sourceRefId: sourceA.sourceId,
+        mimeType: 'application/json',
+        safeDescription: 'Raw JSON response from catalog API with price 89.90',
+        containsSecretMaterial: false,
+      },
+      { actor: humanLucas, operation: 'write' }
+    );
 
     // 2. Observation A (Metadata API: R$ 89,90)
     const obsA: ObservationRecord = {
@@ -136,13 +195,13 @@ describe('Escopo 0.85D · Matriz de Aceitação de Reconciliação (Checkpoint 2
       normalizedValue: { amount: 89.90, currency: 'BRL' },
       actor: { kind: 'integration', provider: 'supplier_catalog_sync' } as IntegrationActor,
       sourceRefs: [sourceA.sourceId],
-      evidenceRefs: [],
+      evidenceRefs: [artifactA.artifactId],
       observedAt: '2026-08-22T10:00:00.000Z',
       capturedAt: '2026-08-22T10:00:01.000Z',
     };
     await obsPersistence.recordObservation(obsA);
 
-    // 3. Registrar Fonte B (Web Render Page)
+    // 3. Registrar Fonte B (Web Render Page) e Materializar Artefato Real B
     const sourceB = await artifactPersistence.recordSourceRef({
       sourceId: 'src_p1_render_page' as SourceRefId,
       kind: 'url',
@@ -151,6 +210,20 @@ describe('Escopo 0.85D · Matriz de Aceitação de Reconciliação (Checkpoint 2
       safeMetadata: { format: 'html', userAgent: 'HeadlessChrome' },
       createdAt: '2026-08-22T10:05:00.000Z',
     });
+
+    const renderPayload = Buffer.from('<html><span data-price="79.90">R$ 79,90</span></html>');
+    const artifactB = await artifactService.materializeArtifact(
+      renderPayload,
+      {
+        artifactId: 'art_p1_render_html' as EvidenceArtifactRefId,
+        kind: 'snapshot',
+        sourceRefId: sourceB.sourceId,
+        mimeType: 'text/html',
+        safeDescription: 'Rendered DOM snapshot showing promotional price 79.90',
+        containsSecretMaterial: false,
+      },
+      { actor: humanLucas, operation: 'write' }
+    );
 
     // 4. Observation B (Render Page DOM: R$ 79,90)
     const obsB: ObservationRecord = {
@@ -161,16 +234,17 @@ describe('Escopo 0.85D · Matriz de Aceitação de Reconciliação (Checkpoint 2
       normalizedValue: { amount: 79.90, currency: 'BRL' },
       actor: maxAgent,
       sourceRefs: [sourceB.sourceId],
-      evidenceRefs: [],
+      evidenceRefs: [artifactB.artifactId],
       observedAt: '2026-08-22T10:05:00.000Z',
       capturedAt: '2026-08-22T10:05:02.000Z',
     };
     await obsPersistence.recordObservation(obsB);
 
-    // 5. MAX submete review não-canônica apontando divergência
+    // 5. MAX submete review não-canônica apontando divergência e referenciando ambas as evidências materiais
     const maxReview: NonCanonicalReviewEvent = {
       reviewId: 'rev_p1_max_divergence_01' as ReviewEventId,
       targetObservationIds: [obsA.observationId, obsB.observationId],
+      consideredEvidenceIds: [artifactA.artifactId, artifactB.artifactId],
       actor: maxAgent,
       decision: 'divergent',
       justification: 'Metadata API reports R$ 89,90 while rendered DOM shows promotional price R$ 79,90.',
@@ -193,19 +267,38 @@ describe('Escopo 0.85D · Matriz de Aceitação de Reconciliação (Checkpoint 2
     assert.equal(caseResult.head.status, 'divergent');
     assert.equal(caseResult.head.currentVersion, 1);
 
-    // 7. Provar consultas e ausência de projeção canônica automática
+    // 7. Provar persistência das observações e caso
     const savedObsA = await obsPersistence.getObservation(obsA.observationId);
     const savedObsB = await obsPersistence.getObservation(obsB.observationId);
     assert.ok(savedObsA);
     assert.ok(savedObsB);
     assert.deepEqual(savedObsA.rawValue, { amount: 89.90, currency: 'BRL' });
     assert.deepEqual(savedObsB.rawValue, { amount: 79.90, currency: 'BRL' });
+    assert.deepEqual(savedObsA.evidenceRefs, [artifactA.artifactId]);
+    assert.deepEqual(savedObsB.evidenceRefs, [artifactB.artifactId]);
 
     const savedCase = await recPersistence.getCurrentReconciliationCase(caseP1.caseId);
     assert.ok(savedCase);
     assert.equal(savedCase.lifecycle, 'open');
     assert.equal(savedCase.status, 'divergent');
     assert.deepEqual(savedCase.observationIds, [obsA.observationId, obsB.observationId]);
+
+    // 8. Prova de Recuperação e Integridade dos EvidenceArtifacts Reais
+    const readA = await artifactService.readArtifact(artifactA.artifactId, { actor: humanLucas, operation: 'read' });
+    assert.ok(readA);
+    assert.equal(readA.metadata.artifactId, artifactA.artifactId);
+    assert.equal(readA.metadata.sourceRefId, sourceA.sourceId);
+    assert.equal(readA.metadata.byteSize, metaPayload.length);
+    assert.match(readA.metadata.sha256, /^[0-9a-f]{64}$/);
+    assert.deepEqual(readA.bytes, metaPayload);
+
+    const readB = await artifactService.readArtifact(artifactB.artifactId, { actor: humanLucas, operation: 'read' });
+    assert.ok(readB);
+    assert.equal(readB.metadata.artifactId, artifactB.artifactId);
+    assert.equal(readB.metadata.sourceRefId, sourceB.sourceId);
+    assert.equal(readB.metadata.byteSize, renderPayload.length);
+    assert.match(readB.metadata.sha256, /^[0-9a-f]{64}$/);
+    assert.deepEqual(readB.bytes, renderPayload);
 
     // Nenhuma CanonicalProjection foi gerada
     const canonicalHead = await obsPersistence.getCurrentCanonicalHead(subjectP1);
@@ -576,24 +669,53 @@ describe('Escopo 0.85D · Matriz de Aceitação de Reconciliação (Checkpoint 2
   });
 
   // ==========================================================================
-  // CENÁRIO P5: HUMANO ERRA → MAX TRAZ NOVA EVIDÊNCIA
+  // CENÁRIO P5: HUMANO ERRA → MAX TRAZ NOVA EVIDÊNCIA (MESMA BASE TEMPORAL)
   // ==========================================================================
-  it('P5: Humano Erra → MAX Traz Nova Evidência reabrindo caso sem sobrescrita automática de projeção', async () => {
+  it('P5: Humano Erra → MAX Traz Nova Evidência prova erro humano na mesma base temporal ocorrida com evidência material real', async () => {
     const subjectP5: ObservationSubject = {
       domain: 'commerce_offer',
       entityType: 'product_offer',
       entityId: 'prod_p5_stock_dispute_sku_505',
     };
 
-    // 1. Decisão humana inicial (T0) afirmando produto em estoque por R$ 199,90
+    // Mesma ocorrência temporal comum para ambas as observações
+    const sameOccurredAt = '2026-08-22T08:00:00.000Z';
+
+    // 1. T0: Humano consulta folha parcial/incompleta referente ao estado das 08:00
+    const sourceIncomplete = await artifactPersistence.recordSourceRef({
+      sourceId: 'src_p5_morning_sheet' as SourceRefId,
+      kind: 'document_source',
+      name: 'Morning Warehouse Tally Sheet',
+      locationOrUri: 'https://internal.supplier.local/reports/tally-20260822-0800.pdf',
+      createdAt: '2026-08-22T08:00:00.000Z',
+    });
+
+    const incompletePayload = Buffer.from(
+      JSON.stringify({ sku: '505', physicalCount: 3, label: 'SKU 505 em estoque' })
+    );
+    const artifactIncomplete = await artifactService.materializeArtifact(
+      incompletePayload,
+      {
+        artifactId: 'art_p5_partial_sheet' as EvidenceArtifactRefId,
+        kind: 'document',
+        sourceRefId: sourceIncomplete.sourceId,
+        mimeType: 'application/json',
+        safeDescription: 'Partial tally sheet displaying physical count 3 without reservation deduction',
+        containsSecretMaterial: false,
+      },
+      { actor: humanLucas, operation: 'write' }
+    );
+
+    // Humano observa e classifica inStock=true (ignora reservas por ter evidência incompleta)
     const obsP5T0: ObservationRecord = {
       observationId: 'obs_p5_t0_stock' as ObservationRecordId,
       subject: subjectP5,
-      observedClaim: 'stock_and_price',
-      rawValue: { inStock: true, price: 199.90 },
+      observedClaim: 'stock_availability',
+      rawValue: { inStock: true, physicalCount: 3, sellableStock: 3 },
       actor: humanLucas,
-      sourceRefs: [],
-      evidenceRefs: [],
+      sourceRefs: [sourceIncomplete.sourceId],
+      evidenceRefs: [artifactIncomplete.artifactId],
+      occurredAt: sameOccurredAt,
       observedAt: '2026-08-22T08:00:00.000Z',
       capturedAt: '2026-08-22T08:00:01.000Z',
     };
@@ -602,24 +724,25 @@ describe('Escopo 0.85D · Matriz de Aceitação de Reconciliação (Checkpoint 2
     const reviewHumanT0: CanonicalPromotedReviewEvent = {
       reviewId: 'rev_p5_human_t0' as ReviewEventId,
       targetObservationIds: [obsP5T0.observationId],
+      consideredEvidenceIds: [artifactIncomplete.artifactId],
       actor: humanLucas,
       decision: 'canonical_promoted',
       canonicalEffect: {
         action: 'promote',
-        targetCanonicalState: { inStock: true, price: 199.90 },
+        targetCanonicalState: { inStock: true, sellableStock: 3 },
       },
-      justification: 'Approved in-stock price R$ 199,90 based on morning inventory sheet.',
+      justification: 'Approved in-stock state based on morning tally count.',
       reviewedAt: '2026-08-22T08:15:00.000Z',
     };
 
     const projP5V1: CanonicalProjection = {
       projectionRevisionId: 'proj_p5_v1_revision' as CanonicalProjectionRevisionId,
       subject: subjectP5,
-      canonicalState: { inStock: true, price: 199.90 },
+      canonicalState: { inStock: true, sellableStock: 3 },
       underlyingObservationIds: [obsP5T0.observationId],
       authorizingReviewIds: [reviewHumanT0.reviewId],
       materializedAt: '2026-08-22T08:15:05.000Z',
-      explanation: 'In-stock canonical state approved.',
+      explanation: 'In-stock canonical state approved from morning tally.',
     };
 
     await coordinator.submitCanonicalPromotion({
@@ -640,35 +763,61 @@ describe('Escopo 0.85D · Matriz de Aceitação de Reconciliação (Checkpoint 2
     };
     await coordinator.createReconciliationCase({ case: caseP5 });
 
-    // 2. T1: MAX traz nova evidência material (Snapshot de banner 'Produto Esgotado')
-    const sourceEvidence = await artifactPersistence.recordSourceRef({
-      sourceId: 'src_p5_live_check' as SourceRefId,
-      kind: 'url',
-      name: 'Supplier Live Storefront',
-      locationOrUri: 'https://store.supplier.local/prod/505',
+    // 2. T1 (momento posterior): MAX recupera a evidência material COMPLETA DO MESMO ESTADO DAS 08:00
+    const sourceComplete = await artifactPersistence.recordSourceRef({
+      sourceId: 'src_p5_wms_ledger' as SourceRefId,
+      kind: 'api_endpoint',
+      name: 'WMS Full Inventory & Reservation Ledger',
+      locationOrUri: 'https://wms.supplier.local/v2/ledger/sku/505?at=20260822T080000Z',
       createdAt: '2026-08-22T13:00:00.000Z',
     });
 
+    const completePayload = Buffer.from(
+      JSON.stringify({
+        sku: '505',
+        timestamp: '2026-08-22T08:00:00.000Z',
+        physicalCount: 3,
+        reservedCount: 3,
+        sellableStock: 0,
+        status: 'unavailable',
+      })
+    );
+    const artifactComplete = await artifactService.materializeArtifact(
+      completePayload,
+      {
+        artifactId: 'art_p5_complete_ledger' as EvidenceArtifactRefId,
+        kind: 'api_response',
+        sourceRefId: sourceComplete.sourceId,
+        mimeType: 'application/json',
+        safeDescription: 'Full WMS snapshot proving all 3 physical units were already reserved at 08:00:00Z',
+        containsSecretMaterial: false,
+      },
+      { actor: humanLucas, operation: 'write' }
+    );
+
+    // MAX observa o MESMO occurredAt das 08:00 comprovando erro da classificação humana original
     const obsP5T1: ObservationRecord = {
-      observationId: 'obs_p5_t1_out_of_stock' as ObservationRecordId,
+      observationId: 'obs_p5_t1_wms_complete' as ObservationRecordId,
       subject: subjectP5,
-      observedClaim: 'stock_and_price',
-      rawValue: { inStock: false, reason: 'OUT_OF_STOCK' },
+      observedClaim: 'stock_availability',
+      rawValue: { inStock: false, physicalCount: 3, reservedCount: 3, sellableStock: 0, reason: 'RESERVED_UNAVAILABLE' },
       actor: maxAgent,
-      sourceRefs: [sourceEvidence.sourceId],
-      evidenceRefs: [],
+      sourceRefs: [sourceComplete.sourceId],
+      evidenceRefs: [artifactComplete.artifactId],
+      occurredAt: sameOccurredAt, // MESMO occurredAt: não é mudança temporal do mundo!
       observedAt: '2026-08-22T13:00:00.000Z',
       capturedAt: '2026-08-22T13:00:02.000Z',
     };
     await obsPersistence.recordObservation(obsP5T1);
 
-    // 3. MAX submete review contestando o estado
+    // 3. MAX submete review não-canônica contestando a classificação humana das 08:00
     const maxReviewContest: NonCanonicalReviewEvent = {
       reviewId: 'rev_p5_max_contest_stock' as ReviewEventId,
       targetObservationIds: [obsP5T0.observationId, obsP5T1.observationId],
+      consideredEvidenceIds: [artifactComplete.artifactId, artifactIncomplete.artifactId],
       actor: maxAgent,
       decision: 'divergent',
-      justification: 'Fresh storefront snapshot demonstrates product is out of stock contrary to morning verification.',
+      justification: 'At occurredAt 08:00:00Z all 3 units were reserved (sellableStock=0). Initial human classification of in-stock was erroneous due to incomplete tally sheet.',
       reviewedAt: '2026-08-22T13:05:00.000Z',
     };
     await coordinator.submitReview(maxReviewContest);
@@ -678,12 +827,12 @@ describe('Escopo 0.85D · Matriz de Aceitação de Reconciliação (Checkpoint 2
       review: {
         ...maxReviewContest,
         decision: 'canonical_promoted',
-        canonicalEffect: { action: 'promote', targetCanonicalState: { inStock: false } },
+        canonicalEffect: { action: 'promote', targetCanonicalState: { inStock: false, sellableStock: 0 } },
       } as any,
       projection: {
         projectionRevisionId: 'proj_p5_v2_unauthorized' as CanonicalProjectionRevisionId,
         subject: subjectP5,
-        canonicalState: { inStock: false },
+        canonicalState: { inStock: false, sellableStock: 0 },
         underlyingObservationIds: [obsP5T1.observationId],
         authorizingReviewIds: [maxReviewContest.reviewId],
         materializedAt: '2026-08-22T13:05:05.000Z',
@@ -709,7 +858,7 @@ describe('Escopo 0.85D · Matriz de Aceitação de Reconciliação (Checkpoint 2
       observationIds: [obsP5T0.observationId, obsP5T1.observationId],
       reviewIds: [reviewHumanT0.reviewId, maxReviewContest.reviewId],
       openedAt: caseP5.openedAt,
-      resolutionSummary: 'MAX provided new evidence showing out of stock. Awaiting human governed re-decision.',
+      resolutionSummary: 'MAX provided complete WMS evidence showing product was fully reserved at 08:00. Awaiting human governed re-decision.',
     };
     const appendResult = await coordinator.appendReconciliationRevision({
       case: caseP5V2,
@@ -721,12 +870,36 @@ describe('Escopo 0.85D · Matriz de Aceitação de Reconciliação (Checkpoint 2
     // 6. Provar que a CanonicalProjection Head ainda é V1 até que haja nova decisão humana governada
     const currentHead = await obsPersistence.getCurrentCanonicalHead(subjectP5);
     assert.equal(currentHead?.currentProjectionRevisionId, projP5V1.projectionRevisionId);
+
+    // 7. Prova de Recuperação e Integridade dos EvidenceArtifacts Reais em P5
+    const readInc = await artifactService.readArtifact(artifactIncomplete.artifactId, { actor: humanLucas, operation: 'read' });
+    assert.ok(readInc);
+    assert.equal(readInc.metadata.sourceRefId, sourceIncomplete.sourceId);
+    assert.equal(readInc.metadata.byteSize, incompletePayload.length);
+    assert.match(readInc.metadata.sha256, /^[0-9a-f]{64}$/);
+    assert.deepEqual(readInc.bytes, incompletePayload);
+
+    const readComp = await artifactService.readArtifact(artifactComplete.artifactId, { actor: humanLucas, operation: 'read' });
+    assert.ok(readComp);
+    assert.equal(readComp.metadata.sourceRefId, sourceComplete.sourceId);
+    assert.equal(readComp.metadata.byteSize, completePayload.length);
+    assert.match(readComp.metadata.sha256, /^[0-9a-f]{64}$/);
+    assert.deepEqual(readComp.bytes, completePayload);
+
+    // 8. Prova de mesma base temporal: occurredAt é estritamente idêntico nas duas observações
+    const dbObs0 = await obsPersistence.getObservation(obsP5T0.observationId);
+    const dbObs1 = await obsPersistence.getObservation(obsP5T1.observationId);
+    assert.ok(dbObs0);
+    assert.ok(dbObs1);
+    assert.equal(dbObs0.occurredAt, sameOccurredAt);
+    assert.equal(dbObs1.occurredAt, sameOccurredAt);
+    assert.equal(dbObs0.occurredAt, dbObs1.occurredAt, 'Ocorrência factual no mundo foi a mesma; erro foi de classificação humana');
   });
 
   // ==========================================================================
-  // CENÁRIO P6: DOIS HUMANOS EM BASES DIFERENTES
+  // CENÁRIO P6: DOIS HUMANOS EM BASES DIFERENTES (PRESERVAÇÃO DE REVIEW STALE)
   // ==========================================================================
-  it('P6: Dois Humanos em Bases Diferentes previne last-write-wins através de concorrência otimista', async () => {
+  it('P6: Dois Humanos em Bases Diferentes preserva review humana stale como não-canônica contested e rejeita projection stale', async () => {
     const subjectP6: ObservationSubject = {
       domain: 'commerce_offer',
       entityType: 'product_offer',
@@ -825,7 +998,7 @@ describe('Escopo 0.85D · Matriz de Aceitação de Reconciliação (Checkpoint 2
 
     const revAlice: CanonicalPromotedReviewEvent = {
       reviewId: 'rev_p6_alice_promo' as ReviewEventId,
-      targetObservationIds: [obsAlice.observationId],
+      targetObservationIds: [obsBase.observationId, obsAlice.observationId],
       previousReviewIds: [revBase.reviewId],
       targetBaseRevisionId: projV1.projectionRevisionId,
       actor: humanAlice,
@@ -855,7 +1028,7 @@ describe('Escopo 0.85D · Matriz de Aceitação de Reconciliação (Checkpoint 2
     });
     assert.equal(commitLucas.head.currentProjectionRevisionId, projV2Lucas.projectionRevisionId);
 
-    // 4. Alice tenta comitar contra V1 (que agora é base stale) -> REJEITADO
+    // 4. Alice tenta comitar contra V1 (que agora é base stale) -> REJEITADO com StaleCanonicalBaseConflictError
     await assert.rejects(
       async () =>
         coordinator.submitCanonicalPromotion({
@@ -873,13 +1046,96 @@ describe('Escopo 0.85D · Matriz de Aceitação de Reconciliação (Checkpoint 2
       }
     );
 
-    // 5. Provar que a Head canônica permanece a de Lucas (V2Lucas) sem sobrescrita silenciosa
-    const finalHead = await obsPersistence.getCurrentCanonicalHead(subjectP6);
-    assert.equal(finalHead?.currentProjectionRevisionId, projV2Lucas.projectionRevisionId);
+    // 5. Provas de Garantia Canônica (A, B, C)
+    // Head canônica permanece a de Lucas (V2Lucas) sem sobrescrita silenciosa
+    const currentHead = await obsPersistence.getCurrentCanonicalHead(subjectP6);
+    assert.equal(currentHead?.currentProjectionRevisionId, projV2Lucas.projectionRevisionId);
 
-    // A revisão de Alice não foi inserida na tabela de projections
+    // A projeção de Alice NÃO foi inserida na tabela de projections
     const aliceProj = await obsPersistence.getCanonicalProjectionRevision(projV2Alice.projectionRevisionId);
-    assert.equal(aliceProj, null);
+    assert.equal(aliceProj, null, 'Projeção stale não pode ser criada');
+
+    // 6. Provas de Preservação Histórica da Review Stale (D, E, F)
+    // A review de Alice NÃO foi perdida em rollback e foi preservada com decision 'contested'
+    const savedAliceReview = await obsPersistence.getReview(revAlice.reviewId);
+    assert.ok(savedAliceReview, 'Review humana de Alice deve existir no histórico auditável');
+    assert.equal(savedAliceReview.reviewId, revAlice.reviewId);
+    assert.equal(savedAliceReview.actor.kind, 'human');
+    assert.equal((savedAliceReview.actor as HumanActor).humanId, 'user_alice_auditor');
+    assert.equal(savedAliceReview.decision, 'contested', 'Review humana stale vira contested no histórico');
+    assert.equal(savedAliceReview.targetBaseRevisionId, projV1.projectionRevisionId);
+    assert.deepEqual(savedAliceReview.targetObservationIds.slice().sort(), [obsBase.observationId, obsAlice.observationId].sort());
+    assert.deepEqual(savedAliceReview.previousReviewIds, [revBase.reviewId]);
+    assert.equal(savedAliceReview.justification, 'Alice discount adjustment.');
+    assert.equal(savedAliceReview.reviewedAt, '2026-08-22T10:06:00.000Z');
+
+    // Consulta SQL direta no PostgreSQL confirmando persistência e ausência de projeção
+    const pgRevRes = await pool.query(
+      `SELECT * FROM nex_review_events WHERE review_id = $1`,
+      [revAlice.reviewId]
+    );
+    assert.equal(pgRevRes.rows.length, 1);
+    assert.equal(pgRevRes.rows[0].decision, 'contested');
+    assert.equal(pgRevRes.rows[0].target_base_revision_id, projV1.projectionRevisionId);
+
+    const pgRevObsRes = await pool.query(
+      `SELECT observation_id FROM nex_review_event_observations WHERE review_id = $1 ORDER BY observation_id ASC`,
+      [revAlice.reviewId]
+    );
+    assert.equal(pgRevObsRes.rows.length, 2);
+
+    const pgRevPrevRes = await pool.query(
+      `SELECT previous_review_id FROM nex_review_event_previous_reviews WHERE review_id = $1`,
+      [revAlice.reviewId]
+    );
+    assert.equal(pgRevPrevRes.rows.length, 1);
+    assert.equal(pgRevPrevRes.rows[0].previous_review_id, revBase.reviewId);
+
+    const pgProjRes = await pool.query(
+      `SELECT * FROM nex_canonical_projection_revisions WHERE projection_revision_id = $1`,
+      [projV2Alice.projectionRevisionId]
+    );
+    assert.equal(pgProjRes.rows.length, 0, 'Zero linhas de projeção para Alice no PostgreSQL');
+
+    // 7. Prova de Retry Idempotente da Mesma Avaliação Stale
+    await assert.rejects(
+      async () =>
+        coordinator.submitCanonicalPromotion({
+          review: revAlice,
+          projection: projV2Alice,
+          expectedBaseRevisionId: projV1.projectionRevisionId,
+          authorization: aliceHumanAuthDecision,
+        }),
+      (err: any) => {
+        assert.ok(err instanceof StaleCanonicalBaseConflictError);
+        return true;
+      }
+    );
+    const pgRevRetryCount = await pool.query(
+      `SELECT count(*) FROM nex_review_events WHERE review_id = $1`,
+      [revAlice.reviewId]
+    );
+    assert.equal(parseInt(pgRevRetryCount.rows[0].count, 10), 1, 'Retry do mesmo stale review não duplica linhas no PostgreSQL');
+
+    // 8. Prova de Reconciliação Posterior com a Review Stale
+    // Um ReconciliationCase pode participar e referenciar Lucas E a avaliação contested de Alice
+    const caseP6: OpenReconciliationCase = {
+      caseId: 'case_p6_stale_reconciliation_606' as ReconciliationCaseId,
+      subject: subjectP6,
+      lifecycle: 'open',
+      status: 'divergent',
+      observationIds: [obsBase.observationId, obsLucas.observationId, obsAlice.observationId],
+      reviewIds: [revBase.reviewId, revLucas.reviewId, revAlice.reviewId],
+      openedAt: '2026-08-22T10:00:00.000Z',
+      resolutionSummary: 'Post-concurrency reconciliation acknowledging Lucas V2 head and Alice contested evaluation.',
+    };
+    const caseP6Result = await coordinator.createReconciliationCase({ case: caseP6 });
+    assert.equal(caseP6Result.head.status, 'divergent');
+    assert.equal(caseP6Result.head.currentVersion, 1);
+
+    const savedCaseP6 = await recPersistence.getCurrentReconciliationCase(caseP6.caseId);
+    assert.ok(savedCaseP6);
+    assert.deepEqual(savedCaseP6.reviewIds, [revBase.reviewId, revLucas.reviewId, revAlice.reviewId]);
   });
 
   // ==========================================================================

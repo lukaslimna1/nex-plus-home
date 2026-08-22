@@ -172,7 +172,7 @@ try {
 
     # 8. Executar Todos os Testes Funcionais no Schema Reconvergido
     Write-Host "`n[5/5] Executando testes funcionais do 0.85D e regressão 0.85C/0.85B contra o schema reconvergido..." -ForegroundColor Yellow
-    & npx tsx --test src/core/observations/reconciliation/__tests__/reconciliation.integration.test.ts src/core/observations/artifacts/__tests__/postgres.integration.test.ts src/core/observations/persistence/__tests__/postgres.integration.test.ts src/core/observations/reconciliation/__tests__/reconciliation.acceptance.integration.test.ts
+    & npx tsx --test --test-concurrency=1 src/core/observations/reconciliation/__tests__/reconciliation.integration.test.ts src/core/observations/artifacts/__tests__/postgres.integration.test.ts src/core/observations/persistence/__tests__/postgres.integration.test.ts src/core/observations/reconciliation/__tests__/reconciliation.acceptance.integration.test.ts
     if ($LASTEXITCODE -ne 0) { throw "Falha nos testes de integração do 0.85D/0.85C/0.85B" }
     Write-Host "Todos os testes de integração e regressão passaram com 100% de sucesso!" -ForegroundColor Green
 

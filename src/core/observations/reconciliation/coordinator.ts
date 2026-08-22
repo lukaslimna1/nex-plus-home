@@ -5,6 +5,7 @@
 
 import type {
   ReviewEvent,
+  NonCanonicalReviewEvent,
   CanonicalPromotedReviewEvent,
   CanonicalReclassifiedReviewEvent,
   CanonicalProjection,
@@ -17,6 +18,7 @@ import type {
   ObservationPersistenceAdapter,
   CommitCanonicalPromotionResult,
 } from '../persistence/contracts';
+import { StaleCanonicalBaseConflictError } from '../persistence/errors';
 import type {
   ReconciliationPersistenceAdapter,
   CreateReconciliationCaseParams,
@@ -57,6 +59,9 @@ export class ReconciliationCoordinator {
    * Submete uma promoção ou reclassificação canônica através do gate estrito de autoridade.
    * Rejeita MAX, System e Integration runtime fail-closed antes de qualquer escrita no banco.
    * Exige HumanActor e HumanAuthorizationDecision com veredicto 'authorized'.
+   * Se a transação atômica for abortada por conflito de base stale (StaleCanonicalBaseConflictError),
+   * preserva a avaliação humana no histórico como ReviewEvent não-canônico com decision 'contested'
+   * e relança o erro original fail-closed.
    */
   async submitCanonicalPromotion(
     params: SubmitCanonicalPromotionParams
@@ -65,11 +70,39 @@ export class ReconciliationCoordinator {
     assertCanonicalPromotionAuthority(params.review, params.authorization);
 
     // 2. Execução Atômica de Promoção Canônica no PostgreSQL
-    return this.observationPersistence.commitCanonicalPromotion({
-      review: params.review,
-      projection: params.projection,
-      expectedBaseRevisionId: params.expectedBaseRevisionId,
-    });
+    try {
+      return await this.observationPersistence.commitCanonicalPromotion({
+        review: params.review,
+        projection: params.projection,
+        expectedBaseRevisionId: params.expectedBaseRevisionId,
+      });
+    } catch (err: unknown) {
+      if (err instanceof StaleCanonicalBaseConflictError) {
+        // Materializar a avaliação humana como NonCanonicalReviewEvent ('contested') para auditoria histórica
+        try {
+          const staleContestedReview: NonCanonicalReviewEvent = {
+            reviewId: params.review.reviewId,
+            actor: params.review.actor,
+            decision: 'contested',
+            targetObservationIds: params.review.targetObservationIds,
+            previousReviewIds: params.review.previousReviewIds,
+            consideredEvidenceIds: params.review.consideredEvidenceIds,
+            targetBaseRevisionId: params.review.targetBaseRevisionId ?? params.expectedBaseRevisionId,
+            justification: params.review.justification,
+            reviewedAt: params.review.reviewedAt,
+          };
+
+          const existingReview = await this.observationPersistence.getReview(params.review.reviewId);
+          if (!existingReview) {
+            await this.observationPersistence.recordNonCanonicalReview(staleContestedReview);
+          }
+        } catch {
+          // Preservar sempre a propagação do StaleCanonicalBaseConflictError original
+        }
+        throw err;
+      }
+      throw err;
+    }
   }
 
   /**
