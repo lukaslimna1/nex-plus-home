@@ -1,40 +1,72 @@
 /**
  * NEX+ · Route Eligibility, Selection & Escalation
- * Autoridade Runtime de DispatchAdmission em Memória — Escopo 0.85D (Bloco 0.85D / L0)
+ * Runtime Interno de DispatchAdmission (Single-Use & Issuer Privado) — Escopo 0.85D (Passagem 2)
  *
  * Plano de Autoridade (L0).
- * Autoridade de registro e resolução de DispatchAdmission imutáveis em memória.
- * Garante que AttemptCreatedEvent seja emitido estritamente a partir de admissões
- * canônicas emitidas por L0, impedindo adulteração ou clonagem por callers.
+ * Garante que DispatchAdmission seja emitida EXCLUSIVAMENTE pelo fluxo interno de evaluateDecision()
+ * e consumida de forma estritamente SINGLE-USE por AttemptCreatedEvent via claim atômico e síncrono.
  *
- * NOTA DE ESCOPO: Esta autoridade opera estritamente em memória no boundary L0 atual.
+ * NOTA DE ESCOPO: Este runtime opera estritamente em memória no boundary L0 atual.
  * Persistência durável, rehydration e scheduler pertencem exclusivamente ao Escopo 0.86C.
  */
 
+import type { AttemptId } from '../execution/contracts';
 import type {
+  DecisionMaterialContextId,
   DispatchAdmission,
   DispatchAdmissionId,
 } from './contracts';
 
 export class DispatchAdmissionNotFoundError extends Error {
   readonly code = 'DISPATCH_ADMISSION_NOT_FOUND';
-  constructor(admissionId: string) {
+  readonly admissionId: DispatchAdmissionId;
+
+  constructor(admissionId: DispatchAdmissionId) {
     super(
       `[L0 Admission Authority] DispatchAdmission '${admissionId}' was not found in runtime authority. Re-evaluation is required.`,
     );
     this.name = 'DispatchAdmissionNotFoundError';
+    this.admissionId = admissionId;
   }
 }
 
 export class DispatchAdmissionConflictError extends Error {
   readonly code = 'DISPATCH_ADMISSION_CONFLICT';
-  constructor(admissionId: string) {
+  readonly admissionId: DispatchAdmissionId;
+
+  constructor(admissionId: DispatchAdmissionId) {
     super(
       `[L0 Admission Authority] DispatchAdmission '${admissionId}' already exists with different payload. Overwrite is strictly prohibited.`,
     );
     this.name = 'DispatchAdmissionConflictError';
+    this.admissionId = admissionId;
   }
 }
+
+export class DispatchAdmissionAlreadyConsumedError extends Error {
+  readonly code = 'DISPATCH_ADMISSION_ALREADY_CONSUMED';
+  readonly admissionId: DispatchAdmissionId;
+  readonly consumedByAttemptId?: AttemptId;
+
+  constructor(admissionId: DispatchAdmissionId, consumedByAttemptId?: AttemptId) {
+    super(
+      `[L0 Admission Authority] DispatchAdmission '${admissionId}' has already been consumed${
+        consumedByAttemptId ? ` by Attempt '${consumedByAttemptId}'` : ''
+      }. Admissions are single-use. Re-evaluation is required.`,
+    );
+    this.name = 'DispatchAdmissionAlreadyConsumedError';
+    this.admissionId = admissionId;
+    this.consumedByAttemptId = consumedByAttemptId;
+  }
+}
+
+interface AdmissionStoreEntry {
+  readonly admission: DispatchAdmission;
+  consumed: boolean;
+  consumedByAttemptId?: AttemptId;
+}
+
+const internalStore = new Map<DispatchAdmissionId, AdmissionStoreEntry>();
 
 function deepFreezeAdmission(admission: DispatchAdmission): DispatchAdmission {
   const scopeCopy = admission.authorizationScope
@@ -89,49 +121,114 @@ function areAdmissionsEqual(a: DispatchAdmission, b: DispatchAdmission): boolean
   );
 }
 
-export interface DispatchAdmissionAuthority {
-  registerAdmission(admission: DispatchAdmission): DispatchAdmission;
-  getAdmission(admissionId: DispatchAdmissionId): DispatchAdmission | undefined;
-  hasAdmission(admissionId: DispatchAdmissionId): boolean;
-  clear(): void;
-}
+/**
+ * Função interna de emissão de DispatchAdmission.
+ * Invocada EXCLUSIVAMENTE por evaluateDecision() no momento da seleção de rota.
+ * NÃO exportada no barrel público (src/core/evaluation/index.ts).
+ */
+export function issueDispatchAdmissionInternal(rawAdmission: DispatchAdmission): DispatchAdmission {
+  if (!rawAdmission || !rawAdmission.admissionId) {
+    throw new Error('[L0 Admission Runtime] Cannot issue admission without valid admissionId.');
+  }
 
-export class InMemoryDispatchAdmissionAuthority implements DispatchAdmissionAuthority {
-  private readonly store = new Map<DispatchAdmissionId, DispatchAdmission>();
-
-  registerAdmission(admission: DispatchAdmission): DispatchAdmission {
-    if (!admission || !admission.admissionId) {
-      throw new Error('[L0 Admission Authority] Cannot register admission without valid admissionId.');
+  const existing = internalStore.get(rawAdmission.admissionId);
+  if (existing) {
+    if (areAdmissionsEqual(existing.admission, rawAdmission)) {
+      return existing.admission;
     }
+    throw new DispatchAdmissionConflictError(rawAdmission.admissionId);
+  }
 
-    const existing = this.store.get(admission.admissionId);
-    if (existing) {
-      if (areAdmissionsEqual(existing, admission)) {
-        return existing;
-      }
-      throw new DispatchAdmissionConflictError(admission.admissionId);
+  const frozen = deepFreezeAdmission(rawAdmission);
+  internalStore.set(rawAdmission.admissionId, {
+    admission: frozen,
+    consumed: false,
+  });
+  return frozen;
+}
+
+export interface ClaimAdmissionParams {
+  readonly admissionId: DispatchAdmissionId;
+  readonly attemptId: AttemptId;
+  readonly currentMaterialContextId: DecisionMaterialContextId;
+  readonly effectiveOperation?: string;
+  readonly effectiveResourceTarget?: string;
+}
+
+/**
+ * Operação atômica e síncrona de claim de DispatchAdmission para criação de Attempt.
+ * Invocada internamente por buildAttemptCreatedEvent().
+ * NÃO exportada no barrel público (src/core/evaluation/index.ts).
+ *
+ * Regras:
+ * 1. Localiza a entry no store. Se não existir -> DispatchAdmissionNotFoundError.
+ * 2. Se já consumida -> DispatchAdmissionAlreadyConsumedError.
+ * 3. Valida materialContextId, effectiveOperation e effectiveResourceTarget.
+ *    Se qualquer validação falhar, lança erro e NÃO consome a admission (previne DoS por request inválido).
+ * 4. Após todos os checks passarem -> marca consumed=true e consumedByAttemptId=attemptId.
+ * 5. Retorna o snapshot canônico e imutável da admissão.
+ */
+export function claimAdmissionForAttempt(params: ClaimAdmissionParams): DispatchAdmission {
+  const {
+    admissionId,
+    attemptId,
+    currentMaterialContextId,
+    effectiveOperation,
+    effectiveResourceTarget,
+  } = params;
+
+  if (!admissionId) {
+    throw new Error('[L0 Admission Runtime] admissionId is required to claim DispatchAdmission.');
+  }
+  if (!attemptId) {
+    throw new Error('[L0 Admission Runtime] attemptId is required to claim DispatchAdmission.');
+  }
+
+  const entry = internalStore.get(admissionId);
+  if (!entry) {
+    throw new DispatchAdmissionNotFoundError(admissionId);
+  }
+
+  if (entry.consumed) {
+    throw new DispatchAdmissionAlreadyConsumedError(admissionId, entry.consumedByAttemptId);
+  }
+
+  // 1. Validação de Contexto Material (NÃO consome em caso de falha)
+  if (entry.admission.materialContextId !== currentMaterialContextId) {
+    throw new Error(
+      `[L0 Admission] DispatchAdmission material context mismatch: admission was issued for '${entry.admission.materialContextId}', but current context is '${currentMaterialContextId}'. Re-evaluation is required.`,
+    );
+  }
+
+  // 2. Validação de Operação Efetiva (NÃO consome em caso de falha)
+  if (entry.admission.authorizationScope?.operation) {
+    if (!effectiveOperation || effectiveOperation !== entry.admission.authorizationScope.operation) {
+      throw new Error(
+        `[L0 Admission] Operation mismatch: admission was authorized for operation '${entry.admission.authorizationScope.operation}', but attempt requested '${effectiveOperation ?? 'none'}'.`,
+      );
     }
-
-    const frozen = deepFreezeAdmission(admission);
-    this.store.set(admission.admissionId, frozen);
-    return frozen;
   }
 
-  getAdmission(admissionId: DispatchAdmissionId): DispatchAdmission | undefined {
-    return this.store.get(admissionId);
+  // 3. Validação de ResourceTarget Efetivo (NÃO consome em caso de falha)
+  if (entry.admission.authorizationScope?.resourceTarget !== undefined) {
+    if (effectiveResourceTarget !== entry.admission.authorizationScope.resourceTarget) {
+      throw new Error(
+        `[L0 Admission] ResourceTarget mismatch: admission was authorized for resourceTarget '${entry.admission.authorizationScope.resourceTarget}', but attempt requested '${effectiveResourceTarget ?? 'none'}'.`,
+      );
+    }
   }
 
-  hasAdmission(admissionId: DispatchAdmissionId): boolean {
-    return this.store.has(admissionId);
-  }
+  // 4. Somente após todos os checks passarem: claim atômico e síncrono
+  entry.consumed = true;
+  entry.consumedByAttemptId = attemptId;
 
-  clear(): void {
-    this.store.clear();
-  }
+  return entry.admission;
 }
 
-export function createDispatchAdmissionAuthority(): DispatchAdmissionAuthority {
-  return new InMemoryDispatchAdmissionAuthority();
+/**
+ * Helper estritamente de teste para isolamento de suítes de teste.
+ * NÃO exportado no barrel público (src/core/evaluation/index.ts).
+ */
+export function __resetAdmissionRuntimeForTestsOnly(): void {
+  internalStore.clear();
 }
-
-export const defaultDispatchAdmissionAuthority = createDispatchAdmissionAuthority();

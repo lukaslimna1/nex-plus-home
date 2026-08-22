@@ -69,7 +69,7 @@ import {
   assessContinuationAfterAttempt,
   buildAttemptCreatedEvent,
 } from '../continuation';
-import { defaultDispatchAdmissionAuthority } from '../admission-authority';
+import { __resetAdmissionRuntimeForTestsOnly } from '../admission-authority';
 
 const defaultProvenance: FactProvenance = {
   source: 'official_docs',
@@ -160,7 +160,7 @@ function createMockTerms(termsKey: string, id: string, routeRevisionId: RouteRev
 
 describe('NEX+ L0 Route Eligibility, Selection & Escalation (Bloco 0.5E)', () => {
   beforeEach(() => {
-    defaultDispatchAdmissionAuthority.clear();
+    __resetAdmissionRuntimeForTestsOnly();
   });
 
   // 1. Capability inexistente → clarification_required
@@ -1316,55 +1316,73 @@ describe('NEX+ L0 Route Eligibility, Selection & Escalation (Bloco 0.5E)', () =>
 
   // 41. Admission context M1 não pode ser reutilizada para M2
   it('41. Admission context M1 não pode ser reutilizada para M2', () => {
-    const admission = defaultDispatchAdmissionAuthority.registerAdmission({
-      admissionId: 'adm_01_ctx_test' as any,
-      decisionId: 'dec_01' as DecisionId,
+    const registry = createCapabilityRegistry();
+    const cap = createMockCapability('cap.text', 'cap_01');
+    const route = createMockRoute('r.text', 'route_01');
+    registry.registerCapabilityRevision(cap);
+    registry.registerRouteRevision(route);
+    registry.registerTermsRevision(createMockTerms('terms.text', 't_01', route.routeRevisionId));
+    registry.registerBindingRevision(createMockBinding('bind.text', 'bind_01', cap.capabilityRevisionId, route.routeRevisionId));
+
+    const result = evaluateDecision({
+      decisionId: 'dec_41' as DecisionId,
       materialContextId: 'ctx_M1' as DecisionMaterialContextId,
-      routeEvaluationId: 'eval_01' as RouteEvaluationId,
-      capabilityRevisionId: 'cap_01' as CapabilityRevisionId,
-      bindingRevisionId: 'bind_01' as BindingRevisionId,
-      routeRevisionId: 'route_01' as RouteRevisionId,
-      policyRevisionId: 'pol_01' as PolicyRevisionId,
-      admittedAt: '2026-08-19T18:50:00.000Z',
+      interpretation: { clarity: 'clear', potentiallyMutating: false, capabilityKey: cap.capabilityKey },
+      capabilityRegistry: registry,
+      policy: defaultPolicy,
+      containsSecretMaterial: false,
+      termsContext: defaultTermsContext,
+      decidedAt: '2026-08-19T18:50:00.000Z',
     });
+
+    assert.ok(result.admission);
 
     assert.throws(
       () =>
-        buildAttemptCreatedEvent(
-          admission,
-          'att_01' as AttemptId,
-          '2026-08-19T18:50:01.000Z',
-          'ctx_M2' as DecisionMaterialContextId, // Contexto material mudou
-        ),
+        buildAttemptCreatedEvent({
+          admissionId: result.admission!.admissionId,
+          attemptId: 'att_01' as AttemptId,
+          createdAt: '2026-08-19T18:50:01.000Z',
+          currentMaterialContextId: 'ctx_M2' as DecisionMaterialContextId, // Contexto material mudou
+        }),
       /DispatchAdmission material context mismatch/,
     );
   });
 
   // 42. buildAttemptCreatedEvent usa refs exatas da Admission
   it('42. buildAttemptCreatedEvent usa refs exatas da Admission', () => {
-    const admission = defaultDispatchAdmissionAuthority.registerAdmission({
-      admissionId: 'adm_02_refs_test' as any,
-      decisionId: 'dec_01' as DecisionId,
+    const registry = createCapabilityRegistry();
+    const cap = createMockCapability('cap.text', 'cap_02');
+    const route = createMockRoute('r.text', 'route_02');
+    registry.registerCapabilityRevision(cap);
+    registry.registerRouteRevision(route);
+    registry.registerTermsRevision(createMockTerms('terms.text', 't_02', route.routeRevisionId));
+    registry.registerBindingRevision(createMockBinding('bind.text', 'bind_02', cap.capabilityRevisionId, route.routeRevisionId));
+
+    const result = evaluateDecision({
+      decisionId: 'dec_42' as DecisionId,
       materialContextId: 'ctx_M1' as DecisionMaterialContextId,
-      routeEvaluationId: 'eval_01' as RouteEvaluationId,
-      capabilityRevisionId: 'cap_01' as CapabilityRevisionId,
-      bindingRevisionId: 'bind_01' as BindingRevisionId,
-      routeRevisionId: 'route_01' as RouteRevisionId,
-      policyRevisionId: 'pol_01' as PolicyRevisionId,
-      admittedAt: '2026-08-19T18:50:00.000Z',
+      interpretation: { clarity: 'clear', potentiallyMutating: false, capabilityKey: cap.capabilityKey },
+      capabilityRegistry: registry,
+      policy: defaultPolicy,
+      containsSecretMaterial: false,
+      termsContext: defaultTermsContext,
+      decidedAt: '2026-08-19T18:50:00.000Z',
     });
 
-    const event = buildAttemptCreatedEvent(
-      admission,
-      'att_01' as AttemptId,
-      '2026-08-19T18:50:01.000Z',
-      'ctx_M1' as DecisionMaterialContextId,
-    );
+    assert.ok(result.admission);
+
+    const event = buildAttemptCreatedEvent({
+      admissionId: result.admission!.admissionId,
+      attemptId: 'att_01' as AttemptId,
+      createdAt: '2026-08-19T18:50:01.000Z',
+      currentMaterialContextId: 'ctx_M1' as DecisionMaterialContextId,
+    });
 
     assert.equal(event.attemptId, 'att_01');
-    assert.equal(event.decisionId, 'dec_01');
-    assert.equal(event.routeEvaluationId, 'eval_01');
-    assert.equal(event.routeRevisionId, 'route_01');
+    assert.equal(event.decisionId, 'dec_42');
+    assert.equal(event.routeEvaluationId, result.admission!.routeEvaluationId);
+    assert.equal(event.routeRevisionId, 'route_02');
   });
 
   // 43. Route inelegível não cria Attempt

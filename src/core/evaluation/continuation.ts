@@ -18,17 +18,12 @@ import type {
 import type {
   ContinuationAssessment,
   DecisionMaterialContextId,
-  DispatchAdmission,
   DispatchAdmissionId,
   HumanEscalation,
   HumanEscalationId,
 } from './contracts';
 
-import {
-  DispatchAdmissionAuthority,
-  defaultDispatchAdmissionAuthority,
-  DispatchAdmissionNotFoundError,
-} from './admission-authority';
+import { claimAdmissionForAttempt } from './admission-authority';
 
 export interface AssessContinuationParams {
   readonly decisionId: DecisionId;
@@ -46,7 +41,6 @@ export interface BuildAttemptCreatedEventParams {
   readonly currentMaterialContextId: DecisionMaterialContextId;
   readonly effectiveOperation?: string;
   readonly effectiveResourceTarget?: string;
-  readonly admissionAuthority?: DispatchAdmissionAuthority;
 }
 
 /**
@@ -125,108 +119,48 @@ export function assessContinuationAfterAttempt(params: AssessContinuationParams)
 }
 
 /**
- * Constrói o evento canônico AttemptCreatedEvent a partir da DispatchAdmission canônica.
+ * Constrói o evento canônico AttemptCreatedEvent através do claim de uma DispatchAdmission canônica.
  *
- * PROPRIEDADE DE AUTORIDADE DE L0 (Blocker J):
- * A admission é resolvida estritamente por admissionId a partir da DispatchAdmissionAuthority.
- * Clones ou objetos arbitrários fornecidos pelo caller são ignorados; todas as referências
- * de execução (decisionId, routeEvaluationId, capabilityRevisionId, bindingRevisionId,
- * routeRevisionId, policyRevisionId) derivam exclusivamente da admissão canônica registrada.
- *
- * Validações fail-closed:
- * 1. admissionId deve existir na autoridade runtime (caso contrário lança DispatchAdmissionNotFoundError).
- * 2. materialContextId deve coincidir exatamente com currentMaterialContextId.
- * 3. Se admission.authorizationScope possuir operation, effectiveOperation deve coincidir exatamente.
- * 4. Se admission.authorizationScope possuir resourceTarget, effectiveResourceTarget deve coincidir exatamente.
+ * PROPRIEDADES DE AUTORIDADE DE L0 (Passagem 2 - Correção Final):
+ * 1. Somente o fluxo interno de evaluateDecision() emite DispatchAdmission.
+ * 2. O consumer/caller NÃO pode fabricar ou registrar admissions arbitrárias.
+ * 3. O claim é síncrono, atômico e estritamente SINGLE-USE: uma admission só pode ser consumida uma vez.
+ * 4. Validações de materialContextId, effectiveOperation e effectiveResourceTarget não queimam token em falha.
+ * 5. Todas as referências (decisionId, routeEvaluationId, capabilityRevisionId, bindingRevisionId,
+ *    routeRevisionId, policyRevisionId) derivam exclusivamente da admissão canônica registrada.
  */
 export function buildAttemptCreatedEvent(
-  paramsOrAdmission: BuildAttemptCreatedEventParams | DispatchAdmission | DispatchAdmissionId,
-  maybeAttemptId?: AttemptId,
-  maybeCreatedAt?: string,
-  maybeCurrentMaterialContextId?: DecisionMaterialContextId,
-  maybeEffectiveOperation?: string,
-  maybeEffectiveResourceTarget?: string,
-  maybeAuthority?: DispatchAdmissionAuthority,
+  params: BuildAttemptCreatedEventParams,
 ): AttemptCreatedEvent {
-  let admissionId: DispatchAdmissionId;
-  let attemptId: AttemptId;
-  let createdAt: string;
-  let currentMaterialContextId: DecisionMaterialContextId;
-  let effectiveOperation: string | undefined;
-  let effectiveResourceTarget: string | undefined;
-  let authority: DispatchAdmissionAuthority;
-
-  if (
-    typeof paramsOrAdmission === 'object' &&
-    paramsOrAdmission !== null &&
-    'attemptId' in paramsOrAdmission &&
-    'currentMaterialContextId' in paramsOrAdmission
-  ) {
-    const p = paramsOrAdmission as BuildAttemptCreatedEventParams;
-    admissionId = p.admissionId;
-    attemptId = p.attemptId;
-    createdAt = p.createdAt;
-    currentMaterialContextId = p.currentMaterialContextId;
-    effectiveOperation = p.effectiveOperation;
-    effectiveResourceTarget = p.effectiveResourceTarget;
-    authority = p.admissionAuthority ?? defaultDispatchAdmissionAuthority;
-  } else {
-    if (typeof paramsOrAdmission === 'string') {
-      admissionId = paramsOrAdmission as DispatchAdmissionId;
-    } else if (
-      typeof paramsOrAdmission === 'object' &&
-      paramsOrAdmission !== null &&
-      'admissionId' in paramsOrAdmission
-    ) {
-      admissionId = (paramsOrAdmission as DispatchAdmission).admissionId;
-    } else {
-      throw new Error('[L0 Admission] Invalid admission parameter.');
-    }
-
-    attemptId = maybeAttemptId!;
-    createdAt = maybeCreatedAt!;
-    currentMaterialContextId = maybeCurrentMaterialContextId!;
-    effectiveOperation = maybeEffectiveOperation;
-    effectiveResourceTarget = maybeEffectiveResourceTarget;
-    authority = maybeAuthority ?? defaultDispatchAdmissionAuthority;
+  if (!params || typeof params !== 'object') {
+    throw new Error('[L0 Admission] BuildAttemptCreatedEventParams is required.');
   }
 
-  if (!admissionId) {
-    throw new Error('[L0 Admission] admissionId is required to resolve DispatchAdmission.');
-  }
+  const {
+    admissionId,
+    attemptId,
+    createdAt,
+    currentMaterialContextId,
+    effectiveOperation,
+    effectiveResourceTarget,
+  } = params;
 
-  // 1. Resolver Admission estritamente na Autoridade Runtime
-  const canonicalAdmission = authority.getAdmission(admissionId);
-  if (!canonicalAdmission) {
-    throw new DispatchAdmissionNotFoundError(admissionId);
-  }
-
-  // 2. Validação de Contexto Material
-  if (canonicalAdmission.materialContextId !== currentMaterialContextId) {
+  if (!admissionId || !attemptId || !createdAt || !currentMaterialContextId) {
     throw new Error(
-      `[L0 Admission] DispatchAdmission material context mismatch: admission was issued for '${canonicalAdmission.materialContextId}', but current context is '${currentMaterialContextId}'. Re-evaluation is required.`,
+      '[L0 Admission] admissionId, attemptId, createdAt, and currentMaterialContextId are required.',
     );
   }
 
-  // 3. Validação de Operação Efetiva (se escopo de autorização presente)
-  if (canonicalAdmission.authorizationScope?.operation) {
-    if (!effectiveOperation || effectiveOperation !== canonicalAdmission.authorizationScope.operation) {
-      throw new Error(
-        `[L0 Admission] Operation mismatch: admission was authorized for operation '${canonicalAdmission.authorizationScope.operation}', but attempt requested '${effectiveOperation ?? 'none'}'.`,
-      );
-    }
-  }
+  // 1. Claim atômico e síncrono no runtime interno (validações de escopo e marcação de consumo single-use)
+  const canonicalAdmission = claimAdmissionForAttempt({
+    admissionId,
+    attemptId,
+    currentMaterialContextId,
+    effectiveOperation,
+    effectiveResourceTarget,
+  });
 
-  // 4. Validação de ResourceTarget Efetivo (se presente no escopo autorizado)
-  if (canonicalAdmission.authorizationScope?.resourceTarget !== undefined) {
-    if (effectiveResourceTarget !== canonicalAdmission.authorizationScope.resourceTarget) {
-      throw new Error(
-        `[L0 Admission] ResourceTarget mismatch: admission was authorized for resourceTarget '${canonicalAdmission.authorizationScope.resourceTarget}', but attempt requested '${effectiveResourceTarget ?? 'none'}'.`,
-      );
-    }
-  }
-
-  // 5. Derivar AttemptCreatedEvent SOMENTE da Admission Canônica
+  // 2. Derivar AttemptCreatedEvent SOMENTE da Admission Canônica
   return {
     type: 'AttemptCreated',
     attemptId,

@@ -189,11 +189,13 @@ export function buildResourceGovernedAttemptCreatedEvent(
     );
   }
 
-  // 2. Delega para o construtor canônico de L0 (que valida currentMaterialContextId)
-  return buildAttemptCreatedEvent(
-    dispatchAdmission,
+  // 2. Delega para o construtor canônico de L0 (que valida currentMaterialContextId e claim atômico)
+  return buildAttemptCreatedEvent({
+    admissionId: dispatchAdmission.admissionId,
     attemptId,
     createdAt,
     currentMaterialContextId,
-  );
+    effectiveOperation: dispatchAdmission.authorizationScope?.operation,
+    effectiveResourceTarget: dispatchAdmission.authorizationScope?.resourceTarget,
+  });
 }

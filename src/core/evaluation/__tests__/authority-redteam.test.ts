@@ -51,11 +51,15 @@ import {
   assessContinuationAfterAttempt,
   buildAttemptCreatedEvent,
 } from '../continuation';
+import * as publicEvaluationExports from '../index';
 import {
-  createDispatchAdmissionAuthority,
-  defaultDispatchAdmissionAuthority,
   DispatchAdmissionNotFoundError,
   DispatchAdmissionConflictError,
+  DispatchAdmissionAlreadyConsumedError,
+} from '../index';
+import {
+  issueDispatchAdmissionInternal,
+  __resetAdmissionRuntimeForTestsOnly,
 } from '../admission-authority';
 
 // ============================================================================
@@ -166,7 +170,7 @@ function createMockTerms(
 
 describe('NEX+ · Escopo 0.85D · Matriz de Aceitação de Autoridade & Red-Team (L0 Evaluation)', () => {
   beforeEach(() => {
-    defaultDispatchAdmissionAuthority.clear();
+    __resetAdmissionRuntimeForTestsOnly();
   });
 
   // ==========================================================================
@@ -737,7 +741,7 @@ describe('NEX+ · Escopo 0.85D · Matriz de Aceitação de Autoridade & Red-Team
   });
 
   it('RT-9: DispatchAdmission usado com contexto material alterado é rejeitado exigindo re-avaliação', () => {
-    const admission = defaultDispatchAdmissionAuthority.registerAdmission({
+    const admission = issueDispatchAdmissionInternal({
       admissionId: 'adm_rt_9' as any,
       decisionId: 'dec_01' as any,
       materialContextId: 'ctx_original' as DecisionMaterialContextId,
@@ -1014,10 +1018,43 @@ describe('NEX+ · Escopo 0.85D · Matriz de Aceitação de Autoridade & Red-Team
   });
 
   // ==========================================================================
-  // 5. BLOCKER J: AUTORIDADE RUNTIME E IMUTABILIDADE DE DISPATCH ADMISSION (J1 .. J8)
+  // 5. BLOCKERS D/E & F: ISSUER PRIVADO, AUTORIDADE RUNTIME & SINGLE-USE CLAIM
   // ==========================================================================
 
-  it('J1: Happy path: admission autorizada registrada + context + operation + target corretos cria Attempt', () => {
+  it('AUTH-STRUCT: Superfície pública de evaluation NÃO exporta mutable authority, factory ou registerAdmission (D/E)', () => {
+    assert.equal((publicEvaluationExports as any).createDispatchAdmissionAuthority, undefined);
+    assert.equal((publicEvaluationExports as any).defaultDispatchAdmissionAuthority, undefined);
+    assert.equal((publicEvaluationExports as any).registerAdmission, undefined);
+    assert.equal((publicEvaluationExports as any).clear, undefined);
+    assert.equal((publicEvaluationExports as any).DispatchAdmissionAuthority, undefined);
+    assert.equal((publicEvaluationExports as any).InMemoryDispatchAdmissionAuthority, undefined);
+    assert.equal((publicEvaluationExports as any).issueDispatchAdmissionInternal, undefined);
+    assert.equal((publicEvaluationExports as any).claimAdmissionForAttempt, undefined);
+    assert.equal((publicEvaluationExports as any).__resetAdmissionRuntimeForTestsOnly, undefined);
+    assert.ok(publicEvaluationExports.DispatchAdmissionNotFoundError);
+    assert.ok(publicEvaluationExports.DispatchAdmissionConflictError);
+    assert.ok(publicEvaluationExports.DispatchAdmissionAlreadyConsumedError);
+  });
+
+  it('D/E-1: Tentativa de criar Attempt com admissionId arbitrário/forjado sem evaluateDecision é rejeitada com DispatchAdmissionNotFoundError', () => {
+    assert.throws(
+      () => {
+        buildAttemptCreatedEvent({
+          admissionId: 'adm_forged_without_evaluate' as any,
+          attemptId: 'att_de_1' as AttemptId,
+          createdAt: '2026-08-22T18:00:01.000Z',
+          currentMaterialContextId: 'ctx_de_1' as DecisionMaterialContextId,
+        });
+      },
+      (err: any) => {
+        assert.ok(err instanceof DispatchAdmissionNotFoundError);
+        assert.equal(err.code, 'DISPATCH_ADMISSION_NOT_FOUND');
+        return true;
+      },
+    );
+  });
+
+  it('D/E-2: Happy path: admission emitida por evaluateDecision legítimo cria o primeiro AttemptCreatedEvent', () => {
     const registry = createCapabilityRegistry();
     const cap = createMockCapability('external.write', 'cap_ext_write_rev1', 'active', 'may_mutate_domain');
     const route = createMockRoute('route.ext.write', 'route_ext_write_rev1');
@@ -1072,25 +1109,7 @@ describe('NEX+ · Escopo 0.85D · Matriz de Aceitação de Autoridade & Red-Team
     assert.equal(attempt.routeRevisionId, route.routeRevisionId);
   });
 
-  it('J2: Admission desconhecida na autoridade runtime é rejeitada com DispatchAdmissionNotFoundError', () => {
-    assert.throws(
-      () => {
-        buildAttemptCreatedEvent({
-          admissionId: 'adm_unregistered_unknown' as any,
-          attemptId: 'att_j2' as AttemptId,
-          createdAt: '2026-08-22T18:00:01.000Z',
-          currentMaterialContextId: 'ctx_j2' as DecisionMaterialContextId,
-        });
-      },
-      (err: any) => {
-        assert.ok(err instanceof DispatchAdmissionNotFoundError);
-        assert.equal(err.code, 'DISPATCH_ADMISSION_NOT_FOUND');
-        return true;
-      },
-    );
-  });
-
-  it('J3: Clone adulterado fornecido pelo caller é neutralizado; Attempt usa estritamente refs canônicas da autoridade', () => {
+  it('J3: Clone adulterado fornecido pelo caller não pode substituir refs; Attempt deriva estritamente da admission canônica', () => {
     const registry = createCapabilityRegistry();
     const cap = createMockCapability('external.write', 'cap_genuine_rev1', 'active', 'may_mutate_domain');
     const route = createMockRoute('route.ext.write', 'route_genuine_rev1');
@@ -1126,55 +1145,40 @@ describe('NEX+ · Escopo 0.85D · Matriz de Aceitação de Autoridade & Red-Team
 
     assert.ok(result.admission);
 
-    // Ataque do Codex: Caller clona o objeto admission e tenta trocar as revisões para executar outra rota/capability
-    const maliciousClone = {
-      ...result.admission,
-      capabilityRevisionId: 'cap_malicious_injected' as any,
-      bindingRevisionId: 'bind_malicious_injected' as any,
-      routeRevisionId: 'route_malicious_injected' as any,
-      policyRevisionId: 'policy_malicious_injected' as any,
-    };
+    // O caller tenta usar o admissionId genuíno mas não tem capacidade de passar overrides de rota/capability
+    const attempt = buildAttemptCreatedEvent({
+      admissionId: result.admission.admissionId,
+      attemptId: 'att_j3' as AttemptId,
+      createdAt: '2026-08-22T18:00:01.000Z',
+      currentMaterialContextId: 'ctx_j3' as DecisionMaterialContextId,
+      effectiveOperation: 'external.write',
+    });
 
-    // Caller passa o clone adulterado para buildAttemptCreatedEvent
-    const attempt = buildAttemptCreatedEvent(
-      maliciousClone,
-      'att_j3' as AttemptId,
-      '2026-08-22T18:00:01.000Z',
-      'ctx_j3' as DecisionMaterialContextId,
-      'external.write',
-    );
-
-    // Prova: O Attempt criado possui APENAS as refs genuínas emitidas por L0; as refs injetadas foram descartadas!
     assert.equal(attempt.capabilityRevisionId, cap.capabilityRevisionId);
     assert.equal(attempt.routeRevisionId, route.routeRevisionId);
     assert.equal(attempt.policyRevisionId, defaultPolicy.policyRevisionId);
-    assert.notEqual(attempt.routeRevisionId, 'route_malicious_injected');
   });
 
-  it('J4: Operation mismatch na execução pós-admissão é rejeitado sem criar Attempt', () => {
+  it('F-1: Replay sequencial: a mesma admissionId NÃO pode ser reutilizada para um segundo Attempt (Single-Use)', () => {
     const registry = createCapabilityRegistry();
-    const cap = createMockCapability('external.write', 'cap_ext_write_rev1', 'active', 'may_mutate_domain');
-    const route = createMockRoute('route.ext.write', 'route_ext_write_rev1');
+    const cap = createMockCapability('external.write', 'cap_f1_rev1', 'active', 'may_mutate_domain');
+    const route = createMockRoute('route.ext.write', 'route_f1_rev1');
     registry.registerCapabilityRevision(cap);
     registry.registerRouteRevision(route);
-    registry.registerTermsRevision(createMockTerms('terms.ext.write', 'terms_ext_write_rev1', route.routeRevisionId));
-    registry.registerBindingRevision(createMockBinding('bind.ext.write', 'bind_ext_write_rev1', cap.capabilityRevisionId, route.routeRevisionId));
+    registry.registerTermsRevision(createMockTerms('terms.ext.write', 'terms_f1_rev1', route.routeRevisionId));
+    registry.registerBindingRevision(createMockBinding('bind.ext.write', 'bind_f1_rev1', cap.capabilityRevisionId, route.routeRevisionId));
 
     const result = evaluateDecision({
-      decisionId: 'dec_j4' as DecisionId,
-      materialContextId: 'ctx_j4' as DecisionMaterialContextId,
-      interpretation: {
-        clarity: 'clear',
-        potentiallyMutating: true,
-        capabilityKey: cap.capabilityKey,
-      },
+      decisionId: 'dec_f1' as DecisionId,
+      materialContextId: 'ctx_f1' as DecisionMaterialContextId,
+      interpretation: { clarity: 'clear', potentiallyMutating: true, capabilityKey: cap.capabilityKey },
       capabilityRegistry: registry,
       policy: defaultPolicy,
       authorizationRequired: true,
       requiredAuthorizationScope: { operation: 'external.write' },
       authorization: {
-        authorizationId: 'auth_j4' as AuthorizationDecisionId,
-        materialContextId: 'ctx_j4' as DecisionMaterialContextId,
+        authorizationId: 'auth_f1' as AuthorizationDecisionId,
+        materialContextId: 'ctx_f1' as DecisionMaterialContextId,
         actorRef: 'operator_01',
         operation: 'external.write',
         verdict: 'authorized',
@@ -1187,51 +1191,118 @@ describe('NEX+ · Escopo 0.85D · Matriz de Aceitação de Autoridade & Red-Team
 
     assert.ok(result.admission);
 
-    // Caller tenta disparar attempt pedindo 'external.read' quando admission foi concedida para 'external.write'
+    // Primeiro Attempt -> PASS
+    const attempt1 = buildAttemptCreatedEvent({
+      admissionId: result.admission.admissionId,
+      attemptId: 'att_f1_1' as AttemptId,
+      createdAt: '2026-08-22T18:00:01.000Z',
+      currentMaterialContextId: 'ctx_f1' as DecisionMaterialContextId,
+      effectiveOperation: 'external.write',
+    });
+    assert.equal(attempt1.attemptId, 'att_f1_1');
+
+    // Segundo Attempt com a mesma admissionId -> FAIL (AlreadyConsumed)
     assert.throws(
       () => {
         buildAttemptCreatedEvent({
           admissionId: result.admission!.admissionId,
-          attemptId: 'att_j4' as AttemptId,
-          createdAt: '2026-08-22T18:00:01.000Z',
-          currentMaterialContextId: 'ctx_j4' as DecisionMaterialContextId,
-          effectiveOperation: 'external.read', // Mismatch!
+          attemptId: 'att_f1_2' as AttemptId,
+          createdAt: '2026-08-22T18:00:02.000Z',
+          currentMaterialContextId: 'ctx_f1' as DecisionMaterialContextId,
+          effectiveOperation: 'external.write',
         });
       },
       (err: any) => {
-        assert.ok(err.message.includes('Operation mismatch'));
+        assert.ok(err instanceof DispatchAdmissionAlreadyConsumedError);
+        assert.equal(err.code, 'DISPATCH_ADMISSION_ALREADY_CONSUMED');
+        assert.equal(err.admissionId, result.admission!.admissionId);
+        assert.equal(err.consumedByAttemptId, 'att_f1_1');
         return true;
       },
     );
   });
 
-  it('J5: ResourceTarget mismatch na execução pós-admissão é rejeitado sem criar Attempt', () => {
+  it('F-2: Replay concorrente: duas criações simultâneas com a mesma admissionId produzem exatamente 1 vencedor e 1 AlreadyConsumed', async () => {
     const registry = createCapabilityRegistry();
-    const cap = createMockCapability('external.write', 'cap_ext_write_rev1', 'active', 'may_mutate_domain');
-    const route = createMockRoute('route.ext.write', 'route_ext_write_rev1');
+    const cap = createMockCapability('external.write', 'cap_f2_rev1', 'active', 'may_mutate_domain');
+    const route = createMockRoute('route.ext.write', 'route_f2_rev1');
     registry.registerCapabilityRevision(cap);
     registry.registerRouteRevision(route);
-    registry.registerTermsRevision(createMockTerms('terms.ext.write', 'terms_ext_write_rev1', route.routeRevisionId));
-    registry.registerBindingRevision(createMockBinding('bind.ext.write', 'bind_ext_write_rev1', cap.capabilityRevisionId, route.routeRevisionId));
+    registry.registerTermsRevision(createMockTerms('terms.ext.write', 'terms_f2_rev1', route.routeRevisionId));
+    registry.registerBindingRevision(createMockBinding('bind.ext.write', 'bind_f2_rev1', cap.capabilityRevisionId, route.routeRevisionId));
 
     const result = evaluateDecision({
-      decisionId: 'dec_j5' as DecisionId,
-      materialContextId: 'ctx_j5' as DecisionMaterialContextId,
-      interpretation: {
-        clarity: 'clear',
-        potentiallyMutating: true,
-        capabilityKey: cap.capabilityKey,
-      },
+      decisionId: 'dec_f2' as DecisionId,
+      materialContextId: 'ctx_f2' as DecisionMaterialContextId,
+      interpretation: { clarity: 'clear', potentiallyMutating: true, capabilityKey: cap.capabilityKey },
       capabilityRegistry: registry,
       policy: defaultPolicy,
       authorizationRequired: true,
-      requiredAuthorizationScope: {
-        operation: 'external.write',
-        resourceTarget: 'provider:item:123',
-      },
+      requiredAuthorizationScope: { operation: 'external.write' },
       authorization: {
-        authorizationId: 'auth_j5' as AuthorizationDecisionId,
-        materialContextId: 'ctx_j5' as DecisionMaterialContextId,
+        authorizationId: 'auth_f2' as AuthorizationDecisionId,
+        materialContextId: 'ctx_f2' as DecisionMaterialContextId,
+        actorRef: 'operator_01',
+        operation: 'external.write',
+        verdict: 'authorized',
+        reasonCode: 'OK',
+      },
+      containsSecretMaterial: false,
+      termsContext: defaultTermsContext,
+      decidedAt: '2026-08-22T18:00:00.000Z',
+    });
+
+    assert.ok(result.admission);
+
+    const outcomes = await Promise.allSettled([
+      Promise.resolve().then(() =>
+        buildAttemptCreatedEvent({
+          admissionId: result.admission!.admissionId,
+          attemptId: 'att_f2_winner' as AttemptId,
+          createdAt: '2026-08-22T18:00:01.000Z',
+          currentMaterialContextId: 'ctx_f2' as DecisionMaterialContextId,
+          effectiveOperation: 'external.write',
+        }),
+      ),
+      Promise.resolve().then(() =>
+        buildAttemptCreatedEvent({
+          admissionId: result.admission!.admissionId,
+          attemptId: 'att_f2_loser' as AttemptId,
+          createdAt: '2026-08-22T18:00:01.000Z',
+          currentMaterialContextId: 'ctx_f2' as DecisionMaterialContextId,
+          effectiveOperation: 'external.write',
+        }),
+      ),
+    ]);
+
+    const fulfilled = outcomes.filter((o) => o.status === 'fulfilled');
+    const rejected = outcomes.filter((o) => o.status === 'rejected');
+
+    assert.equal(fulfilled.length, 1, 'Exatamente uma chamada concorrente deve ter sucesso');
+    assert.equal(rejected.length, 1, 'Exatamente uma chamada concorrente deve ser rejeitada');
+    assert.ok((rejected[0] as PromiseRejectedResult).reason instanceof DispatchAdmissionAlreadyConsumedError);
+  });
+
+  it('F-3: Request inválido (mismatch de operation/target/context) NÃO queima a admission; próxima tentativa correta tem sucesso', () => {
+    const registry = createCapabilityRegistry();
+    const cap = createMockCapability('external.write', 'cap_f3_rev1', 'active', 'may_mutate_domain');
+    const route = createMockRoute('route.ext.write', 'route_f3_rev1');
+    registry.registerCapabilityRevision(cap);
+    registry.registerRouteRevision(route);
+    registry.registerTermsRevision(createMockTerms('terms.ext.write', 'terms_f3_rev1', route.routeRevisionId));
+    registry.registerBindingRevision(createMockBinding('bind.ext.write', 'bind_f3_rev1', cap.capabilityRevisionId, route.routeRevisionId));
+
+    const result = evaluateDecision({
+      decisionId: 'dec_f3' as DecisionId,
+      materialContextId: 'ctx_f3' as DecisionMaterialContextId,
+      interpretation: { clarity: 'clear', potentiallyMutating: true, capabilityKey: cap.capabilityKey },
+      capabilityRegistry: registry,
+      policy: defaultPolicy,
+      authorizationRequired: true,
+      requiredAuthorizationScope: { operation: 'external.write', resourceTarget: 'provider:item:123' },
+      authorization: {
+        authorizationId: 'auth_f3' as AuthorizationDecisionId,
+        materialContextId: 'ctx_f3' as DecisionMaterialContextId,
         actorRef: 'operator_01',
         operation: 'external.write',
         resourceTarget: 'provider:item:123',
@@ -1245,68 +1316,230 @@ describe('NEX+ · Escopo 0.85D · Matriz de Aceitação de Autoridade & Red-Team
 
     assert.ok(result.admission);
 
-    // Caller tenta disparar attempt com resourceTarget divergente (item:999 ao invés de item:123)
+    // 1. Tentativa com operation incorreta -> lança erro de mismatch
     assert.throws(
       () => {
         buildAttemptCreatedEvent({
           admissionId: result.admission!.admissionId,
-          attemptId: 'att_j5' as AttemptId,
+          attemptId: 'att_f3_bad' as AttemptId,
           createdAt: '2026-08-22T18:00:01.000Z',
-          currentMaterialContextId: 'ctx_j5' as DecisionMaterialContextId,
+          currentMaterialContextId: 'ctx_f3' as DecisionMaterialContextId,
+          effectiveOperation: 'external.read', // Incorreta!
+          effectiveResourceTarget: 'provider:item:123',
+        });
+      },
+      /Operation mismatch/,
+    );
+
+    // 2. Tentativa com target incorreto -> lança erro de mismatch
+    assert.throws(
+      () => {
+        buildAttemptCreatedEvent({
+          admissionId: result.admission!.admissionId,
+          attemptId: 'att_f3_bad2' as AttemptId,
+          createdAt: '2026-08-22T18:00:01.000Z',
+          currentMaterialContextId: 'ctx_f3' as DecisionMaterialContextId,
           effectiveOperation: 'external.write',
-          effectiveResourceTarget: 'provider:item:999', // Mismatch!
+          effectiveResourceTarget: 'provider:item:999', // Incorreto!
+        });
+      },
+      /ResourceTarget mismatch/,
+    );
+
+    // 3. Prova: O token NÃO foi queimado! Tentativa com parâmetros corretos passa normalmente
+    const attempt = buildAttemptCreatedEvent({
+      admissionId: result.admission!.admissionId,
+      attemptId: 'att_f3_good' as AttemptId,
+      createdAt: '2026-08-22T18:00:02.000Z',
+      currentMaterialContextId: 'ctx_f3' as DecisionMaterialContextId,
+      effectiveOperation: 'external.write',
+      effectiveResourceTarget: 'provider:item:123',
+    });
+    assert.equal(attempt.attemptId, 'att_f3_good');
+
+    // 4. Agora que foi legitimamente consumida, a próxima falha com AlreadyConsumed
+    assert.throws(
+      () => {
+        buildAttemptCreatedEvent({
+          admissionId: result.admission!.admissionId,
+          attemptId: 'att_f3_after' as AttemptId,
+          createdAt: '2026-08-22T18:00:03.000Z',
+          currentMaterialContextId: 'ctx_f3' as DecisionMaterialContextId,
+          effectiveOperation: 'external.write',
+          effectiveResourceTarget: 'provider:item:123',
         });
       },
       (err: any) => {
-        assert.ok(err.message.includes('ResourceTarget mismatch'));
+        assert.ok(err instanceof DispatchAdmissionAlreadyConsumedError);
         return true;
       },
     );
   });
 
-  it('J6: Material context mismatch na execução pós-admissão é rejeitado sem criar Attempt', () => {
-    const authority = createDispatchAdmissionAuthority();
-    const admission = authority.registerAdmission({
-      admissionId: 'adm_j6' as any,
-      decisionId: 'dec_j6' as any,
-      materialContextId: 'ctx_alpha' as DecisionMaterialContextId,
-      routeEvaluationId: 'eval_j6' as any,
-      capabilityRevisionId: 'cap_j6' as any,
-      bindingRevisionId: 'bind_j6' as any,
-      routeRevisionId: 'route_j6' as any,
-      policyRevisionId: 'pol_j6' as any,
-      admittedAt: '2026-08-22T18:00:00.000Z',
+  it('F-4: Depois do consumo não há volta: qualquer tentativa subsequente falha com AlreadyConsumed', () => {
+    const registry = createCapabilityRegistry();
+    const cap = createMockCapability('external.write', 'cap_f4_rev1', 'active', 'may_mutate_domain');
+    const route = createMockRoute('route.ext.write', 'route_f4_rev1');
+    registry.registerCapabilityRevision(cap);
+    registry.registerRouteRevision(route);
+    registry.registerTermsRevision(createMockTerms('terms.ext.write', 'terms_f4_rev1', route.routeRevisionId));
+    registry.registerBindingRevision(createMockBinding('bind.ext.write', 'bind_f4_rev1', cap.capabilityRevisionId, route.routeRevisionId));
+
+    const result = evaluateDecision({
+      decisionId: 'dec_f4' as DecisionId,
+      materialContextId: 'ctx_f4' as DecisionMaterialContextId,
+      interpretation: { clarity: 'clear', potentiallyMutating: true, capabilityKey: cap.capabilityKey },
+      capabilityRegistry: registry,
+      policy: defaultPolicy,
+      authorizationRequired: true,
+      requiredAuthorizationScope: { operation: 'external.write', resourceTarget: 'provider:item:123' },
+      authorization: {
+        authorizationId: 'auth_f4' as AuthorizationDecisionId,
+        materialContextId: 'ctx_f4' as DecisionMaterialContextId,
+        actorRef: 'operator_01',
+        operation: 'external.write',
+        resourceTarget: 'provider:item:123',
+        verdict: 'authorized',
+        reasonCode: 'OK',
+      },
+      containsSecretMaterial: false,
+      termsContext: defaultTermsContext,
+      decidedAt: '2026-08-22T18:00:00.000Z',
     });
 
+    assert.ok(result.admission);
+
+    // Primeiro attempt consome
+    buildAttemptCreatedEvent({
+      admissionId: result.admission.admissionId,
+      attemptId: 'att_f4_consumed' as AttemptId,
+      createdAt: '2026-08-22T18:00:01.000Z',
+      currentMaterialContextId: 'ctx_f4' as DecisionMaterialContextId,
+      effectiveOperation: 'external.write',
+      effectiveResourceTarget: 'provider:item:123',
+    });
+
+    // Todas as variações subsequentes falham por AlreadyConsumed antes de qualquer outro check
     assert.throws(
-      () => {
+      () =>
         buildAttemptCreatedEvent({
-          admissionId: admission.admissionId,
-          admissionAuthority: authority,
-          attemptId: 'att_j6' as AttemptId,
-          createdAt: '2026-08-22T18:00:01.000Z',
-          currentMaterialContextId: 'ctx_beta' as DecisionMaterialContextId, // Mismatch!
-        });
-      },
-      (err: any) => {
-        assert.ok(err.message.includes('DispatchAdmission material context mismatch'));
-        return true;
-      },
+          admissionId: result.admission!.admissionId,
+          attemptId: 'att_f4_variant1' as AttemptId,
+          createdAt: '2026-08-22T18:00:02.000Z',
+          currentMaterialContextId: 'ctx_f4' as DecisionMaterialContextId,
+          effectiveOperation: 'external.read', // op errada
+        }),
+      DispatchAdmissionAlreadyConsumedError,
+    );
+
+    assert.throws(
+      () =>
+        buildAttemptCreatedEvent({
+          admissionId: result.admission!.admissionId,
+          attemptId: 'att_f4_variant2' as AttemptId,
+          createdAt: '2026-08-22T18:00:02.000Z',
+          currentMaterialContextId: 'ctx_diff' as DecisionMaterialContextId, // ctx errado
+        }),
+      DispatchAdmissionAlreadyConsumedError,
     );
   });
 
-  it('J7: Reinício de processo (autoridade vazia) falha-closed; rehydration durável permanece escopo 0.86C', () => {
-    // Simula novo runtime após reinício de processo
-    const newProcessAuthority = createDispatchAdmissionAuthority();
+  it('RETRY-LEGITIMO: Retry legítimo após confirmed_no_mutation exige nova evaluateDecision e gera nova admission', () => {
+    const registry = createCapabilityRegistry();
+    const cap = createMockCapability('cap.fetch', 'cap_fetch_rev1', 'active', 'may_mutate_domain');
+    const route = createMockRoute('route.fetch', 'route_fetch_rev1');
+    registry.registerCapabilityRevision(cap);
+    registry.registerRouteRevision(route);
+    registry.registerTermsRevision(createMockTerms('terms.fetch', 'terms_fetch_rev1', route.routeRevisionId));
+    registry.registerBindingRevision(createMockBinding('bind.fetch', 'bind_fetch_rev1', cap.capabilityRevisionId, route.routeRevisionId));
+
+    // 1. Decisão A
+    const resultA = evaluateDecision({
+      decisionId: 'dec_retry_A' as DecisionId,
+      materialContextId: 'ctx_retry_1' as DecisionMaterialContextId,
+      interpretation: { clarity: 'clear', potentiallyMutating: false, capabilityKey: cap.capabilityKey },
+      capabilityRegistry: registry,
+      policy: defaultPolicy,
+      containsSecretMaterial: false,
+      termsContext: defaultTermsContext,
+      decidedAt: '2026-08-22T18:00:00.000Z',
+    });
+    assert.ok(resultA.admission);
+
+    const attemptA = buildAttemptCreatedEvent({
+      admissionId: resultA.admission.admissionId,
+      attemptId: 'att_retry_A' as AttemptId,
+      createdAt: '2026-08-22T18:00:01.000Z',
+      currentMaterialContextId: 'ctx_retry_1' as DecisionMaterialContextId,
+    });
+
+    // Outcome da tentativa A: confirmed_no_mutation
+    const continuation = assessContinuationAfterAttempt({
+      decisionId: 'dec_retry_A' as DecisionId,
+      materialContextId: 'ctx_retry_1' as DecisionMaterialContextId,
+      attempt: {
+        attemptId: attemptA.attemptId,
+        decisionId: attemptA.decisionId,
+        routeEvaluationId: attemptA.routeEvaluationId,
+        capabilityRevisionId: attemptA.capabilityRevisionId,
+        bindingRevisionId: attemptA.bindingRevisionId,
+        routeRevisionId: attemptA.routeRevisionId,
+        policyRevisionId: attemptA.policyRevisionId,
+        status: 'failed',
+        createdAt: attemptA.createdAt,
+        finishedAt: '2026-08-22T18:00:05.000Z',
+      },
+      assessment: {
+        assessmentId: 'ass_retry_1' as any,
+        attemptId: attemptA.attemptId,
+        evidenceRefs: [],
+        verdict: 'confirmed_no_mutation',
+        reasonCode: 'TARGET_NOT_REACHABLE_NO_MUTATION',
+        assessedAt: '2026-08-22T18:00:06.000Z',
+      },
+      isDomainMutating: false,
+      assessedAt: '2026-08-22T18:00:06.000Z',
+    });
+
+    assert.equal(continuation.directive, 'new_route_evaluation_required');
+
+    // 2. Nova Decisão B
+    const resultB = evaluateDecision({
+      decisionId: 'dec_retry_B' as DecisionId,
+      materialContextId: 'ctx_retry_2' as DecisionMaterialContextId,
+      interpretation: { clarity: 'clear', potentiallyMutating: false, capabilityKey: cap.capabilityKey },
+      capabilityRegistry: registry,
+      policy: defaultPolicy,
+      containsSecretMaterial: false,
+      termsContext: defaultTermsContext,
+      decidedAt: '2026-08-22T18:00:10.000Z',
+    });
+    assert.ok(resultB.admission);
+    assert.notEqual(resultB.admission.admissionId, resultA.admission.admissionId);
+
+    // Attempt B consome a nova admission B
+    const attemptB = buildAttemptCreatedEvent({
+      admissionId: resultB.admission.admissionId,
+      attemptId: 'att_retry_B' as AttemptId,
+      createdAt: '2026-08-22T18:00:11.000Z',
+      currentMaterialContextId: 'ctx_retry_2' as DecisionMaterialContextId,
+    });
+
+    assert.equal(attemptB.attemptId, 'att_retry_B');
+    assert.equal(attemptB.decisionId, 'dec_retry_B');
+  });
+
+  it('RESTART: Reinício de processo (runtime vazio) resulta em fail-closed com DispatchAdmissionNotFoundError', () => {
+    // Simula reinício de processo limpando a memória do runtime interno
+    __resetAdmissionRuntimeForTestsOnly();
 
     assert.throws(
       () => {
         buildAttemptCreatedEvent({
-          admissionId: 'adm_persisted_from_old_process' as any,
-          admissionAuthority: newProcessAuthority,
-          attemptId: 'att_j7' as AttemptId,
+          admissionId: 'adm_persisted_from_prior_process' as any,
+          attemptId: 'att_restart_1' as AttemptId,
           createdAt: '2026-08-22T18:00:01.000Z',
-          currentMaterialContextId: 'ctx_j7' as DecisionMaterialContextId,
+          currentMaterialContextId: 'ctx_restart' as DecisionMaterialContextId,
         });
       },
       (err: any) => {
@@ -1316,8 +1549,7 @@ describe('NEX+ · Escopo 0.85D · Matriz de Aceitação de Autoridade & Red-Team
     );
   });
 
-  it('J8: Tentativa de registrar duplicate admissionId com payload diferente lança DispatchAdmissionConflictError; payload idêntico é idempotente', () => {
-    const authority = createDispatchAdmissionAuthority();
+  it('DUPLICATE-ID: Emissão interna duplicada com payload idêntico é idempotente; payload divergente lança DispatchAdmissionConflictError', () => {
     const baseAdmission = {
       admissionId: 'adm_dup_test' as any,
       decisionId: 'dec_dup' as any,
@@ -1330,30 +1562,25 @@ describe('NEX+ · Escopo 0.85D · Matriz de Aceitação de Autoridade & Red-Team
       admittedAt: '2026-08-22T18:00:00.000Z',
     };
 
-    const registered1 = authority.registerAdmission(baseAdmission);
-    assert.ok(registered1);
+    const issued1 = issueDispatchAdmissionInternal(baseAdmission);
+    assert.ok(issued1);
 
-    // Registro idêntico -> idempotente
-    const registeredSame = authority.registerAdmission({ ...baseAdmission });
-    assert.equal(registeredSame, registered1);
+    // Idêntico -> idempotente
+    const issuedSame = issueDispatchAdmissionInternal({ ...baseAdmission });
+    assert.equal(issuedSame, issued1);
 
-    // Registro conflitante com rota modificada -> conflito fail-closed
+    // Divergente -> erro
     assert.throws(
       () => {
-        authority.registerAdmission({
+        issueDispatchAdmissionInternal({
           ...baseAdmission,
           routeRevisionId: 'route_dup_v2_tampered' as any,
         });
       },
       (err: any) => {
         assert.ok(err instanceof DispatchAdmissionConflictError);
-        assert.equal(err.code, 'DISPATCH_ADMISSION_CONFLICT');
         return true;
       },
     );
-
-    // O registro original permanece intacto com route_dup_v1
-    const current = authority.getAdmission('adm_dup_test' as any);
-    assert.equal(current?.routeRevisionId, 'route_dup_v1');
   });
 });

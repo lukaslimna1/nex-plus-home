@@ -4,7 +4,11 @@
  */
 
 export * from './contracts';
-export * from './admission-authority';
+export {
+  DispatchAdmissionNotFoundError,
+  DispatchAdmissionConflictError,
+  DispatchAdmissionAlreadyConsumedError,
+} from './admission-authority';
 export * from './route-evaluation';
 export * from './selection';
 export * from './continuation';

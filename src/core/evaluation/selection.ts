@@ -37,10 +37,7 @@ import type {
   RouteSelectionPlan,
 } from './contracts';
 
-import {
-  DispatchAdmissionAuthority,
-  defaultDispatchAdmissionAuthority,
-} from './admission-authority';
+import { issueDispatchAdmissionInternal } from './admission-authority';
 
 import { evaluateCandidateRoute } from './route-evaluation';
 
@@ -58,7 +55,6 @@ export interface EvaluateDecisionParams {
   readonly authorization?: ContextualAuthorizationDecision;
   readonly authorizationRequired?: boolean;
   readonly requiredAuthorizationScope?: ContextualAuthorizationRequirement;
-  readonly admissionAuthority?: DispatchAdmissionAuthority;
   readonly confirmation?: ConfirmationDecision;
   readonly confirmationRequired?: boolean;
   readonly containsSecretMaterial: boolean;
@@ -767,7 +763,6 @@ export function evaluateDecision(params: EvaluateDecisionParams): DecisionResult
     }
 
     const chosenEval = eligible.find((e) => e.routeRevisionId === chosenRouteId)!;
-    const authority = params.admissionAuthority ?? defaultDispatchAdmissionAuthority;
     const rawAdmission: DispatchAdmission = {
       admissionId: `adm_${decisionId}_${chosenEval.routeRevisionId}` as DispatchAdmissionId,
       decisionId,
@@ -782,7 +777,7 @@ export function evaluateDecision(params: EvaluateDecisionParams): DecisionResult
       authorizationScope: requiredAuthorizationScope,
       admittedAt: decidedAt,
     };
-    const admission = authority.registerAdmission(rawAdmission);
+    const admission = issueDispatchAdmissionInternal(rawAdmission);
 
     return {
       decisionId,
@@ -799,7 +794,6 @@ export function evaluateDecision(params: EvaluateDecisionParams): DecisionResult
   // Caso B: Exatamente 1 rota elegível sem plano
   if (eligible.length === 1) {
     const chosenEval = eligible[0];
-    const authority = params.admissionAuthority ?? defaultDispatchAdmissionAuthority;
     const rawAdmission: DispatchAdmission = {
       admissionId: `adm_${decisionId}_${chosenEval.routeRevisionId}` as DispatchAdmissionId,
       decisionId,
@@ -814,7 +808,7 @@ export function evaluateDecision(params: EvaluateDecisionParams): DecisionResult
       authorizationScope: requiredAuthorizationScope,
       admittedAt: decidedAt,
     };
-    const admission = authority.registerAdmission(rawAdmission);
+    const admission = issueDispatchAdmissionInternal(rawAdmission);
 
     return {
       decisionId,

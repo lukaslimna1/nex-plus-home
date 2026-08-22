@@ -6,7 +6,7 @@
  * GovernorDecision e ResourceAdmission.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import type {
@@ -41,7 +41,10 @@ import {
   materializeResourceAdmission,
   ResourceAdmissionMismatchError,
 } from '../integration/attempt-admission';
-import { defaultDispatchAdmissionAuthority } from '../../evaluation/admission-authority';
+import {
+  issueDispatchAdmissionInternal,
+  __resetAdmissionRuntimeForTestsOnly,
+} from '../../evaluation/admission-authority';
 
 function createMockDispatchAdmission(overrides: Partial<DispatchAdmission> = {}): DispatchAdmission {
   const adm: DispatchAdmission = {
@@ -56,7 +59,7 @@ function createMockDispatchAdmission(overrides: Partial<DispatchAdmission> = {})
     admittedAt: '2026-08-19T20:00:00.000Z',
     ...overrides,
   };
-  return defaultDispatchAdmissionAuthority.registerAdmission(adm);
+  return issueDispatchAdmissionInternal(adm);
 }
 
 function createMockRequest(overrides: Partial<ResourceRequest> = {}): ResourceRequest {
@@ -107,6 +110,10 @@ function createMockResourceAdmission(overrides: Partial<ResourceAdmission> = {})
 }
 
 describe('NEX+ Resource Governor · Core 0.5 Integration (Fase B & Hardening)', () => {
+  beforeEach(() => {
+    __resetAdmissionRuntimeForTestsOnly();
+  });
+
   // G1. GovernorDecision admit + refs corretas → ResourceAdmission
   it('G1. GovernorDecision admit + refs corretas materializa ResourceAdmission', () => {
     const dispatch = createMockDispatchAdmission();
