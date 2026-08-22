@@ -26,8 +26,8 @@ export async function up({ db }: MigrateUpArgs): Promise<void> {
       CONSTRAINT "nex_rec_subject_type_chk" CHECK (length(trim("subject_entity_type")) > 0),
       CONSTRAINT "nex_rec_subject_id_chk" CHECK (length(trim("subject_entity_id")) > 0),
       CONSTRAINT "nex_rec_lifecycle_chk" CHECK (
-        ("lifecycle" = 'open' AND "resolved_at" IS NULL) OR
-        ("lifecycle" = 'resolved' AND "resolved_at" IS NOT NULL AND "resolution_summary" IS NOT NULL AND length(trim("resolution_summary")) > 0)
+        ("lifecycle" = 'open' AND "status" IN ('open', 'awaiting_evidence', 'divergent', 'inconclusive') AND "resolved_at" IS NULL) OR
+        ("lifecycle" = 'resolved' AND "status" IN ('validated', 'partially_validated', 'divergent', 'inconclusive', 'reclassified') AND "resolved_at" IS NOT NULL AND "resolution_summary" IS NOT NULL AND length(trim("resolution_summary")) > 0)
       )
     );
 
@@ -35,20 +35,13 @@ export async function up({ db }: MigrateUpArgs): Promise<void> {
     CREATE INDEX IF NOT EXISTS "nex_rec_lifecycle_status_idx" ON "nex_reconciliation_case_revisions" USING btree ("lifecycle", "status");
     CREATE INDEX IF NOT EXISTS "nex_rec_opened_at_idx" ON "nex_reconciliation_case_revisions" USING btree ("opened_at");
 
-    -- 2. RECONCILIATION CASE HEADS (Head mutável apontando atomicamente para a versão vigente)
+    -- 2. RECONCILIATION CASE HEADS (Ponteiro operacional mínimo apontando atomicamente para a versão vigente)
     CREATE TABLE IF NOT EXISTS "nex_reconciliation_case_heads" (
       "case_id" varchar PRIMARY KEY NOT NULL,
       "current_version" integer NOT NULL,
-      "subject_domain" varchar NOT NULL,
-      "subject_entity_type" varchar NOT NULL,
-      "subject_entity_id" varchar NOT NULL,
-      "lifecycle" varchar NOT NULL,
-      "status" varchar NOT NULL,
       "updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
       FOREIGN KEY ("case_id", "current_version") REFERENCES "nex_reconciliation_case_revisions"("case_id", "version") ON DELETE RESTRICT
     );
-
-    CREATE INDEX IF NOT EXISTS "nex_rec_heads_subject_idx" ON "nex_reconciliation_case_heads" USING btree ("subject_domain", "subject_entity_type", "subject_entity_id");
 
     -- 3. CONTEXTUAL PRECEDENTS (Append-Only)
     CREATE TABLE IF NOT EXISTS "nex_contextual_precedents" (

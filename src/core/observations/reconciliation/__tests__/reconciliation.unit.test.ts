@@ -1,6 +1,6 @@
 /**
  * NEX+ · Testes Unitários Puros de Validadores, Coerência e Gates de Autoridade
- * Escopo 0.85 (Bloco 0.85D · Checkpoint 1)
+ * Escopo 0.85 (Bloco 0.85D · Micro-Hardening A)
  */
 
 import { describe, it } from 'node:test';
@@ -9,19 +9,21 @@ import type {
   ObservationSubject,
   ObservationRecord,
   ReviewEvent,
-  NonCanonicalReviewEvent,
   CanonicalPromotedReviewEvent,
+  CanonicalReclassifiedReviewEvent,
   OpenReconciliationCase,
   ResolvedReconciliationCase,
   ContextualPrecedent,
   HumanActor,
   MaxActor,
   SystemActor,
+  IntegrationActor,
 } from '../../contracts';
 import type { HumanAuthorizationDecision } from '../../../policy/contracts';
 import {
   assertValidReconciliationCase,
   assertReconciliationCaseCoherence,
+  assertReconciliationRevisionContinuity,
   assertValidContextualPrecedent,
   assertCanonicalPromotionAuthority,
 } from '../validators';
@@ -52,6 +54,11 @@ describe('Escopo 0.85D · Validadores Puros de Reconciliação & Autoridade (Sem
   const systemActor: SystemActor = {
     kind: 'system',
     component: 'reconciliation_engine',
+  };
+
+  const integrationActor: IntegrationActor = {
+    kind: 'integration',
+    provider: 'bling_connector',
   };
 
   describe('1. Validação Estrutural e de Coerência de ReconciliationCase', () => {
@@ -86,7 +93,61 @@ describe('Escopo 0.85D · Validadores Puros de Reconciliação & Autoridade (Sem
       );
     });
 
-    it('rejeita coerência quando observação referenciada pertence a subject divergente', () => {
+    it('A1: rejeita quando observação referenciada não existe', () => {
+      const caseObj: OpenReconciliationCase = {
+        caseId: 'case_unit_a1' as any,
+        subject: testSubject,
+        observationIds: ['obs_missing' as any],
+        reviewIds: [],
+        lifecycle: 'open',
+        status: 'open',
+        openedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      assert.throws(
+        () => assertReconciliationCaseCoherence(caseObj, [], []),
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseCoherenceError);
+          assert.equal(err.code, 'OBSERVATION_NOT_FOUND');
+          return true;
+        }
+      );
+    });
+
+    it('A2: rejeita quando review referenciada não existe', () => {
+      const caseObj: OpenReconciliationCase = {
+        caseId: 'case_unit_a2' as any,
+        subject: testSubject,
+        observationIds: ['obs_1' as any],
+        reviewIds: ['rev_missing' as any],
+        lifecycle: 'open',
+        status: 'open',
+        openedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      const obs1: ObservationRecord = {
+        observationId: 'obs_1' as any,
+        subject: testSubject,
+        observedClaim: 'Claim',
+        rawValue: {},
+        actor: humanActor,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      assert.throws(
+        () => assertReconciliationCaseCoherence(caseObj, [obs1], []),
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseCoherenceError);
+          assert.equal(err.code, 'REVIEW_NOT_FOUND');
+          return true;
+        }
+      );
+    });
+
+    it('A3: rejeita coerência quando observação referenciada pertence a subject divergente', () => {
       const caseObj: OpenReconciliationCase = {
         caseId: 'case_unit_3' as any,
         subject: testSubject,
@@ -118,30 +179,360 @@ describe('Escopo 0.85D · Validadores Puros de Reconciliação & Autoridade (Sem
         }
       );
     });
+
+    it('A4: rejeita quando review targets observação de outro subject', () => {
+      const caseObj: OpenReconciliationCase = {
+        caseId: 'case_unit_a4' as any,
+        subject: testSubject,
+        observationIds: ['obs_1' as any],
+        reviewIds: ['rev_1' as any],
+        lifecycle: 'open',
+        status: 'open',
+        openedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      const obs1: ObservationRecord = {
+        observationId: 'obs_1' as any,
+        subject: testSubject,
+        observedClaim: 'Claim',
+        rawValue: {},
+        actor: humanActor,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      const obsOtherSubject: ObservationRecord = {
+        observationId: 'obs_other' as any,
+        subject: { domain: 'other_domain', entityType: 'sku', entityId: 'SKU_888' },
+        observedClaim: 'Other Claim',
+        rawValue: {},
+        actor: humanActor,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      const rev1: ReviewEvent = {
+        reviewId: 'rev_1' as any,
+        actor: humanActor,
+        targetObservationIds: ['obs_other' as any],
+        decision: 'divergent',
+        justification: 'Comparison',
+        reviewedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      assert.throws(
+        () => assertReconciliationCaseCoherence(caseObj, [obs1, obsOtherSubject], [rev1]),
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseCoherenceError);
+          assert.equal(err.code, 'REVIEW_CROSS_SUBJECT_MISMATCH');
+          return true;
+        }
+      );
+    });
   });
 
-  describe('2. Validação de ContextualPrecedent', () => {
-    it('aceita precedente associado a revisão humana com justificativa', () => {
+  describe('2. Continuidade e Imutabilidade entre Revisões', () => {
+    const prevCase: OpenReconciliationCase = {
+      caseId: 'case_cont_1' as any,
+      subject: testSubject,
+      observationIds: ['obs_1' as any, 'obs_2' as any],
+      reviewIds: ['rev_1' as any],
+      lifecycle: 'open',
+      status: 'awaiting_evidence',
+      openedAt: '2026-08-21T23:00:00.000Z',
+    };
+
+    it('A5: rejeita quando subject é alterado no append', () => {
+      const mutatedSubjectCase: OpenReconciliationCase = {
+        ...prevCase,
+        subject: { domain: 'new_domain', entityType: 'sku', entityId: 'SKU_123' },
+      };
+
+      assert.throws(
+        () => assertReconciliationRevisionContinuity(prevCase, mutatedSubjectCase),
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseCoherenceError);
+          assert.equal(err.code, 'MUTATION_SUBJECT_PROHIBITED');
+          return true;
+        }
+      );
+    });
+
+    it('A6: rejeita quando openedAt é alterado no append', () => {
+      const mutatedOpenedAtCase: OpenReconciliationCase = {
+        ...prevCase,
+        openedAt: '2026-08-21T23:59:59.000Z',
+      };
+
+      assert.throws(
+        () => assertReconciliationRevisionContinuity(prevCase, mutatedOpenedAtCase),
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseCoherenceError);
+          assert.equal(err.code, 'MUTATION_OPENED_AT_PROHIBITED');
+          return true;
+        }
+      );
+    });
+
+    it('A7: rejeita quando observationId histórica é removida', () => {
+      const removedObsCase: OpenReconciliationCase = {
+        ...prevCase,
+        observationIds: ['obs_1' as any], // removeu obs_2!
+      };
+
+      assert.throws(
+        () => assertReconciliationRevisionContinuity(prevCase, removedObsCase),
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseCoherenceError);
+          assert.equal(err.code, 'HISTORICAL_OBSERVATIONS_CANNOT_BE_REMOVED');
+          return true;
+        }
+      );
+    });
+
+    it('A8: rejeita quando reviewId histórica é removida', () => {
+      const removedRevCase: OpenReconciliationCase = {
+        ...prevCase,
+        reviewIds: [], // removeu rev_1!
+      };
+
+      assert.throws(
+        () => assertReconciliationRevisionContinuity(prevCase, removedRevCase),
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseCoherenceError);
+          assert.equal(err.code, 'HISTORICAL_REVIEWS_CANNOT_BE_REMOVED');
+          return true;
+        }
+      );
+    });
+
+    it('A9: rejeita transição de resolved para open (não reabre)', () => {
+      const resolvedPrev: ResolvedReconciliationCase = {
+        caseId: 'case_resolved_1' as any,
+        subject: testSubject,
+        observationIds: ['obs_1' as any],
+        reviewIds: ['rev_1' as any],
+        lifecycle: 'resolved',
+        status: 'validated',
+        openedAt: '2026-08-21T23:00:00.000Z',
+        resolvedAt: '2026-08-21T23:30:00.000Z',
+        resolutionSummary: 'Validated completely',
+      };
+
+      const reopenedAttempt: OpenReconciliationCase = {
+        caseId: 'case_resolved_1' as any,
+        subject: testSubject,
+        observationIds: ['obs_1' as any, 'obs_new' as any],
+        reviewIds: ['rev_1' as any],
+        lifecycle: 'open',
+        status: 'divergent',
+        openedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      assert.throws(
+        () => assertReconciliationRevisionContinuity(resolvedPrev, reopenedAttempt),
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseCoherenceError);
+          assert.equal(err.code, 'RESOLVED_CASE_CANNOT_BE_REOPENED');
+          return true;
+        }
+      );
+    });
+  });
+
+  describe('3. Gates de Autoridade para Promoção Canônica (Fail-Closed)', () => {
+    const validHumanPromoReview: CanonicalPromotedReviewEvent = {
+      reviewId: 'rev_promo_human' as any,
+      actor: humanActor,
+      targetObservationIds: ['obs_1' as any],
+      decision: 'canonical_promoted',
+      canonicalEffect: {
+        action: 'promote',
+        targetCanonicalState: { price: 100 },
+      },
+      justification: 'Approved per certified manual review',
+      reviewedAt: '2026-08-21T23:00:00.000Z',
+    };
+
+    const validHumanReclassReview: CanonicalReclassifiedReviewEvent = {
+      reviewId: 'rev_reclass_human' as any,
+      actor: humanActor,
+      targetObservationIds: ['obs_1' as any],
+      decision: 'canonical_reclassified',
+      canonicalEffect: {
+        action: 'reclassify',
+        targetCanonicalState: { price: 120 },
+      },
+      justification: 'Reclassified price',
+      reviewedAt: '2026-08-21T23:00:00.000Z',
+    };
+
+    it('A14: canonical_promoted + canonical_promotion = permitido', () => {
+      const validAuth: HumanAuthorizationDecision = {
+        actorRef: humanActor.humanId,
+        operation: 'canonical_promotion',
+        verdict: 'authorized',
+        reasonCode: 'VALIDATED',
+        authorizedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      assert.doesNotThrow(() => assertCanonicalPromotionAuthority(validHumanPromoReview, validAuth));
+    });
+
+    it('A15: canonical_reclassified + canonical_reclassification = permitido', () => {
+      const validAuth: HumanAuthorizationDecision = {
+        actorRef: humanActor.humanId,
+        operation: 'canonical_reclassification',
+        verdict: 'authorized',
+        reasonCode: 'VALIDATED',
+        authorizedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      assert.doesNotThrow(() => assertCanonicalPromotionAuthority(validHumanReclassReview, validAuth));
+    });
+
+    it('A16: combinações cruzadas e aliases (promote / reclassify / cruzado) são rejeitados', () => {
+      // 1. canonical_promoted com canonical_reclassification
+      const crossAuth1: HumanAuthorizationDecision = {
+        actorRef: humanActor.humanId,
+        operation: 'canonical_reclassification',
+        verdict: 'authorized',
+        reasonCode: 'VALIDATED',
+      };
+      assert.throws(
+        () => assertCanonicalPromotionAuthority(validHumanPromoReview, crossAuth1),
+        (err: any) => {
+          assert.ok(err instanceof CanonicalPromotionAuthorityError);
+          assert.equal(err.code, 'OPERATION_MISMATCH');
+          return true;
+        }
+      );
+
+      // 2. canonical_reclassified com canonical_promotion
+      const crossAuth2: HumanAuthorizationDecision = {
+        actorRef: humanActor.humanId,
+        operation: 'canonical_promotion',
+        verdict: 'authorized',
+        reasonCode: 'VALIDATED',
+      };
+      assert.throws(
+        () => assertCanonicalPromotionAuthority(validHumanReclassReview, crossAuth2),
+        (err: any) => {
+          assert.ok(err instanceof CanonicalPromotionAuthorityError);
+          assert.equal(err.code, 'OPERATION_MISMATCH');
+          return true;
+        }
+      );
+
+      // 3. alias genérico 'promote' rejeitado
+      const aliasAuth1: HumanAuthorizationDecision = {
+        actorRef: humanActor.humanId,
+        operation: 'promote',
+        verdict: 'authorized',
+        reasonCode: 'VALIDATED',
+      };
+      assert.throws(
+        () => assertCanonicalPromotionAuthority(validHumanPromoReview, aliasAuth1),
+        (err: any) => {
+          assert.ok(err instanceof CanonicalPromotionAuthorityError);
+          assert.equal(err.code, 'OPERATION_MISMATCH');
+          return true;
+        }
+      );
+
+      // 4. alias genérico 'reclassify' rejeitado
+      const aliasAuth2: HumanAuthorizationDecision = {
+        actorRef: humanActor.humanId,
+        operation: 'reclassify',
+        verdict: 'authorized',
+        reasonCode: 'VALIDATED',
+      };
+      assert.throws(
+        () => assertCanonicalPromotionAuthority(validHumanReclassReview, aliasAuth2),
+        (err: any) => {
+          assert.ok(err instanceof CanonicalPromotionAuthorityError);
+          assert.equal(err.code, 'OPERATION_MISMATCH');
+          return true;
+        }
+      );
+    });
+
+    it('A19: promoção canônica tentada por MAX, System ou Integration é estritamente bloqueada', () => {
+      const maxReview: any = {
+        ...validHumanPromoReview,
+        actor: maxActor,
+      };
+      const sysReview: any = {
+        ...validHumanPromoReview,
+        actor: systemActor,
+      };
+      const integReview: any = {
+        ...validHumanPromoReview,
+        actor: integrationActor,
+      };
+
+      const validAuth: HumanAuthorizationDecision = {
+        actorRef: humanActor.humanId,
+        operation: 'canonical_promotion',
+        verdict: 'authorized',
+        reasonCode: 'VALIDATED',
+      };
+
+      assert.throws(
+        () => assertCanonicalPromotionAuthority(maxReview, validAuth),
+        (err: any) => {
+          assert.ok(err instanceof CanonicalPromotionAuthorityError);
+          assert.equal(err.code, 'UNAUTHORIZED_ACTOR_KIND');
+          return true;
+        }
+      );
+
+      assert.throws(
+        () => assertCanonicalPromotionAuthority(sysReview, validAuth),
+        (err: any) => {
+          assert.ok(err instanceof CanonicalPromotionAuthorityError);
+          assert.equal(err.code, 'UNAUTHORIZED_ACTOR_KIND');
+          return true;
+        }
+      );
+
+      assert.throws(
+        () => assertCanonicalPromotionAuthority(integReview, validAuth),
+        (err: any) => {
+          assert.ok(err instanceof CanonicalPromotionAuthorityError);
+          assert.equal(err.code, 'UNAUTHORIZED_ACTOR_KIND');
+          return true;
+        }
+      );
+    });
+  });
+
+  describe('4. ContextualPrecedent', () => {
+    it('A17: precedente de review humana com actor_payload real é aceito', () => {
       const review: ReviewEvent = {
         reviewId: 'rev_human_1' as any,
         actor: humanActor,
         targetObservationIds: ['obs_1' as any],
         decision: 'corroborated',
-        justification: 'Vendor discount approved per terms',
+        justification: 'Vendor agreement discount rule',
         reviewedAt: '2026-08-21T23:00:00.000Z',
       };
 
       const precedent: ContextualPrecedent = {
         precedentId: 'prec_1' as any,
         reviewEventId: 'rev_human_1' as any,
-        contextSummary: 'Vendor discount rule',
-        applicabilityConditions: ['term == net30'],
+        contextSummary: 'Discount rule',
+        applicabilityConditions: ['condition == true'],
       };
 
       assert.doesNotThrow(() => assertValidContextualPrecedent(precedent, review));
     });
 
-    it('rejeita precedente associado a revisão de MAX ou System', () => {
+    it('A19: precedente a partir de MAX/System/Integration é rejeitado', () => {
       const maxReview: ReviewEvent = {
         reviewId: 'rev_max_1' as any,
         actor: maxActor,
@@ -162,162 +553,6 @@ describe('Escopo 0.85D · Validadores Puros de Reconciliação & Autoridade (Sem
         () => assertValidContextualPrecedent(precedent, maxReview),
         ContextualPrecedentInvalidReviewError
       );
-    });
-  });
-
-  describe('3. Gate de Autoridade para Promoção Canônica (Fail-Closed)', () => {
-    it('bloqueia estritamente tentativa de promoção com ator MAX', () => {
-      const review: any = {
-        reviewId: 'rev_promo_max',
-        actor: maxActor,
-        decision: 'canonical_promoted',
-        justification: 'MAX trying to promote',
-        reviewedAt: '2026-08-21T23:00:00.000Z',
-      };
-
-      const auth: HumanAuthorizationDecision = {
-        actorRef: 'user_master_lucas',
-        operation: 'canonical_promotion',
-        verdict: 'authorized',
-        reasonCode: 'OVERRIDE',
-        authorizedAt: '2026-08-21T23:00:00.000Z',
-      };
-
-      assert.throws(
-        () => assertCanonicalPromotionAuthority(review, auth),
-        (err: any) => {
-          assert.ok(err instanceof CanonicalPromotionAuthorityError);
-          assert.equal(err.code, 'UNAUTHORIZED_ACTOR_KIND');
-          return true;
-        }
-      );
-    });
-
-    it('bloqueia tentativa de promoção com ator System', () => {
-      const review: any = {
-        reviewId: 'rev_promo_sys',
-        actor: systemActor,
-        decision: 'canonical_promoted',
-        justification: 'System trying to promote',
-        reviewedAt: '2026-08-21T23:00:00.000Z',
-      };
-
-      const auth: HumanAuthorizationDecision = {
-        actorRef: 'user_master_lucas',
-        operation: 'canonical_promotion',
-        verdict: 'authorized',
-        reasonCode: 'OVERRIDE',
-        authorizedAt: '2026-08-21T23:00:00.000Z',
-      };
-
-      assert.throws(
-        () => assertCanonicalPromotionAuthority(review, auth),
-        (err: any) => {
-          assert.ok(err instanceof CanonicalPromotionAuthorityError);
-          assert.equal(err.code, 'UNAUTHORIZED_ACTOR_KIND');
-          return true;
-        }
-      );
-    });
-
-    it('bloqueia quando HumanAuthorizationDecision está ausente ou denied', () => {
-      const review: CanonicalPromotedReviewEvent = {
-        reviewId: 'rev_promo_human' as any,
-        actor: humanActor,
-        targetObservationIds: ['obs_1' as any],
-        decision: 'canonical_promoted',
-        canonicalEffect: {
-          action: 'promote',
-          targetCanonicalState: { price: 100 },
-        },
-        justification: 'Human promotion',
-        reviewedAt: '2026-08-21T23:00:00.000Z',
-      };
-
-      // Ausente
-      assert.throws(
-        () => assertCanonicalPromotionAuthority(review, undefined),
-        (err: any) => {
-          assert.ok(err instanceof CanonicalPromotionAuthorityError);
-          assert.equal(err.code, 'MISSING_AUTHORIZATION');
-          return true;
-        }
-      );
-
-      // Denied
-      const deniedAuth: HumanAuthorizationDecision = {
-        actorRef: humanActor.humanId,
-        operation: 'canonical_promotion',
-        verdict: 'denied',
-        reasonCode: 'SECURITY_GATE_REJECTION',
-        authorizedAt: '2026-08-21T23:00:00.000Z',
-      };
-
-      assert.throws(
-        () => assertCanonicalPromotionAuthority(review, deniedAuth),
-        (err: any) => {
-          assert.ok(err instanceof CanonicalPromotionAuthorityError);
-          assert.equal(err.code, 'AUTHORIZATION_DENIED');
-          return true;
-        }
-      );
-    });
-
-    it('bloqueia quando actorRef da autorização diverge do humanId do review', () => {
-      const review: CanonicalPromotedReviewEvent = {
-        reviewId: 'rev_promo_human' as any,
-        actor: humanActor,
-        targetObservationIds: ['obs_1' as any],
-        decision: 'canonical_promoted',
-        canonicalEffect: {
-          action: 'promote',
-          targetCanonicalState: { price: 100 },
-        },
-        justification: 'Human promotion',
-        reviewedAt: '2026-08-21T23:00:00.000Z',
-      };
-
-      const mismatchedAuth: HumanAuthorizationDecision = {
-        actorRef: 'different_user_123',
-        operation: 'canonical_promotion',
-        verdict: 'authorized',
-        reasonCode: 'VALID',
-        authorizedAt: '2026-08-21T23:00:00.000Z',
-      };
-
-      assert.throws(
-        () => assertCanonicalPromotionAuthority(review, mismatchedAuth),
-        (err: any) => {
-          assert.ok(err instanceof CanonicalPromotionAuthorityError);
-          assert.equal(err.code, 'ACTOR_MISMATCH');
-          return true;
-        }
-      );
-    });
-
-    it('permite promoção canônica quando todos os critérios de autoridade humana são satisfeitos', () => {
-      const review: CanonicalPromotedReviewEvent = {
-        reviewId: 'rev_promo_human' as any,
-        actor: humanActor,
-        targetObservationIds: ['obs_1' as any],
-        decision: 'canonical_promoted',
-        canonicalEffect: {
-          action: 'promote',
-          targetCanonicalState: { price: 100 },
-        },
-        justification: 'Approved per certified manual review',
-        reviewedAt: '2026-08-21T23:00:00.000Z',
-      };
-
-      const validAuth: HumanAuthorizationDecision = {
-        actorRef: humanActor.humanId,
-        operation: 'canonical_promotion',
-        verdict: 'authorized',
-        reasonCode: 'APPROVED',
-        authorizedAt: '2026-08-21T23:00:00.000Z',
-      };
-
-      assert.doesNotThrow(() => assertCanonicalPromotionAuthority(review, validAuth));
     });
   });
 });

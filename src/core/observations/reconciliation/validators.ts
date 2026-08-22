@@ -1,6 +1,6 @@
 /**
  * NEX+ · Validadores de Reconciliação, Precedentes & Gates de Autoridade
- * Escopo 0.85 (Bloco 0.85D)
+ * Escopo 0.85 (Bloco 0.85D · Micro-Hardening A)
  */
 
 import type {
@@ -33,6 +33,9 @@ export function assertValidReconciliationCase(caseObj: ReconciliationCase): void
   }
 }
 
+/**
+ * Validação de integridade e coerência entre um ReconciliationCase e as entidades referenciadas no banco.
+ */
 export function assertReconciliationCaseCoherence(
   caseObj: ReconciliationCase,
   observations: readonly ObservationRecord[],
@@ -40,7 +43,7 @@ export function assertReconciliationCaseCoherence(
 ): void {
   assertValidReconciliationCase(caseObj);
 
-  // 1. Todas as observações referenciadas devem existir
+  // 1. Todas as observações referenciadas diretamente pelo caso devem existir e pertencer ao mesmo subject
   const obsMap = new Map<string, ObservationRecord>();
   for (const obs of observations) {
     obsMap.set(obs.observationId, obs);
@@ -55,7 +58,6 @@ export function assertReconciliationCaseCoherence(
       );
     }
 
-    // Todas as observações devem pertencer ao mesmo subject do caso
     if (
       obs.subject.domain !== caseObj.subject.domain ||
       obs.subject.entityType !== caseObj.subject.entityType ||
@@ -68,7 +70,7 @@ export function assertReconciliationCaseCoherence(
     }
   }
 
-  // 2. Todas as reviews referenciadas devem existir
+  // 2. Todas as reviews referenciadas pelo caso devem existir e ter seus alvos coerentes com o subject do caso
   const revMap = new Map<string, ReviewEvent>();
   for (const rev of reviews) {
     revMap.set(rev.reviewId, rev);
@@ -80,6 +82,108 @@ export function assertReconciliationCaseCoherence(
       throw new ReconciliationCaseCoherenceError(
         'REVIEW_NOT_FOUND',
         `ReconciliationCase '${caseObj.caseId}' references non-existent reviewId '${revId}'.`
+      );
+    }
+
+    // Cada targetObservationId da review deve existir e pertencer ao mesmo subject do caso
+    for (const targetObsId of rev.targetObservationIds) {
+      const targetObs = obsMap.get(targetObsId);
+      if (!targetObs) {
+        throw new ReconciliationCaseCoherenceError(
+          'REVIEW_OBSERVATION_NOT_FOUND',
+          `Review '${revId}' in case '${caseObj.caseId}' targets observation '${targetObsId}', which is not present among the case's verified observations.`
+        );
+      }
+
+      if (
+        targetObs.subject.domain !== caseObj.subject.domain ||
+        targetObs.subject.entityType !== caseObj.subject.entityType ||
+        targetObs.subject.entityId !== caseObj.subject.entityId
+      ) {
+        throw new ReconciliationCaseCoherenceError(
+          'REVIEW_CROSS_SUBJECT_MISMATCH',
+          `Review '${revId}' targets observation '${targetObsId}' from another subject ('${targetObs.subject.domain}:${targetObs.subject.entityType}:${targetObs.subject.entityId}').`
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Valida as regras de continuidade e imutabilidade histórica entre a revisão anterior e a nova revisão.
+ */
+export function assertReconciliationRevisionContinuity(
+  previousCase: ReconciliationCase,
+  newCase: ReconciliationCase
+): void {
+  // 1. caseId imutável
+  if (newCase.caseId !== previousCase.caseId) {
+    throw new ReconciliationCaseCoherenceError(
+      'MUTATION_CASE_ID_PROHIBITED',
+      `Cannot change caseId from '${previousCase.caseId}' to '${newCase.caseId}'.`
+    );
+  }
+
+  // 2. subject imutável integralmente
+  if (
+    newCase.subject.domain !== previousCase.subject.domain ||
+    newCase.subject.entityType !== previousCase.subject.entityType ||
+    newCase.subject.entityId !== previousCase.subject.entityId
+  ) {
+    throw new ReconciliationCaseCoherenceError(
+      'MUTATION_SUBJECT_PROHIBITED',
+      `Cannot mutate subject during reconciliation revision append. Expected '${previousCase.subject.domain}:${previousCase.subject.entityType}:${previousCase.subject.entityId}', got '${newCase.subject.domain}:${newCase.subject.entityType}:${newCase.subject.entityId}'.`
+    );
+  }
+
+  // 3. openedAt imutável
+  if (newCase.openedAt !== previousCase.openedAt) {
+    throw new ReconciliationCaseCoherenceError(
+      'MUTATION_OPENED_AT_PROHIBITED',
+      `Cannot mutate openedAt timestamp during reconciliation revision append. Expected '${previousCase.openedAt}', got '${newCase.openedAt}'.`
+    );
+  }
+
+  // 4. Resolved NÃO reabre
+  if (previousCase.lifecycle === 'resolved' && newCase.lifecycle === 'open') {
+    throw new ReconciliationCaseCoherenceError(
+      'RESOLVED_CASE_CANNOT_BE_REOPENED',
+      `ReconciliationCase '${previousCase.caseId}' is already resolved and cannot be reopened to lifecycle 'open'.`
+    );
+  }
+
+  // 5. Histórico cumulativo de observationIds: não pode remover referências anteriores
+  const newObsSet = new Set(newCase.observationIds);
+  if (newObsSet.size !== newCase.observationIds.length) {
+    throw new ReconciliationCaseCoherenceError(
+      'DUPLICATE_OBSERVATION_REFERENCES',
+      `ReconciliationCase contains duplicate observationIds.`
+    );
+  }
+
+  for (const prevObsId of previousCase.observationIds) {
+    if (!newObsSet.has(prevObsId)) {
+      throw new ReconciliationCaseCoherenceError(
+        'HISTORICAL_OBSERVATIONS_CANNOT_BE_REMOVED',
+        `Historical observationId '${prevObsId}' was removed in new revision. Historical references must be monotonically preserved.`
+      );
+    }
+  }
+
+  // 6. Histórico cumulativo de reviewIds: não pode remover referências anteriores
+  const newRevSet = new Set(newCase.reviewIds);
+  if (newRevSet.size !== newCase.reviewIds.length) {
+    throw new ReconciliationCaseCoherenceError(
+      'DUPLICATE_REVIEW_REFERENCES',
+      `ReconciliationCase contains duplicate reviewIds.`
+    );
+  }
+
+  for (const prevRevId of previousCase.reviewIds) {
+    if (!newRevSet.has(prevRevId)) {
+      throw new ReconciliationCaseCoherenceError(
+        'HISTORICAL_REVIEWS_CANNOT_BE_REMOVED',
+        `Historical reviewId '${prevRevId}' was removed in new revision. Historical references must be monotonically preserved.`
       );
     }
   }
@@ -97,12 +201,29 @@ export function assertValidContextualPrecedent(
     );
   }
 
+  if (sourceReview.reviewId !== precedent.reviewEventId) {
+    throw new ContextualPrecedentInvalidReviewError(
+      precedent.precedentId,
+      precedent.reviewEventId,
+      `Precedent reviewEventId '${precedent.reviewEventId}' does not match source reviewId '${sourceReview.reviewId}'.`
+    );
+  }
+
   // Precedente exige que a revisão fonte seja de um ator HUMANO
   if (sourceReview.actor.kind !== 'human') {
     throw new ContextualPrecedentInvalidReviewError(
       precedent.precedentId,
       precedent.reviewEventId,
       `ContextualPrecedent can only be established from a human review. Review '${sourceReview.reviewId}' was performed by '${sourceReview.actor.kind}'.`
+    );
+  }
+
+  const humanActor = sourceReview.actor as HumanActor;
+  if (!isNonEmptyString(humanActor.humanId)) {
+    throw new ContextualPrecedentInvalidReviewError(
+      precedent.precedentId,
+      precedent.reviewEventId,
+      `Source review human actor must have a valid non-empty humanId.`
     );
   }
 
@@ -151,15 +272,25 @@ export function assertCanonicalPromotionAuthority(
     );
   }
 
-  if (
-    authorization.operation !== 'canonical_promotion' &&
-    authorization.operation !== 'canonical_reclassification' &&
-    authorization.operation !== 'promote' &&
-    authorization.operation !== 'reclassify'
-  ) {
+  // 3. Correspondência EXATA da operação (sem aliases ambíguos)
+  if (review.decision === 'canonical_promoted') {
+    if (authorization.operation !== 'canonical_promotion') {
+      throw new CanonicalPromotionAuthorityError(
+        'OPERATION_MISMATCH',
+        `Review decision 'canonical_promoted' strictly requires authorization operation 'canonical_promotion'. Got '${authorization.operation}'.`
+      );
+    }
+  } else if (review.decision === 'canonical_reclassified') {
+    if (authorization.operation !== 'canonical_reclassification') {
+      throw new CanonicalPromotionAuthorityError(
+        'OPERATION_MISMATCH',
+        `Review decision 'canonical_reclassified' strictly requires authorization operation 'canonical_reclassification'. Got '${authorization.operation}'.`
+      );
+    }
+  } else {
     throw new CanonicalPromotionAuthorityError(
-      'OPERATION_MISMATCH',
-      `Authorization decision operation '${authorization.operation}' does not match canonical promotion operation.`
+      'INVALID_CANONICAL_DECISION',
+      `Decision '${review.decision}' is not a valid canonical promotion decision.`
     );
   }
 

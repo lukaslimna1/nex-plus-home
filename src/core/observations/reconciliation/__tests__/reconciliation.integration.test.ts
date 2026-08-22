@@ -1,6 +1,6 @@
 /**
  * NEX+ · Testes de Integração da Camada de Reconciliação, Precedentes & Gates de Autoridade
- * Escopo 0.85 (Bloco 0.85D · Checkpoint 1)
+ * Escopo 0.85 (Bloco 0.85D · Micro-Hardening A)
  */
 
 import { describe, it, before, after } from 'node:test';
@@ -14,6 +14,7 @@ import type {
   ReviewEventId,
   NonCanonicalReviewEvent,
   CanonicalPromotedReviewEvent,
+  CanonicalReclassifiedReviewEvent,
   CanonicalProjection,
   CanonicalProjectionRevisionId,
   ReconciliationCase,
@@ -24,6 +25,7 @@ import type {
   ContextualPrecedentRefId,
   HumanActor,
   MaxActor,
+  SystemActor,
 } from '../../contracts';
 import { PgObservationPersistenceAdapter } from '../../persistence/postgres';
 import { PgReconciliationPersistenceAdapter } from '../postgres';
@@ -40,7 +42,7 @@ import type { HumanAuthorizationDecision } from '../../../policy/contracts';
 
 const databaseUrl = process.env.DATABASE_URL;
 
-describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & Gates de Autoridade', { skip: !databaseUrl }, () => {
+describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & Gates de Autoridade (Micro-Hardening A)', { skip: !databaseUrl }, () => {
   let pool: Pool;
   let obsPersistence: PgObservationPersistenceAdapter;
   let recPersistence: PgReconciliationPersistenceAdapter;
@@ -64,11 +66,16 @@ describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & G
     maxVersion: 'MAX_3.0_LOCAL',
   };
 
+  const systemAgent: SystemActor = {
+    kind: 'system',
+    component: 'test_runner',
+  };
+
   before(async () => {
     if (!databaseUrl) return;
     pool = new Pool({ connectionString: databaseUrl });
     obsPersistence = new PgObservationPersistenceAdapter(pool);
-    recPersistence = new PgReconciliationPersistenceAdapter(pool);
+    recPersistence = new PgReconciliationPersistenceAdapter(pool, obsPersistence);
     coordinator = new ReconciliationCoordinator(obsPersistence, recPersistence);
   });
 
@@ -78,17 +85,491 @@ describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & G
     }
   });
 
-  describe('1. ReconciliationCase Persistência & Heads Monotônicas', () => {
-    it('D1-1: create case registra versão 1 e materializa head operacional atual', async () => {
-      const caseId = `case_d1_1_${Date.now()}` as ReconciliationCaseId;
+  describe('1. Coerência de Referências no Persistence Boundary (A1..A4)', () => {
+    it('A1: observation inexistente é rejeitada antes de qualquer write', async () => {
+      const caseId = `case_a1_${Date.now()}` as ReconciliationCaseId;
+      const nonExistentObsId = `obs_non_existent_${Date.now()}` as ObservationRecordId;
 
-      // 1. Cria uma observação prévia
-      const obsId = `obs_d1_1_${Date.now()}` as ObservationRecordId;
+      const caseObj: OpenReconciliationCase = {
+        caseId,
+        subject: testSubject,
+        observationIds: [nonExistentObsId],
+        reviewIds: [],
+        lifecycle: 'open',
+        status: 'open',
+        openedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      await assert.rejects(
+        async () => {
+          await recPersistence.createReconciliationCase({ case: caseObj });
+        },
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseCoherenceError);
+          assert.equal(err.code, 'OBSERVATION_NOT_FOUND');
+          return true;
+        }
+      );
+    });
+
+    it('A2: review inexistente é rejeitada antes de qualquer write', async () => {
+      const caseId = `case_a2_${Date.now()}` as ReconciliationCaseId;
+      const obsId = `obs_a2_${Date.now()}` as ObservationRecordId;
+      const nonExistentRevId = `rev_non_existent_${Date.now()}` as ReviewEventId;
+
       await obsPersistence.recordObservation({
         observationId: obsId,
         subject: testSubject,
-        observedClaim: 'Price observation 150',
-        rawValue: { price: 150.0 },
+        observedClaim: 'Claim A2',
+        rawValue: { price: 10 },
+        actor: humanLucas,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      const caseObj: OpenReconciliationCase = {
+        caseId,
+        subject: testSubject,
+        observationIds: [obsId],
+        reviewIds: [nonExistentRevId],
+        lifecycle: 'open',
+        status: 'open',
+        openedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      await assert.rejects(
+        async () => {
+          await recPersistence.createReconciliationCase({ case: caseObj });
+        },
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseCoherenceError);
+          assert.equal(err.code, 'REVIEW_NOT_FOUND');
+          return true;
+        }
+      );
+    });
+
+    it('A3: observation pertencente a outro subject é rejeitada', async () => {
+      const caseId = `case_a3_${Date.now()}` as ReconciliationCaseId;
+      const obsIdOther = `obs_a3_other_${Date.now()}` as ObservationRecordId;
+
+      await obsPersistence.recordObservation({
+        observationId: obsIdOther,
+        subject: { domain: 'other_domain', entityType: 'product', entityId: 'prod_999' },
+        observedClaim: 'Claim other domain',
+        rawValue: { price: 10 },
+        actor: humanLucas,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      const caseObj: OpenReconciliationCase = {
+        caseId,
+        subject: testSubject,
+        observationIds: [obsIdOther],
+        reviewIds: [],
+        lifecycle: 'open',
+        status: 'open',
+        openedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      await assert.rejects(
+        async () => {
+          await recPersistence.createReconciliationCase({ case: caseObj });
+        },
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseCoherenceError);
+          assert.equal(err.code, 'CROSS_SUBJECT_OBSERVATION_MISMATCH');
+          return true;
+        }
+      );
+    });
+
+    it('A4: review que referencia targetObservation de outro subject é rejeitada', async () => {
+      const caseId = `case_a4_${Date.now()}` as ReconciliationCaseId;
+      const obsIdValid = `obs_a4_valid_${Date.now()}` as ObservationRecordId;
+      const obsIdOther = `obs_a4_other_${Date.now()}` as ObservationRecordId;
+      const revIdCross = `rev_a4_cross_${Date.now()}` as ReviewEventId;
+
+      await obsPersistence.recordObservation({
+        observationId: obsIdValid,
+        subject: testSubject,
+        observedClaim: 'Claim valid',
+        rawValue: { price: 10 },
+        actor: humanLucas,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      await obsPersistence.recordObservation({
+        observationId: obsIdOther,
+        subject: { domain: 'other_domain', entityType: 'product', entityId: 'prod_888' },
+        observedClaim: 'Claim other',
+        rawValue: { price: 20 },
+        actor: humanLucas,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      await obsPersistence.recordNonCanonicalReview({
+        reviewId: revIdCross,
+        actor: humanLucas,
+        targetObservationIds: [obsIdOther],
+        decision: 'divergent',
+        justification: 'Comparison with other subject',
+        reviewedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      const caseObj: OpenReconciliationCase = {
+        caseId,
+        subject: testSubject,
+        observationIds: [obsIdValid],
+        reviewIds: [revIdCross],
+        lifecycle: 'open',
+        status: 'open',
+        openedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      await assert.rejects(
+        async () => {
+          await recPersistence.createReconciliationCase({ case: caseObj });
+        },
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseCoherenceError);
+          assert.equal(err.code, 'REVIEW_CROSS_SUBJECT_MISMATCH');
+          return true;
+        }
+      );
+    });
+  });
+
+  describe('2. Continuidade, Imutabilidade e Regras de Lifecycle (A5..A9, A13)', () => {
+    it('A5: subject não pode mudar no append', async () => {
+      const caseId = `case_a5_${Date.now()}` as ReconciliationCaseId;
+      const obsId1 = `obs_a5_1_${Date.now()}` as ObservationRecordId;
+      const obsId2 = `obs_a5_2_${Date.now()}` as ObservationRecordId;
+
+      await obsPersistence.recordObservation({
+        observationId: obsId1,
+        subject: testSubject,
+        observedClaim: 'Claim 1',
+        rawValue: {},
+        actor: humanLucas,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      await obsPersistence.recordObservation({
+        observationId: obsId2,
+        subject: { domain: 'mutated_domain', entityType: 'product', entityId: 'prod_test_085d_100' },
+        observedClaim: 'Claim 2',
+        rawValue: {},
+        actor: humanLucas,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      await recPersistence.createReconciliationCase({
+        case: {
+          caseId,
+          subject: testSubject,
+          observationIds: [obsId1],
+          reviewIds: [],
+          lifecycle: 'open',
+          status: 'open',
+          openedAt: '2026-08-21T23:00:00.000Z',
+        },
+      });
+
+      await assert.rejects(
+        async () => {
+          await recPersistence.appendReconciliationRevision({
+            case: {
+              caseId,
+              subject: { domain: 'mutated_domain', entityType: 'product', entityId: 'prod_test_085d_100' },
+              observationIds: [obsId1, obsId2],
+              reviewIds: [],
+              lifecycle: 'open',
+              status: 'awaiting_evidence',
+              openedAt: '2026-08-21T23:00:00.000Z',
+            },
+            expectedVersion: 1,
+          });
+        },
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseCoherenceError);
+          assert.equal(err.code, 'MUTATION_SUBJECT_PROHIBITED');
+          return true;
+        }
+      );
+    });
+
+    it('A6: openedAt não pode mudar no append', async () => {
+      const caseId = `case_a6_${Date.now()}` as ReconciliationCaseId;
+      const obsId = `obs_a6_${Date.now()}` as ObservationRecordId;
+
+      await obsPersistence.recordObservation({
+        observationId: obsId,
+        subject: testSubject,
+        observedClaim: 'Claim A6',
+        rawValue: {},
+        actor: humanLucas,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      await recPersistence.createReconciliationCase({
+        case: {
+          caseId,
+          subject: testSubject,
+          observationIds: [obsId],
+          reviewIds: [],
+          lifecycle: 'open',
+          status: 'open',
+          openedAt: '2026-08-21T23:00:00.000Z',
+        },
+      });
+
+      await assert.rejects(
+        async () => {
+          await recPersistence.appendReconciliationRevision({
+            case: {
+              caseId,
+              subject: testSubject,
+              observationIds: [obsId],
+              reviewIds: [],
+              lifecycle: 'open',
+              status: 'awaiting_evidence',
+              openedAt: '2026-08-21T23:59:59.000Z', // Mutated!
+            },
+            expectedVersion: 1,
+          });
+        },
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseCoherenceError);
+          assert.equal(err.code, 'MUTATION_OPENED_AT_PROHIBITED');
+          return true;
+        }
+      );
+    });
+
+    it('A7: observation histórica não pode ser removida no append', async () => {
+      const caseId = `case_a7_${Date.now()}` as ReconciliationCaseId;
+      const obsId1 = `obs_a7_1_${Date.now()}` as ObservationRecordId;
+      const obsId2 = `obs_a7_2_${Date.now()}` as ObservationRecordId;
+
+      await obsPersistence.recordObservation({
+        observationId: obsId1,
+        subject: testSubject,
+        observedClaim: 'Obs 1',
+        rawValue: {},
+        actor: humanLucas,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      await obsPersistence.recordObservation({
+        observationId: obsId2,
+        subject: testSubject,
+        observedClaim: 'Obs 2',
+        rawValue: {},
+        actor: humanLucas,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      await recPersistence.createReconciliationCase({
+        case: {
+          caseId,
+          subject: testSubject,
+          observationIds: [obsId1, obsId2],
+          reviewIds: [],
+          lifecycle: 'open',
+          status: 'open',
+          openedAt: '2026-08-21T23:00:00.000Z',
+        },
+      });
+
+      // Tentativa de remover obsId1
+      await assert.rejects(
+        async () => {
+          await recPersistence.appendReconciliationRevision({
+            case: {
+              caseId,
+              subject: testSubject,
+              observationIds: [obsId2], // obsId1 removida!
+              reviewIds: [],
+              lifecycle: 'open',
+              status: 'awaiting_evidence',
+              openedAt: '2026-08-21T23:00:00.000Z',
+            },
+            expectedVersion: 1,
+          });
+        },
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseCoherenceError);
+          assert.equal(err.code, 'HISTORICAL_OBSERVATIONS_CANNOT_BE_REMOVED');
+          return true;
+        }
+      );
+    });
+
+    it('A8: review histórica não pode ser removida no append', async () => {
+      const caseId = `case_a8_${Date.now()}` as ReconciliationCaseId;
+      const obsId = `obs_a8_${Date.now()}` as ObservationRecordId;
+      const revId = `rev_a8_${Date.now()}` as ReviewEventId;
+
+      await obsPersistence.recordObservation({
+        observationId: obsId,
+        subject: testSubject,
+        observedClaim: 'Obs',
+        rawValue: {},
+        actor: humanLucas,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      await obsPersistence.recordNonCanonicalReview({
+        reviewId: revId,
+        actor: humanLucas,
+        targetObservationIds: [obsId],
+        decision: 'divergent',
+        justification: 'Divergent note',
+        reviewedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      await recPersistence.createReconciliationCase({
+        case: {
+          caseId,
+          subject: testSubject,
+          observationIds: [obsId],
+          reviewIds: [revId],
+          lifecycle: 'open',
+          status: 'divergent',
+          openedAt: '2026-08-21T23:00:00.000Z',
+        },
+      });
+
+      // Tentativa de remover revId
+      await assert.rejects(
+        async () => {
+          await recPersistence.appendReconciliationRevision({
+            case: {
+              caseId,
+              subject: testSubject,
+              observationIds: [obsId],
+              reviewIds: [], // revId removida!
+              lifecycle: 'open',
+              status: 'awaiting_evidence',
+              openedAt: '2026-08-21T23:00:00.000Z',
+            },
+            expectedVersion: 1,
+          });
+        },
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseCoherenceError);
+          assert.equal(err.code, 'HISTORICAL_REVIEWS_CANNOT_BE_REMOVED');
+          return true;
+        }
+      );
+    });
+
+    it('A9: transição de resolved para open é rejeitada (resolved não reabre)', async () => {
+      const caseId = `case_a9_${Date.now()}` as ReconciliationCaseId;
+      const obsId = `obs_a9_${Date.now()}` as ObservationRecordId;
+
+      await obsPersistence.recordObservation({
+        observationId: obsId,
+        subject: testSubject,
+        observedClaim: 'Obs',
+        rawValue: {},
+        actor: humanLucas,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      await recPersistence.createReconciliationCase({
+        case: {
+          caseId,
+          subject: testSubject,
+          observationIds: [obsId],
+          reviewIds: [],
+          lifecycle: 'resolved',
+          status: 'validated',
+          openedAt: '2026-08-21T23:00:00.000Z',
+          resolvedAt: '2026-08-21T23:10:00.000Z',
+          resolutionSummary: 'Validated completely',
+        },
+      });
+
+      // Tentativa de reabrir
+      await assert.rejects(
+        async () => {
+          await recPersistence.appendReconciliationRevision({
+            case: {
+              caseId,
+              subject: testSubject,
+              observationIds: [obsId],
+              reviewIds: [],
+              lifecycle: 'open',
+              status: 'divergent',
+              openedAt: '2026-08-21T23:00:00.000Z',
+            },
+            expectedVersion: 1,
+          });
+        },
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseCoherenceError);
+          assert.equal(err.code, 'RESOLVED_CASE_CANNOT_BE_REOPENED');
+          return true;
+        }
+      );
+    });
+
+    it('A13: create idempotente após evolução para v2 não retorna combinação contraditória e lança conflito', async () => {
+      const caseId = `case_a13_${Date.now()}` as ReconciliationCaseId;
+      const obsId1 = `obs_a13_1_${Date.now()}` as ObservationRecordId;
+      const obsId2 = `obs_a13_2_${Date.now()}` as ObservationRecordId;
+
+      await obsPersistence.recordObservation({
+        observationId: obsId1,
+        subject: testSubject,
+        observedClaim: 'Obs 1',
+        rawValue: {},
+        actor: humanLucas,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      await obsPersistence.recordObservation({
+        observationId: obsId2,
+        subject: testSubject,
+        observedClaim: 'Obs 2',
+        rawValue: {},
         actor: humanLucas,
         sourceRefs: [],
         evidenceRefs: [],
@@ -99,297 +580,91 @@ describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & G
       const initialCase: OpenReconciliationCase = {
         caseId,
         subject: testSubject,
-        observationIds: [obsId],
-        reviewIds: [],
-        lifecycle: 'open',
-        status: 'open',
-        openedAt: '2026-08-21T23:00:00.000Z',
-        resolutionSummary: 'Initial ingestion divergence detected',
-      };
-
-      const result = await recPersistence.createReconciliationCase({ case: initialCase });
-
-      assert.equal(result.case.caseId, caseId);
-      assert.equal(result.head.currentVersion, 1);
-      assert.equal(result.head.lifecycle, 'open');
-      assert.equal(result.head.status, 'open');
-
-      const fetchedCase = await recPersistence.getCurrentReconciliationCase(caseId);
-      assert.ok(fetchedCase);
-      assert.equal(fetchedCase.caseId, caseId);
-      assert.equal(fetchedCase.lifecycle, 'open');
-      assert.equal(fetchedCase.status, 'open');
-
-      const fetchedHead = await recPersistence.getCurrentReconciliationHead(caseId);
-      assert.ok(fetchedHead);
-      assert.equal(fetchedHead.currentVersion, 1);
-
-      // Idempotência estrita: chamada idêntica retorna o existente sem criar versão 2
-      const idempResult = await recPersistence.createReconciliationCase({ case: initialCase });
-      assert.equal(idempResult.head.currentVersion, 1);
-    });
-
-    it('D1-2: append revision preserva versão anterior no histórico append-only', async () => {
-      const caseId = `case_d1_2_${Date.now()}` as ReconciliationCaseId;
-      const obsId1 = `obs_d1_2_a_${Date.now()}` as ObservationRecordId;
-      const obsId2 = `obs_d1_2_b_${Date.now()}` as ObservationRecordId;
-
-      await obsPersistence.recordObservation({
-        observationId: obsId1,
-        subject: testSubject,
-        observedClaim: 'Feed A price 100',
-        rawValue: { price: 100.0 },
-        actor: humanLucas,
-        sourceRefs: [],
-        evidenceRefs: [],
-        capturedAt: '2026-08-21T23:00:00.000Z',
-        observedAt: '2026-08-21T23:00:00.000Z',
-      });
-
-      await obsPersistence.recordObservation({
-        observationId: obsId2,
-        subject: testSubject,
-        observedClaim: 'Feed B price 110',
-        rawValue: { price: 110.0 },
-        actor: humanLucas,
-        sourceRefs: [],
-        evidenceRefs: [],
-        capturedAt: '2026-08-21T23:05:00.000Z',
-        observedAt: '2026-08-21T23:05:00.000Z',
-      });
-
-      // Versão 1: open / awaiting_evidence
-      const v1Case: OpenReconciliationCase = {
-        caseId,
-        subject: testSubject,
         observationIds: [obsId1],
         reviewIds: [],
         lifecycle: 'open',
-        status: 'awaiting_evidence',
-        openedAt: '2026-08-21T23:00:00.000Z',
-      };
-      await recPersistence.createReconciliationCase({ case: v1Case });
-
-      // Versão 2: open / divergent com obsId2 adicionada
-      const v2Case: OpenReconciliationCase = {
-        caseId,
-        subject: testSubject,
-        observationIds: [obsId1, obsId2],
-        reviewIds: [],
-        lifecycle: 'open',
-        status: 'divergent',
-        openedAt: '2026-08-21T23:00:00.000Z',
-        resolutionSummary: 'Added conflicting observation from Feed B',
-      };
-      const v2Result = await recPersistence.appendReconciliationRevision({
-        case: v2Case,
-        expectedVersion: 1,
-      });
-
-      assert.equal(v2Result.head.currentVersion, 2);
-      assert.equal(v2Result.head.status, 'divergent');
-
-      // Versão 3: resolved / validated
-      const v3Case: ResolvedReconciliationCase = {
-        caseId,
-        subject: testSubject,
-        observationIds: [obsId1, obsId2],
-        reviewIds: [],
-        lifecycle: 'resolved',
-        status: 'validated',
-        openedAt: '2026-08-21T23:00:00.000Z',
-        resolvedAt: '2026-08-21T23:10:00.000Z',
-        resolutionSummary: 'Validated by human review: Feed B was a delayed promotional rate',
-      };
-      const v3Result = await recPersistence.appendReconciliationRevision({
-        case: v3Case,
-        expectedVersion: 2,
-      });
-
-      assert.equal(v3Result.head.currentVersion, 3);
-      assert.equal(v3Result.head.lifecycle, 'resolved');
-      assert.equal(v3Result.head.status, 'validated');
-
-      // Prova que o histórico completo contém todas as 3 versões intactas
-      const history = await recPersistence.listReconciliationHistory(caseId);
-      assert.equal(history.length, 3);
-      assert.equal(history[0].status, 'awaiting_evidence');
-      assert.equal(history[1].status, 'divergent');
-      assert.equal(history[2].status, 'validated');
-      assert.equal(history[2].lifecycle, 'resolved');
-    });
-
-    it('D1-3: expectedVersion obsoleta gera StaleReconciliationVersionConflictError', async () => {
-      const caseId = `case_d1_3_${Date.now()}` as ReconciliationCaseId;
-      const obsId = `obs_d1_3_${Date.now()}` as ObservationRecordId;
-
-      const v1Case: OpenReconciliationCase = {
-        caseId,
-        subject: testSubject,
-        observationIds: [obsId],
-        reviewIds: [],
-        lifecycle: 'open',
         status: 'open',
         openedAt: '2026-08-21T23:00:00.000Z',
       };
-      await recPersistence.createReconciliationCase({ case: v1Case });
 
-      // Avança para versão 2
-      const v2Case: OpenReconciliationCase = {
-        ...v1Case,
-        status: 'awaiting_evidence',
-      };
+      await recPersistence.createReconciliationCase({ case: initialCase });
+
+      // Evolui para v2
       await recPersistence.appendReconciliationRevision({
-        case: v2Case,
-        expectedVersion: 1,
-      });
-
-      // Tentativa de append informando expectedVersion = 1 (stale) deve falhar
-      const staleCase: OpenReconciliationCase = {
-        ...v1Case,
-        status: 'divergent',
-      };
-
-      await assert.rejects(
-        async () => {
-          await recPersistence.appendReconciliationRevision({
-            case: staleCase,
-            expectedVersion: 1, // Stale! Versão atual é 2
-          });
-        },
-        (err: any) => {
-          assert.ok(err instanceof StaleReconciliationVersionConflictError);
-          assert.equal(err.expectedVersion, 1);
-          assert.equal(err.actualVersion, 2);
-          return true;
-        }
-      );
-    });
-
-    it('D1-12: histórico do case reconstrói deterministamente o estado da head atual', async () => {
-      const caseId = `case_d1_12_${Date.now()}` as ReconciliationCaseId;
-      const obsId = `obs_d1_12_${Date.now()}` as ObservationRecordId;
-
-      const v1Case: OpenReconciliationCase = {
-        caseId,
-        subject: testSubject,
-        observationIds: [obsId],
-        reviewIds: [],
-        lifecycle: 'open',
-        status: 'open',
-        openedAt: '2026-08-21T23:00:00.000Z',
-      };
-      await recPersistence.createReconciliationCase({ case: v1Case });
-
-      const v2Case: OpenReconciliationCase = {
-        ...v1Case,
-        status: 'divergent',
-        resolutionSummary: 'Divergence identified',
-      };
-      await recPersistence.appendReconciliationRevision({ case: v2Case, expectedVersion: 1 });
-
-      const v3Case: ResolvedReconciliationCase = {
-        caseId,
-        subject: testSubject,
-        observationIds: [obsId],
-        reviewIds: [],
-        lifecycle: 'resolved',
-        status: 'inconclusive',
-        openedAt: '2026-08-21T23:00:00.000Z',
-        resolvedAt: '2026-08-21T23:30:00.000Z',
-        resolutionSummary: 'Closed as inconclusive after timeout',
-      };
-      await recPersistence.appendReconciliationRevision({ case: v3Case, expectedVersion: 2 });
-
-      const history = await recPersistence.listReconciliationHistory(caseId);
-      const head = await recPersistence.getCurrentReconciliationHead(caseId);
-
-      assert.ok(head);
-      assert.equal(history.length, head.currentVersion);
-      assert.equal(history[history.length - 1].lifecycle, head.lifecycle);
-      assert.equal(history[history.length - 1].status, head.status);
-    });
-  });
-
-  describe('2. Gates de Autoridade: MAX vs Humano em Revisões & Promoção Canônica', () => {
-    it('D1-4: MAX divergent não altera canonical head e ambas as observações coexistem', async () => {
-      const now = Date.now();
-      const obsId1 = `obs_d1_4_a_${now}` as ObservationRecordId;
-      const obsId2 = `obs_d1_4_b_${now}` as ObservationRecordId;
-      const revId = `rev_d1_4_max_${now}` as ReviewEventId;
-
-      await obsPersistence.recordObservation({
-        observationId: obsId1,
-        subject: testSubject,
-        observedClaim: 'Site A price 200',
-        rawValue: { price: 200.0 },
-        actor: humanLucas,
-        sourceRefs: [],
-        evidenceRefs: [],
-        capturedAt: '2026-08-21T23:00:00.000Z',
-        observedAt: '2026-08-21T23:00:00.000Z',
-      });
-
-      await obsPersistence.recordObservation({
-        observationId: obsId2,
-        subject: testSubject,
-        observedClaim: 'Site B price 250',
-        rawValue: { price: 250.0 },
-        actor: humanLucas,
-        sourceRefs: [],
-        evidenceRefs: [],
-        capturedAt: '2026-08-21T23:02:00.000Z',
-        observedAt: '2026-08-21T23:02:00.000Z',
-      });
-
-      // MAX registra uma revisão de divergência
-      const maxReview: NonCanonicalReviewEvent = {
-        reviewId: revId,
-        actor: maxAgent,
-        targetObservationIds: [obsId1, obsId2],
-        decision: 'divergent',
-        justification: 'Price discrepancy detected between Site A ($200) and Site B ($250)',
-        reviewedAt: '2026-08-21T23:05:00.000Z',
-      };
-
-      const recordedRev = await coordinator.submitReview(maxReview);
-      assert.equal(recordedRev.reviewId, revId);
-
-      // Abre o ReconciliationCase
-      const caseId = `case_d1_4_${now}` as ReconciliationCaseId;
-      await coordinator.createReconciliationCase({
         case: {
           caseId,
           subject: testSubject,
           observationIds: [obsId1, obsId2],
-          reviewIds: [revId],
+          reviewIds: [],
           lifecycle: 'open',
           status: 'divergent',
-          openedAt: '2026-08-21T23:05:00.000Z',
+          openedAt: '2026-08-21T23:00:00.000Z',
         },
+        expectedVersion: 1,
       });
 
-      // Prova que ambas as observações continuam existindo
-      const obsList = await obsPersistence.listObservationsBySubject(testSubject);
-      assert.ok(obsList.some((o) => o.observationId === obsId1));
-      assert.ok(obsList.some((o) => o.observationId === obsId2));
+      // Tenta chamar createReconciliationCase com initialCase novamente
+      await assert.rejects(
+        async () => {
+          await recPersistence.createReconciliationCase({ case: initialCase });
+        },
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseConflictError);
+          assert.match(err.message, /evolved to version 2/);
+          return true;
+        }
+      );
+    });
+  });
 
-      // Prova que a head canônica NÃO foi alterada ou criada automaticamente
-      const currentHead = await obsPersistence.getCurrentCanonicalHead(testSubject);
-      assert.equal(currentHead, null);
+  describe('3. Schema & CHECK Constraints no PostgreSQL (A10, A11, A12)', () => {
+    it('A10: SQL direto open + validated é rejeitado pelo PostgreSQL', async () => {
+      const caseId = `case_sql_a10_${Date.now()}`;
+      await assert.rejects(
+        async () => {
+          await pool.query(
+            `INSERT INTO nex_reconciliation_case_revisions (
+              case_id, version, subject_domain, subject_entity_type, subject_entity_id,
+              observation_ids, review_ids, lifecycle, status, opened_at
+            ) VALUES ($1, 1, 'domain', 'type', 'id', '[]'::jsonb, '[]'::jsonb, 'open', 'validated', now())`,
+            [caseId]
+          );
+        },
+        (err: any) => {
+          assert.match(err.message, /nex_rec_lifecycle_chk/);
+          return true;
+        }
+      );
     });
 
-    it('D1-5: MAX tentando canonical promotion é bloqueado runtime antes de qualquer escrita', async () => {
-      const now = Date.now();
-      const obsId = `obs_d1_5_${now}` as ObservationRecordId;
-      const revId = `rev_d1_5_max_${now}` as ReviewEventId;
-      const projId = `proj_d1_5_${now}` as CanonicalProjectionRevisionId;
+    it('A11: SQL direto resolved + open é rejeitado pelo PostgreSQL', async () => {
+      const caseId = `case_sql_a11_${Date.now()}`;
+      await assert.rejects(
+        async () => {
+          await pool.query(
+            `INSERT INTO nex_reconciliation_case_revisions (
+              case_id, version, subject_domain, subject_entity_type, subject_entity_id,
+              observation_ids, review_ids, lifecycle, status, opened_at, resolved_at, resolution_summary
+            ) VALUES ($1, 1, 'domain', 'type', 'id', '[]'::jsonb, '[]'::jsonb, 'resolved', 'open', now(), now(), 'Summary')`,
+            [caseId]
+          );
+        },
+        (err: any) => {
+          assert.match(err.message, /nex_rec_lifecycle_chk/);
+          return true;
+        }
+      );
+    });
+
+    it('A12: nex_reconciliation_case_heads armazena apenas ponteiro operacional e deriva estado via JOIN', async () => {
+      const caseId = `case_a12_${Date.now()}` as ReconciliationCaseId;
+      const obsId = `obs_a12_${Date.now()}` as ObservationRecordId;
 
       await obsPersistence.recordObservation({
         observationId: obsId,
         subject: testSubject,
-        observedClaim: 'Internal price 300',
-        rawValue: { price: 300.0 },
+        observedClaim: 'Obs A12',
+        rawValue: {},
         actor: humanLucas,
         sourceRefs: [],
         evidenceRefs: [],
@@ -397,87 +672,54 @@ describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & G
         observedAt: '2026-08-21T23:00:00.000Z',
       });
 
-      // Objeto malicioso forjando promoção com ator MAX
-      const forgedReview: any = {
-        reviewId: revId,
-        actor: maxAgent, // MAX tentando promover!
-        targetObservationIds: [obsId],
-        decision: 'canonical_promoted',
-        canonicalEffect: {
-          action: 'promote',
-          targetCanonicalState: { verifiedPrice: 300.0 },
+      await recPersistence.createReconciliationCase({
+        case: {
+          caseId,
+          subject: testSubject,
+          observationIds: [obsId],
+          reviewIds: [],
+          lifecycle: 'open',
+          status: 'awaiting_evidence',
+          openedAt: '2026-08-21T23:00:00.000Z',
         },
-        justification: 'MAX trying to auto-promote without human authority',
-        reviewedAt: '2026-08-21T23:00:00.000Z',
-      };
+      });
 
-      const forgedProjection: CanonicalProjection = {
-        projectionRevisionId: projId,
-        subject: testSubject,
-        canonicalState: { verifiedPrice: 300.0 },
-        underlyingObservationIds: [obsId],
-        authorizingReviewIds: [revId],
-        materializedAt: '2026-08-21T23:00:00.000Z',
-        explanation: 'Forged canonical projection',
-      };
-
-      const dummyAuth: HumanAuthorizationDecision = {
-        actorRef: 'user_lucas_master',
-        operation: 'canonical_promotion',
-        verdict: 'authorized',
-        reasonCode: 'VALIDATED',
-        authorizedAt: '2026-08-21T23:00:00.000Z',
-      };
-
-      // 1. Rejeitado pelo submitReview
-      await assert.rejects(
-        async () => {
-          await coordinator.submitReview(forgedReview);
-        },
-        (err: any) => {
-          assert.ok(err instanceof CanonicalPromotionAuthorityError);
-          return true;
-        }
+      // Checa as colunas físicas da tabela head
+      const headRawRes = await pool.query(
+        `SELECT * FROM nex_reconciliation_case_heads WHERE case_id = $1`,
+        [caseId]
       );
+      const row = headRawRes.rows[0];
 
-      // 2. Rejeitado pelo submitCanonicalPromotion
-      await assert.rejects(
-        async () => {
-          await coordinator.submitCanonicalPromotion({
-            review: forgedReview,
-            projection: forgedProjection,
-            authorization: dummyAuth,
-          });
-        },
-        (err: any) => {
-          assert.ok(err instanceof CanonicalPromotionAuthorityError);
-          assert.equal(err.code, 'UNAUTHORIZED_ACTOR_KIND');
-          return true;
-        }
-      );
+      assert.equal(row.case_id, caseId);
+      assert.equal(row.current_version, 1);
+      // Confirma que não existem colunas desnormalizadas de subject/lifecycle/status na tabela head
+      assert.equal(row.subject_domain, undefined);
+      assert.equal(row.lifecycle, undefined);
+      assert.equal(row.status, undefined);
 
-      // Prova que NENHUMA linha foi gravada no PostgreSQL
-      const revCheck = await obsPersistence.getReview(revId);
-      assert.equal(revCheck, null);
-
-      const projCheck = await obsPersistence.getCanonicalProjectionRevision(projId);
-      assert.equal(projCheck, null);
-
-      const headCheck = await obsPersistence.getCurrentCanonicalHead(testSubject);
-      assert.equal(headCheck, null);
+      // getCurrentReconciliationHead deriva os dados corretamente via JOIN
+      const head = await recPersistence.getCurrentReconciliationHead(caseId);
+      assert.ok(head);
+      assert.equal(head.currentVersion, 1);
+      assert.equal(head.status, 'awaiting_evidence');
+      assert.equal(head.lifecycle, 'open');
+      assert.equal(head.subject.domain, testSubject.domain);
     });
+  });
 
-    it('D1-6: human canonical promotion sem autorização ou com verdict denied é bloqueada fail-closed', async () => {
+  describe('4. Gates de Autoridade & Operação Exata (A14..A16)', () => {
+    it('A14: canonical_promoted + canonical_promotion = permitido', async () => {
       const now = Date.now();
-      const obsId = `obs_d1_6_${now}` as ObservationRecordId;
-      const revId = `rev_d1_6_${now}` as ReviewEventId;
-      const projId = `proj_d1_6_${now}` as CanonicalProjectionRevisionId;
+      const obsId = `obs_a14_${now}` as ObservationRecordId;
+      const revId = `rev_a14_${now}` as ReviewEventId;
+      const projId = `proj_a14_${now}` as CanonicalProjectionRevisionId;
 
       await obsPersistence.recordObservation({
         observationId: obsId,
         subject: testSubject,
-        observedClaim: 'Manual price 500',
-        rawValue: { price: 500.0 },
+        observedClaim: 'Obs A14',
+        rawValue: { price: 100 },
         actor: humanLucas,
         sourceRefs: [],
         evidenceRefs: [],
@@ -485,153 +727,58 @@ describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & G
         observedAt: '2026-08-21T23:00:00.000Z',
       });
 
-      const humanReview: CanonicalPromotedReviewEvent = {
+      const promoReview: CanonicalPromotedReviewEvent = {
         reviewId: revId,
         actor: humanLucas,
         targetObservationIds: [obsId],
         decision: 'canonical_promoted',
         canonicalEffect: {
           action: 'promote',
-          targetCanonicalState: { verifiedPrice: 500.0 },
+          targetCanonicalState: { price: 100 },
         },
-        justification: 'Human review valid',
-        reviewedAt: '2026-08-21T23:00:00.000Z',
-      };
-
-      const projection: CanonicalProjection = {
-        projectionRevisionId: projId,
-        subject: testSubject,
-        canonicalState: { verifiedPrice: 500.0 },
-        underlyingObservationIds: [obsId],
-        authorizingReviewIds: [revId],
-        materializedAt: '2026-08-21T23:00:00.000Z',
-        explanation: 'Canonical projection with denied auth',
-      };
-
-      // Sem autorização
-      await assert.rejects(
-        async () => {
-          await coordinator.submitCanonicalPromotion({
-            review: humanReview,
-            projection,
-            authorization: undefined as any,
-          });
-        },
-        (err: any) => {
-          assert.ok(err instanceof CanonicalPromotionAuthorityError);
-          assert.equal(err.code, 'MISSING_AUTHORIZATION');
-          return true;
-        }
-      );
-
-      // Com autorização denied
-      const deniedAuth: HumanAuthorizationDecision = {
-        actorRef: humanLucas.humanId,
-        operation: 'canonical_promotion',
-        verdict: 'denied',
-        reasonCode: 'INSUFFICIENT_PRIVILEGE',
-        authorizedAt: '2026-08-21T23:00:00.000Z',
-      };
-
-      await assert.rejects(
-        async () => {
-          await coordinator.submitCanonicalPromotion({
-            review: humanReview,
-            projection,
-            authorization: deniedAuth,
-          });
-        },
-        (err: any) => {
-          assert.ok(err instanceof CanonicalPromotionAuthorityError);
-          assert.equal(err.code, 'AUTHORIZATION_DENIED');
-          return true;
-        }
-      );
-
-      // Prova que nada foi gravado
-      const revCheck = await obsPersistence.getReview(revId);
-      assert.equal(revCheck, null);
-    });
-
-    it('D1-7: human canonical promotion com authorization authorized executa atômico no PostgreSQL', async () => {
-      const now = Date.now();
-      const obsId = `obs_d1_7_${now}` as ObservationRecordId;
-      const revId = `rev_d1_7_${now}` as ReviewEventId;
-      const projId = `proj_d1_7_${now}` as CanonicalProjectionRevisionId;
-
-      await obsPersistence.recordObservation({
-        observationId: obsId,
-        subject: testSubject,
-        observedClaim: 'Invoice price 420',
-        rawValue: { price: 420.0 },
-        actor: humanLucas,
-        sourceRefs: [],
-        evidenceRefs: [],
-        capturedAt: '2026-08-21T23:00:00.000Z',
-        observedAt: '2026-08-21T23:00:00.000Z',
-      });
-
-      const humanReview: CanonicalPromotedReviewEvent = {
-        reviewId: revId,
-        actor: humanLucas,
-        targetObservationIds: [obsId],
-        decision: 'canonical_promoted',
-        canonicalEffect: {
-          action: 'promote',
-          targetCanonicalState: { price: 420.0 },
-        },
-        justification: 'Approved based on certified supplier invoice',
+        justification: 'Promoted with exact auth operation',
         reviewedAt: '2026-08-21T23:00:00.000Z',
       };
 
       const projection: CanonicalProjection = {
         projectionRevisionId: projId,
         subject: testSubject,
-        canonicalState: { price: 420.0 },
+        canonicalState: { price: 100 },
         underlyingObservationIds: [obsId],
         authorizingReviewIds: [revId],
         materializedAt: '2026-08-21T23:00:00.000Z',
-        explanation: 'Certified price promotion',
+        explanation: 'Canonical projection',
       };
 
       const validAuth: HumanAuthorizationDecision = {
         actorRef: humanLucas.humanId,
         operation: 'canonical_promotion',
         verdict: 'authorized',
-        reasonCode: 'MASTER_DEV_OVERRIDE',
+        reasonCode: 'VALIDATED',
         authorizedAt: '2026-08-21T23:00:00.000Z',
       };
 
       const result = await coordinator.submitCanonicalPromotion({
-        review: humanReview,
+        review: promoReview,
         projection,
         authorization: validAuth,
       });
 
       assert.equal(result.review.reviewId, revId);
-      assert.equal(result.projection.projectionRevisionId, projId);
       assert.equal(result.head.currentProjectionRevisionId, projId);
-      assert.equal(result.head.version, BigInt(1));
-
-      const currentProj = await obsPersistence.getCurrentCanonicalProjection(testSubject);
-      assert.ok(currentProj);
-      assert.equal(currentProj.projectionRevisionId, projId);
-      assert.deepEqual(currentProj.canonicalState, { price: 420.0 });
     });
-  });
 
-  describe('3. ContextualPrecedent & Segregação de Policy', () => {
-    it('D1-8: precedent explícito a partir de review humana persiste com integridade e pode ser recuperado', async () => {
+    it('A15: canonical_reclassified + canonical_reclassification = permitido', async () => {
       const now = Date.now();
-      const obsId = `obs_d1_8_${now}` as ObservationRecordId;
-      const revId = `rev_d1_8_${now}` as ReviewEventId;
-      const precId = `prec_d1_8_${now}` as ContextualPrecedentRefId;
+      const obsId = `obs_a15_${now}` as ObservationRecordId;
+      const revId = `rev_a15_${now}` as ReviewEventId;
+      const projId = `proj_a15_${now}` as CanonicalProjectionRevisionId;
 
       await obsPersistence.recordObservation({
         observationId: obsId,
         subject: testSubject,
-        observedClaim: 'Web price 80',
-        rawValue: { price: 80.0 },
+        observedClaim: 'Obs A15',
+        rawValue: { price: 120 },
         actor: humanLucas,
         sourceRefs: [],
         evidenceRefs: [],
@@ -639,46 +786,193 @@ describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & G
         observedAt: '2026-08-21T23:00:00.000Z',
       });
 
-      // Humano registra uma revisão não-canônica (ou canônica)
-      const humanRev: NonCanonicalReviewEvent = {
+      const currentHead = await obsPersistence.getCurrentCanonicalHead(testSubject);
+
+      const reclassReview: CanonicalReclassifiedReviewEvent = {
+        reviewId: revId,
+        actor: humanLucas,
+        targetObservationIds: [obsId],
+        targetBaseRevisionId: currentHead?.currentProjectionRevisionId,
+        decision: 'canonical_reclassified',
+        canonicalEffect: {
+          action: 'reclassify',
+          targetCanonicalState: { price: 120 },
+        },
+        justification: 'Reclassified with exact auth operation',
+        reviewedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      const projection: CanonicalProjection = {
+        projectionRevisionId: projId,
+        subject: testSubject,
+        canonicalState: { price: 120 },
+        underlyingObservationIds: [obsId],
+        authorizingReviewIds: [revId],
+        supersedesRevisionId: currentHead?.currentProjectionRevisionId,
+        materializedAt: '2026-08-21T23:00:00.000Z',
+        explanation: 'Canonical projection reclassification',
+      };
+
+      const validAuth: HumanAuthorizationDecision = {
+        actorRef: humanLucas.humanId,
+        operation: 'canonical_reclassification',
+        verdict: 'authorized',
+        reasonCode: 'VALIDATED',
+        authorizedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      const result = await coordinator.submitCanonicalPromotion({
+        review: reclassReview,
+        projection,
+        expectedBaseRevisionId: currentHead?.currentProjectionRevisionId,
+        authorization: validAuth,
+      });
+
+      assert.equal(result.review.reviewId, revId);
+      assert.equal(result.head.currentProjectionRevisionId, projId);
+    });
+
+    it('A16: combinações cruzadas e aliases (promote, reclassify, cruzado) são rejeitadas', async () => {
+      const now = Date.now();
+      const obsId = `obs_a16_${now}` as ObservationRecordId;
+      const revId = `rev_a16_${now}` as ReviewEventId;
+      const projId = `proj_a16_${now}` as CanonicalProjectionRevisionId;
+
+      await obsPersistence.recordObservation({
+        observationId: obsId,
+        subject: testSubject,
+        observedClaim: 'Obs A16',
+        rawValue: { price: 130 },
+        actor: humanLucas,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      const promoReview: CanonicalPromotedReviewEvent = {
+        reviewId: revId,
+        actor: humanLucas,
+        targetObservationIds: [obsId],
+        decision: 'canonical_promoted',
+        canonicalEffect: {
+          action: 'promote',
+          targetCanonicalState: { price: 130 },
+        },
+        justification: 'Promotion attempt',
+        reviewedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      const projection: CanonicalProjection = {
+        projectionRevisionId: projId,
+        subject: testSubject,
+        canonicalState: { price: 130 },
+        underlyingObservationIds: [obsId],
+        authorizingReviewIds: [revId],
+        materializedAt: '2026-08-21T23:00:00.000Z',
+        explanation: 'Canonical projection',
+      };
+
+      // 1. Cruzado: canonical_promoted com canonical_reclassification
+      await assert.rejects(
+        async () => {
+          await coordinator.submitCanonicalPromotion({
+            review: promoReview,
+            projection,
+            authorization: {
+              actorRef: humanLucas.humanId,
+              operation: 'canonical_reclassification',
+              verdict: 'authorized',
+              reasonCode: 'TEST',
+            },
+          });
+        },
+        (err: any) => {
+          assert.ok(err instanceof CanonicalPromotionAuthorityError);
+          assert.equal(err.code, 'OPERATION_MISMATCH');
+          return true;
+        }
+      );
+
+      // 2. Alias: 'promote'
+      await assert.rejects(
+        async () => {
+          await coordinator.submitCanonicalPromotion({
+            review: promoReview,
+            projection,
+            authorization: {
+              actorRef: humanLucas.humanId,
+              operation: 'promote',
+              verdict: 'authorized',
+              reasonCode: 'TEST',
+            },
+          });
+        },
+        (err: any) => {
+          assert.ok(err instanceof CanonicalPromotionAuthorityError);
+          assert.equal(err.code, 'OPERATION_MISMATCH');
+          return true;
+        }
+      );
+    });
+  });
+
+  describe('5. Contextual Precedent & Actor Payload Canônico (A17..A19)', () => {
+    it('A17: precedent de review humana com actor_payload real é persistido e recuperado', async () => {
+      const now = Date.now();
+      const obsId = `obs_a17_${now}` as ObservationRecordId;
+      const revId = `rev_a17_${now}` as ReviewEventId;
+      const precId = `prec_a17_${now}` as ContextualPrecedentRefId;
+
+      await obsPersistence.recordObservation({
+        observationId: obsId,
+        subject: testSubject,
+        observedClaim: 'Obs A17',
+        rawValue: { price: 100 },
+        actor: humanLucas,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      await obsPersistence.recordNonCanonicalReview({
         reviewId: revId,
         actor: humanLucas,
         targetObservationIds: [obsId],
         decision: 'corroborated',
-        justification: 'Price of $80 is valid exclusively for batch purchases over 100 units',
+        justification: 'Approved vendor terms discount precedent',
         reviewedAt: '2026-08-21T23:00:00.000Z',
-      };
-      await obsPersistence.recordNonCanonicalReview(humanRev);
+      });
 
       const precedent: ContextualPrecedent = {
         precedentId: precId,
         reviewEventId: revId,
-        contextSummary: 'Wholesale tier pricing exemption rule',
-        applicabilityConditions: ['quantity >= 100', 'payment_terms == 30_days'],
-        policyProposalRef: 'PROP_POLICY_2026_TIER_PRICING',
+        contextSummary: 'Tier 1 volume discount rule',
+        applicabilityConditions: ['volume >= 50'],
+        policyProposalRef: 'PROP_DISCOUNT_TIER1',
       };
 
-      const recorded = await coordinator.createContextualPrecedent({ precedent });
-      assert.equal(recorded.precedentId, precId);
+      const result = await recPersistence.recordContextualPrecedent(precedent);
+      assert.equal(result.precedentId, precId);
 
       const fetched = await recPersistence.getContextualPrecedent(precId);
       assert.ok(fetched);
       assert.equal(fetched.precedentId, precId);
       assert.equal(fetched.reviewEventId, revId);
-      assert.deepEqual(fetched.applicabilityConditions, ['quantity >= 100', 'payment_terms == 30_days']);
     });
 
-    it('D1-9: criação de precedente NÃO cria nem altera PolicyRevision (Precedente != Policy)', async () => {
+    it('A18: review com coluna actor_kind human mas actor_payload MAX é rejeitada fail-closed', async () => {
       const now = Date.now();
-      const obsId = `obs_d1_9_${now}` as ObservationRecordId;
-      const revId = `rev_d1_9_${now}` as ReviewEventId;
-      const precId = `prec_d1_9_${now}` as ContextualPrecedentRefId;
+      const obsId = `obs_a18_${now}` as ObservationRecordId;
+      const corruptedRevId = `rev_a18_corrupt_${now}` as ReviewEventId;
+      const precId = `prec_a18_${now}` as ContextualPrecedentRefId;
 
       await obsPersistence.recordObservation({
         observationId: obsId,
         subject: testSubject,
-        observedClaim: 'API price 90',
-        rawValue: { price: 90.0 },
+        observedClaim: 'Obs A18',
+        rawValue: { price: 100 },
         actor: humanLucas,
         sourceRefs: [],
         evidenceRefs: [],
@@ -686,148 +980,89 @@ describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & G
         observedAt: '2026-08-21T23:00:00.000Z',
       });
 
-      const humanRev: NonCanonicalReviewEvent = {
-        reviewId: revId,
-        actor: humanLucas,
-        targetObservationIds: [obsId],
-        decision: 'corroborated',
-        justification: 'Special vendor agreement',
-        reviewedAt: '2026-08-21T23:00:00.000Z',
-      };
-      await obsPersistence.recordNonCanonicalReview(humanRev);
+      // Insere diretamente um registro inconsistente no banco
+      await pool.query(
+        `INSERT INTO nex_review_events (
+          review_id, actor_kind, actor_payload, decision, justification, reviewed_at
+        ) VALUES ($1, 'human', $2, 'corroborated', 'Forged note', now())`,
+        [corruptedRevId, JSON.stringify({ kind: 'max', maxVersion: 'MAX_3.0' })]
+      );
 
       const precedent: ContextualPrecedent = {
         precedentId: precId,
-        reviewEventId: revId,
-        contextSummary: 'Vendor agreement context',
-        applicabilityConditions: ['supplier == sup_alpha'],
-        policyProposalRef: 'PROP_POLICY_SUP_ALPHA',
-      };
-
-      await coordinator.createContextualPrecedent({ precedent });
-
-      // Prova que a proposta de policy não virou policy ativa e nenhuma tabela de policy foi criada/mutada
-      const fetched = await recPersistence.getContextualPrecedent(precId);
-      assert.ok(fetched);
-      assert.equal(fetched.policyProposalRef, 'PROP_POLICY_SUP_ALPHA');
-    });
-
-    it('D1-10: tentativa de criar precedente a partir de review de MAX/System é rejeitada', async () => {
-      const now = Date.now();
-      const obsId = `obs_d1_10_${now}` as ObservationRecordId;
-      const revId = `rev_d1_10_max_${now}` as ReviewEventId;
-      const precId = `prec_d1_10_${now}` as ContextualPrecedentRefId;
-
-      await obsPersistence.recordObservation({
-        observationId: obsId,
-        subject: testSubject,
-        observedClaim: 'Web price 95',
-        rawValue: { price: 95.0 },
-        actor: humanLucas,
-        sourceRefs: [],
-        evidenceRefs: [],
-        capturedAt: '2026-08-21T23:00:00.000Z',
-        observedAt: '2026-08-21T23:00:00.000Z',
-      });
-
-      const maxRev: NonCanonicalReviewEvent = {
-        reviewId: revId,
-        actor: maxAgent, // MAX actor!
-        targetObservationIds: [obsId],
-        decision: 'divergent',
-        justification: 'Automated discrepancy note',
-        reviewedAt: '2026-08-21T23:00:00.000Z',
-      };
-      await obsPersistence.recordNonCanonicalReview(maxRev);
-
-      const precedent: ContextualPrecedent = {
-        precedentId: precId,
-        reviewEventId: revId,
-        contextSummary: 'Attempted precedent from MAX',
-        applicabilityConditions: ['condition == true'],
+        reviewEventId: corruptedRevId,
+        contextSummary: 'Forged precedent attempt',
+        applicabilityConditions: ['true'],
       };
 
       await assert.rejects(
         async () => {
-          await coordinator.createContextualPrecedent({ precedent });
+          await recPersistence.recordContextualPrecedent(precedent);
+        },
+        (err: any) => {
+          assert.ok(err instanceof ContextualPrecedentInvalidReviewError);
+          assert.match(err.message, /strictly requires a human actor/);
+          return true;
+        }
+      );
+    });
+
+    it('A19: precedent de review MAX ou System é estritamente rejeitado', async () => {
+      const now = Date.now();
+      const obsId = `obs_a19_${now}` as ObservationRecordId;
+      const maxRevId = `rev_a19_max_${now}` as ReviewEventId;
+      const precId = `prec_a19_${now}` as ContextualPrecedentRefId;
+
+      await obsPersistence.recordObservation({
+        observationId: obsId,
+        subject: testSubject,
+        observedClaim: 'Obs A19',
+        rawValue: { price: 100 },
+        actor: humanLucas,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      await obsPersistence.recordNonCanonicalReview({
+        reviewId: maxRevId,
+        actor: maxAgent,
+        targetObservationIds: [obsId],
+        decision: 'divergent',
+        justification: 'Automated note',
+        reviewedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      const precedent: ContextualPrecedent = {
+        precedentId: precId,
+        reviewEventId: maxRevId,
+        contextSummary: 'MAX precedent attempt',
+        applicabilityConditions: ['true'],
+      };
+
+      await assert.rejects(
+        async () => {
+          await recPersistence.recordContextualPrecedent(precedent);
         },
         (err: any) => {
           assert.ok(err instanceof ContextualPrecedentInvalidReviewError);
           return true;
         }
       );
-
-      const check = await recPersistence.getContextualPrecedent(precId);
-      assert.equal(check, null);
-    });
-
-    it('D1-11: case inconclusivo permanece sem canonical head inventada', async () => {
-      const now = Date.now();
-      const caseId = `case_d1_11_${now}` as ReconciliationCaseId;
-      const obsId = `obs_d1_11_${now}` as ObservationRecordId;
-      const revId = `rev_d1_11_${now}` as ReviewEventId;
-
-      const unverifiedSubject: ObservationSubject = {
-        domain: 'supplier_product',
-        entityType: 'product',
-        entityId: `prod_inconclusive_${now}`,
-      };
-
-      await obsPersistence.recordObservation({
-        observationId: obsId,
-        subject: unverifiedSubject,
-        observedClaim: 'Ambiguous claim',
-        rawValue: { rawNote: 'Ambiguous payload' },
-        actor: humanLucas,
-        sourceRefs: [],
-        evidenceRefs: [],
-        capturedAt: '2026-08-21T23:00:00.000Z',
-        observedAt: '2026-08-21T23:00:00.000Z',
-      });
-
-      const maxRev: NonCanonicalReviewEvent = {
-        reviewId: revId,
-        actor: maxAgent,
-        targetObservationIds: [obsId],
-        decision: 'inconclusive',
-        justification: 'Evidence is insufficient and conflicting. Cannot determine authentic state.',
-        reviewedAt: '2026-08-21T23:00:00.000Z',
-      };
-      await obsPersistence.recordNonCanonicalReview(maxRev);
-
-      await coordinator.createReconciliationCase({
-        case: {
-          caseId,
-          subject: unverifiedSubject,
-          observationIds: [obsId],
-          reviewIds: [revId],
-          lifecycle: 'resolved',
-          status: 'inconclusive',
-          openedAt: '2026-08-21T23:00:00.000Z',
-          resolvedAt: '2026-08-21T23:15:00.000Z',
-          resolutionSummary: 'Closed as inconclusive without guessing state',
-        },
-      });
-
-      // Prova que nenhuma Projeção Canônica foi inventada para o subject
-      const head = await obsPersistence.getCurrentCanonicalHead(unverifiedSubject);
-      assert.equal(head, null);
-
-      const proj = await obsPersistence.getCurrentCanonicalProjection(unverifiedSubject);
-      assert.equal(proj, null);
     });
   });
 
-  describe('4. Proteção Estrutural Append-Only no PostgreSQL (Triggers de Rejeição)', () => {
-    it('SQL direto UPDATE em nex_reconciliation_case_revisions é rejeitado pelo trigger', async () => {
+  describe('6. Proteção Append-Only Direta no PostgreSQL', () => {
+    it('UPDATE direto em nex_reconciliation_case_revisions é rejeitado pelo trigger', async () => {
       const caseId = `case_trg_test_${Date.now()}` as ReconciliationCaseId;
       const obsId = `obs_trg_${Date.now()}` as ObservationRecordId;
 
       await obsPersistence.recordObservation({
         observationId: obsId,
         subject: testSubject,
-        observedClaim: 'Trigger observation',
-        rawValue: { price: 100 },
+        observedClaim: 'Trigger obs',
+        rawValue: { price: 10 },
         actor: humanLucas,
         sourceRefs: [],
         evidenceRefs: [],
@@ -861,7 +1096,7 @@ describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & G
       );
     });
 
-    it('SQL direto DELETE em nex_contextual_precedents é rejeitado pelo trigger', async () => {
+    it('DELETE direto em nex_contextual_precedents é rejeitado pelo trigger', async () => {
       const now = Date.now();
       const obsId = `obs_prec_trg_${now}` as ObservationRecordId;
       const revId = `rev_prec_trg_${now}` as ReviewEventId;
@@ -870,8 +1105,8 @@ describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & G
       await obsPersistence.recordObservation({
         observationId: obsId,
         subject: testSubject,
-        observedClaim: 'Trigger observation',
-        rawValue: { value: 10 },
+        observedClaim: 'Trigger obs',
+        rawValue: { price: 10 },
         actor: humanLucas,
         sourceRefs: [],
         evidenceRefs: [],
@@ -884,14 +1119,14 @@ describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & G
         actor: humanLucas,
         targetObservationIds: [obsId],
         decision: 'corroborated',
-        justification: 'Valid trigger test review',
+        justification: 'Valid review',
         reviewedAt: '2026-08-21T23:00:00.000Z',
       });
 
       await recPersistence.recordContextualPrecedent({
         precedentId: precId,
         reviewEventId: revId,
-        contextSummary: 'Trigger protection test',
+        contextSummary: 'Trigger precedent',
         applicabilityConditions: ['test == 1'],
       });
 

@@ -1,6 +1,6 @@
 /**
  * NEX+ · Implementação PostgreSQL da Camada de Reconciliação & Precedentes
- * Escopo 0.85 (Bloco 0.85D)
+ * Escopo 0.85 (Bloco 0.85D · Micro-Hardening A)
  */
 
 import type { Pool, PoolClient } from 'pg';
@@ -13,8 +13,11 @@ import type {
   ContextualPrecedentRefId,
   ReviewEvent,
   ReviewEventId,
+  ObservationRecord,
   ObservationRecordId,
   ObservationSubject,
+  Actor,
+  HumanActor,
 } from '../contracts';
 import type {
   ReconciliationPersistenceAdapter,
@@ -27,6 +30,8 @@ import type {
 import {
   assertValidReconciliationCase,
   assertValidContextualPrecedent,
+  assertReconciliationCaseCoherence,
+  assertReconciliationRevisionContinuity,
 } from './validators';
 import {
   ReconciliationCaseConflictError,
@@ -34,9 +39,19 @@ import {
   ContextualPrecedentConflictError,
   ContextualPrecedentInvalidReviewError,
 } from './errors';
+import { parsePgJsonb } from '../persistence/serialization';
+import { PgObservationPersistenceAdapter } from '../persistence/postgres';
+import type { ObservationPersistenceAdapter } from '../persistence/contracts';
 
 export class PgReconciliationPersistenceAdapter implements ReconciliationPersistenceAdapter {
-  constructor(private readonly pool: Pool) {}
+  private readonly obsPersistence: ObservationPersistenceAdapter;
+
+  constructor(
+    private readonly pool: Pool,
+    obsPersistence?: ObservationPersistenceAdapter
+  ) {
+    this.obsPersistence = obsPersistence ?? new PgObservationPersistenceAdapter(pool);
+  }
 
   private rowToReconciliationCase(row: any): ReconciliationCase {
     const subject: ObservationSubject = {
@@ -146,11 +161,48 @@ export class PgReconciliationPersistenceAdapter implements ReconciliationPersist
     return true;
   }
 
+  /**
+   * Validação profunda de referências no Persistence Boundary antes de qualquer escrita.
+   */
+  private async validateReferencesCoherence(caseObj: ReconciliationCase): Promise<void> {
+    // 1. Carrega todas as observações diretas do caso
+    const loadedObservations: ObservationRecord[] = [];
+    for (const obsId of caseObj.observationIds) {
+      const obs = await this.obsPersistence.getObservation(obsId);
+      if (obs) {
+        loadedObservations.push(obs);
+      }
+    }
+
+    // 2. Carrega todas as reviews do caso e suas targetObservations
+    const loadedReviews: ReviewEvent[] = [];
+    for (const revId of caseObj.reviewIds) {
+      const rev = await this.obsPersistence.getReview(revId);
+      if (rev) {
+        loadedReviews.push(rev);
+        for (const targetObsId of rev.targetObservationIds) {
+          if (!loadedObservations.some((o) => o.observationId === targetObsId)) {
+            const targetObs = await this.obsPersistence.getObservation(targetObsId);
+            if (targetObs) {
+              loadedObservations.push(targetObs);
+            }
+          }
+        }
+      }
+    }
+
+    // 3. Executa assertReconciliationCaseCoherence
+    assertReconciliationCaseCoherence(caseObj, loadedObservations, loadedReviews);
+  }
+
   async createReconciliationCase(
     params: CreateReconciliationCaseParams
   ): Promise<CreateReconciliationCaseResult> {
     const caseObj = params.case;
     assertValidReconciliationCase(caseObj);
+
+    // Validação estrita de coerência de referências no persistence boundary antes de abrir a transação de escrita
+    await this.validateReferencesCoherence(caseObj);
 
     const client: PoolClient = await this.pool.connect();
     try {
@@ -161,12 +213,27 @@ export class PgReconciliationPersistenceAdapter implements ReconciliationPersist
 
       // Verifica se já existe head para este caseId
       const headRes = await client.query(
-        `SELECT * FROM nex_reconciliation_case_heads WHERE case_id = $1 FOR UPDATE`,
+        `SELECT h.case_id, h.current_version, h.updated_at,
+                r.subject_domain, r.subject_entity_type, r.subject_entity_id, r.lifecycle, r.status
+         FROM nex_reconciliation_case_heads h
+         JOIN nex_reconciliation_case_revisions r
+           ON h.case_id = r.case_id AND h.current_version = r.version
+         WHERE h.case_id = $1 FOR UPDATE`,
         [caseObj.caseId]
       );
 
       if (headRes.rows.length > 0) {
-        // Busca a revisão 1 para validar idempotência
+        const currentVersion = Number(headRes.rows[0].current_version);
+
+        // Se o caso já evoluiu para uma versão posterior (v2, v3, ...), a tentativa de recriar v1 é um conflito
+        if (currentVersion > 1) {
+          throw new ReconciliationCaseConflictError(
+            caseObj.caseId,
+            `Case already exists and has evolved to version ${currentVersion}. Cannot recreate initial version.`
+          );
+        }
+
+        // Busca a revisão 1 para validar idempotência estrita
         const revRes = await client.query(
           `SELECT * FROM nex_reconciliation_case_revisions WHERE case_id = $1 AND version = 1`,
           [caseObj.caseId]
@@ -185,7 +252,7 @@ export class PgReconciliationPersistenceAdapter implements ReconciliationPersist
 
         throw new ReconciliationCaseConflictError(
           caseObj.caseId,
-          `Case already exists with version ${headRes.rows[0].current_version} and different payload. Use appendReconciliationRevision to add revisions.`
+          `Case already exists with version 1 and different payload.`
         );
       }
 
@@ -216,27 +283,28 @@ export class PgReconciliationPersistenceAdapter implements ReconciliationPersist
         ]
       );
 
-      // Insere Head
-      const insertHeadRes = await client.query(
+      // Insere Head normalizada (apenas ponteiro operacional)
+      await client.query(
         `INSERT INTO nex_reconciliation_case_heads (
-          case_id, current_version, subject_domain, subject_entity_type, subject_entity_id, lifecycle, status, updated_at
-        ) VALUES ($1, 1, $2, $3, $4, $5, $6, clock_timestamp())
-        RETURNING *`,
-        [
-          caseObj.caseId,
-          caseObj.subject.domain,
-          caseObj.subject.entityType,
-          caseObj.subject.entityId,
-          caseObj.lifecycle,
-          caseObj.status,
-        ]
+          case_id, current_version, updated_at
+        ) VALUES ($1, 1, clock_timestamp())`,
+        [caseObj.caseId]
       );
 
       await client.query('COMMIT');
 
+      const headInfo: ReconciliationHeadInfo = {
+        caseId: caseObj.caseId,
+        currentVersion: 1,
+        subject: caseObj.subject,
+        lifecycle: caseObj.lifecycle,
+        status: caseObj.status,
+        updatedAt: new Date().toISOString(),
+      };
+
       return {
         case: caseObj,
-        head: this.rowToHeadInfo(insertHeadRes.rows[0]),
+        head: headInfo,
       };
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});
@@ -282,6 +350,27 @@ export class PgReconciliationPersistenceAdapter implements ReconciliationPersist
         );
       }
 
+      // Carrega a revisão corrente apontada pela head para validar continuidade histórica
+      const prevRevRes = await client.query(
+        `SELECT * FROM nex_reconciliation_case_revisions WHERE case_id = $1 AND version = $2`,
+        [caseObj.caseId, currentVersion]
+      );
+
+      if (prevRevRes.rows.length === 0) {
+        throw new ReconciliationCaseConflictError(
+          caseObj.caseId,
+          `Corrupt state: head points to version ${currentVersion}, but revision record is missing.`
+        );
+      }
+
+      const previousCase = this.rowToReconciliationCase(prevRevRes.rows[0]);
+
+      // Validação estrita de continuidade e imutabilidade histórica entre revisões
+      assertReconciliationRevisionContinuity(previousCase, caseObj);
+
+      // Validação de coerência das referências da nova revisão no persistence boundary
+      await this.validateReferencesCoherence(caseObj);
+
       const nextVersion = currentVersion + 1;
       const resolvedAt = caseObj.lifecycle === 'resolved' ? (caseObj as ResolvedReconciliationCase).resolvedAt : null;
       const resolutionSummary =
@@ -311,34 +400,29 @@ export class PgReconciliationPersistenceAdapter implements ReconciliationPersist
         ]
       );
 
-      // Atualiza Head
-      const updateHeadRes = await client.query(
+      // Atualiza Head operacional
+      await client.query(
         `UPDATE nex_reconciliation_case_heads
          SET current_version = $1,
-             subject_domain = $2,
-             subject_entity_type = $3,
-             subject_entity_id = $4,
-             lifecycle = $5,
-             status = $6,
              updated_at = clock_timestamp()
-         WHERE case_id = $7
-         RETURNING *`,
-        [
-          nextVersion,
-          caseObj.subject.domain,
-          caseObj.subject.entityType,
-          caseObj.subject.entityId,
-          caseObj.lifecycle,
-          caseObj.status,
-          caseObj.caseId,
-        ]
+         WHERE case_id = $2`,
+        [nextVersion, caseObj.caseId]
       );
 
       await client.query('COMMIT');
 
+      const headInfo: ReconciliationHeadInfo = {
+        caseId: caseObj.caseId,
+        currentVersion: nextVersion,
+        subject: caseObj.subject,
+        lifecycle: caseObj.lifecycle,
+        status: caseObj.status,
+        updatedAt: new Date().toISOString(),
+      };
+
       return {
         case: caseObj,
-        head: this.rowToHeadInfo(updateHeadRes.rows[0]),
+        head: headInfo,
       };
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});
@@ -364,7 +448,12 @@ export class PgReconciliationPersistenceAdapter implements ReconciliationPersist
 
   async getCurrentReconciliationHead(caseId: ReconciliationCaseId): Promise<ReconciliationHeadInfo | null> {
     const res = await this.pool.query(
-      `SELECT * FROM nex_reconciliation_case_heads WHERE case_id = $1`,
+      `SELECT h.case_id, h.current_version, h.updated_at,
+              r.subject_domain, r.subject_entity_type, r.subject_entity_id, r.lifecycle, r.status
+       FROM nex_reconciliation_case_heads h
+       JOIN nex_reconciliation_case_revisions r
+         ON h.case_id = r.case_id AND h.current_version = r.version
+       WHERE h.case_id = $1`,
       [caseId]
     );
 
@@ -384,9 +473,9 @@ export class PgReconciliationPersistenceAdapter implements ReconciliationPersist
   }
 
   async recordContextualPrecedent(precedent: ContextualPrecedent): Promise<ContextualPrecedent> {
-    // 1. Consulta a revisão fonte para validação de autoridade humana
+    // 1. Consulta a revisão fonte no PostgreSQL
     const reviewRes = await this.pool.query(
-      `SELECT * FROM nex_review_events WHERE review_id = $1`,
+      `SELECT review_id, actor_kind, actor_payload, justification, reviewed_at FROM nex_review_events WHERE review_id = $1`,
       [precedent.reviewEventId]
     );
 
@@ -399,20 +488,33 @@ export class PgReconciliationPersistenceAdapter implements ReconciliationPersist
     }
 
     const reviewRow = reviewRes.rows[0];
+    const parsedActor = parsePgJsonb<Actor>(reviewRow.actor_payload);
+
+    // Validação fail-closed de consistência do ator persistido
+    if (reviewRow.actor_kind !== 'human' || !parsedActor || parsedActor.kind !== 'human') {
+      throw new ContextualPrecedentInvalidReviewError(
+        precedent.precedentId,
+        precedent.reviewEventId,
+        `ContextualPrecedent strictly requires a human actor review. Review '${reviewRow.review_id}' has column actor_kind='${reviewRow.actor_kind}' and payload kind='${parsedActor?.kind}'.`
+      );
+    }
+
+    const humanActor = parsedActor as HumanActor;
+    if (!humanActor.humanId || humanActor.humanId.trim() === '') {
+      throw new ContextualPrecedentInvalidReviewError(
+        precedent.precedentId,
+        precedent.reviewEventId,
+        `Source review human actor payload is missing valid humanId.`
+      );
+    }
+
     const sourceReview: ReviewEvent = {
       reviewId: reviewRow.review_id as ReviewEventId,
-      targetObservationIds: reviewRow.target_observation_ids as ObservationRecordId[],
-      previousReviewIds: reviewRow.previous_review_ids ?? undefined,
+      targetObservationIds: [],
       justification: reviewRow.justification,
       reviewedAt: new Date(reviewRow.reviewed_at).toISOString(),
-      actor: {
-        kind: reviewRow.actor_kind,
-        humanId: reviewRow.actor_human_id ?? undefined,
-        maxVersion: reviewRow.actor_max_version ?? undefined,
-        component: reviewRow.actor_component ?? undefined,
-        provider: reviewRow.actor_provider ?? undefined,
-      } as any,
-      decision: reviewRow.decision,
+      actor: humanActor,
+      decision: 'corroborated' as any,
     };
 
     assertValidContextualPrecedent(precedent, sourceReview);
