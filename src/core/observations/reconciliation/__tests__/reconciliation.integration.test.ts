@@ -39,10 +39,41 @@ import {
   CanonicalPromotionAuthorityError,
 } from '../errors';
 import type { HumanAuthorizationDecision } from '../../../policy/contracts';
+import * as migration085B from '../../../../migrations/20260821_210000_observation_persistence';
+import * as migration085D from '../../../../migrations/20260821_230000_reconciliation_and_precedents';
 
 const databaseUrl = process.env.DATABASE_URL;
 
-describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & Gates de Autoridade (Micro-Hardening A)', { skip: !databaseUrl }, () => {
+function createMigrationDb(client: { query: (q: string, params?: any[]) => Promise<any> }) {
+  return {
+    execute: async (statement: any) => {
+      let queryStr = '';
+      if (typeof statement === 'string') {
+        queryStr = statement;
+      } else if (statement && typeof statement.toQuery === 'function') {
+        const compiled = statement.toQuery({
+          escapeName: (n: string) => `"${n}"`,
+          escapeParam: (_: number, v: any) => v,
+        });
+        queryStr = compiled.sql;
+      } else if (statement && Array.isArray(statement.queryChunks)) {
+        queryStr = statement.queryChunks
+          .map((c: any) => {
+            if (typeof c === 'string') return c;
+            if (c && typeof c.value === 'string') return c.value;
+            if (c && typeof c.value !== 'undefined') return String(c.value);
+            return String(c);
+          })
+          .join('');
+      } else {
+        queryStr = String(statement);
+      }
+      await client.query(queryStr);
+    },
+  };
+}
+
+describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & Gates de Autoridade (Micro-Hardening B)', { skip: !databaseUrl }, () => {
   let pool: Pool;
   let obsPersistence: PgObservationPersistenceAdapter;
   let recPersistence: PgReconciliationPersistenceAdapter;
@@ -1498,6 +1529,443 @@ describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & G
           return true;
         }
       );
+    });
+  });
+
+  describe('8. Compatibilidade da Migration 0.85D com ReconciliationCase Legado (B1..B8)', () => {
+    const schemaLegacy = 'test_rec_legacy_b1';
+    const schemaClean = 'test_rec_clean_b6';
+    const schemaValidPre = 'test_rec_valid_b7';
+
+    after(async () => {
+      if (!pool) return;
+      await pool.query(`DROP SCHEMA IF EXISTS ${schemaLegacy} CASCADE;`);
+      await pool.query(`DROP SCHEMA IF EXISTS ${schemaClean} CASCADE;`);
+      await pool.query(`DROP SCHEMA IF EXISTS ${schemaValidPre} CASCADE;`);
+    });
+
+    it('B1: Legacy orphan migra com sucesso e preserva todos os campos históricos', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query(`DROP SCHEMA IF EXISTS ${schemaLegacy} CASCADE;`);
+        await client.query(`CREATE SCHEMA ${schemaLegacy};`);
+        await client.query(`SET search_path TO ${schemaLegacy}, public;`);
+
+        const migrationDb = createMigrationDb(client);
+        await migration085B.up({ db: migrationDb } as any);
+
+        // Criar dados históricos válidos pré-0.85D (sem tabela de cases)
+        const obsId = 'obs_legacy_b1';
+        const revId = 'rev_legacy_b1';
+        const projId = 'proj_legacy_b1';
+        const legacyCaseId = 'legacy_case_missing_123';
+
+        await client.query(
+          `INSERT INTO nex_observation_records (
+            observation_id, domain, entity_type, entity_id, observed_claim,
+            raw_value, actor_kind, actor_payload, observed_at, captured_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);`,
+          [
+            obsId,
+            'supplier_product',
+            'product',
+            'prod_legacy_100',
+            'Preço legacy',
+            JSON.stringify({ price: 100 }),
+            'human',
+            JSON.stringify(humanLucas),
+            '2026-08-21T21:00:00.000Z',
+            '2026-08-21T21:00:00.000Z',
+          ]
+        );
+
+        await client.query(
+          `INSERT INTO nex_review_events (
+            review_id, actor_kind, actor_payload, decision, canonical_action,
+            target_canonical_state, justification, reviewed_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8);`,
+          [
+            revId,
+            'human',
+            JSON.stringify(humanLucas),
+            'canonical_promoted',
+            'promote',
+            JSON.stringify({ price: 100, currency: 'BRL' }),
+            'Promoção histórica válida pré-0.85D',
+            '2026-08-21T21:10:00.000Z',
+          ]
+        );
+
+        await client.query(
+          `INSERT INTO nex_canonical_projection_revisions (
+            projection_revision_id, domain, entity_type, entity_id, canonical_state,
+            reconciliation_case_id, supersedes_revision_id, materialized_at, explanation
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);`,
+          [
+            projId,
+            'supplier_product',
+            'product',
+            'prod_legacy_100',
+            JSON.stringify({ price: 100, currency: 'BRL' }),
+            legacyCaseId,
+            null,
+            '2026-08-21T21:15:00.000Z',
+            'Projeção histórica com reconciliation_case_id não-nulo sem tabela de cases',
+          ]
+        );
+
+        await client.query(
+          `INSERT INTO nex_canonical_projection_observations (projection_revision_id, observation_id) VALUES ($1, $2);`,
+          [projId, obsId]
+        );
+
+        await client.query(
+          `INSERT INTO nex_canonical_projection_reviews (projection_revision_id, review_id) VALUES ($1, $2);`,
+          [projId, revId]
+        );
+
+        await client.query(
+          `INSERT INTO nex_canonical_projection_heads (domain, entity_type, entity_id, current_projection_revision_id, version, updated_at) VALUES ($1, $2, $3, $4, 1, $5);`,
+          ['supplier_product', 'product', 'prod_legacy_100', projId, '2026-08-21T21:15:00.000Z']
+        );
+
+        // Executar migration 0.85D
+        await migration085D.up({ db: migrationDb } as any);
+
+        // B1: Confirmar integridade absoluta dos dados legados
+        const res = await client.query(
+          `SELECT * FROM nex_canonical_projection_revisions WHERE projection_revision_id = $1;`,
+          [projId]
+        );
+
+        assert.equal(res.rows.length, 1);
+        const row = res.rows[0];
+        assert.equal(row.projection_revision_id, projId);
+        assert.equal(row.domain, 'supplier_product');
+        assert.equal(row.entity_type, 'product');
+        assert.equal(row.entity_id, 'prod_legacy_100');
+        assert.deepEqual(row.canonical_state, { price: 100, currency: 'BRL' });
+        assert.equal(row.reconciliation_case_id, legacyCaseId);
+        assert.equal(row.supersedes_revision_id, null);
+        assert.equal(
+          row.explanation,
+          'Projeção histórica com reconciliation_case_id não-nulo sem tabela de cases'
+        );
+
+        const obsLinks = await client.query(
+          `SELECT * FROM nex_canonical_projection_observations WHERE projection_revision_id = $1;`,
+          [projId]
+        );
+        assert.equal(obsLinks.rows.length, 1);
+        assert.equal(obsLinks.rows[0].observation_id, obsId);
+
+        const revLinks = await client.query(
+          `SELECT * FROM nex_canonical_projection_reviews WHERE projection_revision_id = $1;`,
+          [projId]
+        );
+        assert.equal(revLinks.rows.length, 1);
+        assert.equal(revLinks.rows[0].review_id, revId);
+      } finally {
+        client.release();
+      }
+    });
+
+    it('B2: Constraint legacy fica convalidated = false e existe no catálogo', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query(`SET search_path TO ${schemaLegacy}, public;`);
+        const res = await client.query(`
+          SELECT conname, convalidated, contype
+          FROM pg_constraint
+          WHERE conname = 'nex_proj_reconciliation_case_fk'
+            AND conrelid = '${schemaLegacy}.nex_canonical_projection_revisions'::regclass;
+        `);
+
+        assert.equal(res.rows.length, 1);
+        assert.equal(res.rows[0].conname, 'nex_proj_reconciliation_case_fk');
+        assert.equal(res.rows[0].convalidated, false);
+        assert.equal(res.rows[0].contype, 'f');
+      } finally {
+        client.release();
+      }
+    });
+
+    it('B3: Novo registro órfão é rejeitado por violação de foreign key (SQLSTATE 23503)', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query(`SET search_path TO ${schemaLegacy}, public;`);
+
+        await assert.rejects(
+          async () => {
+            await client.query(`
+              INSERT INTO nex_canonical_projection_revisions (
+                projection_revision_id, domain, entity_type, entity_id, canonical_state,
+                reconciliation_case_id, supersedes_revision_id, materialized_at, explanation
+              ) VALUES (
+                'proj_new_orphan', 'supplier_product', 'product', 'prod_legacy_100', '{"price": 110}'::jsonb,
+                'another_missing_case', 'proj_legacy_b1', now(), 'Tentativa de novo órfão'
+              );
+            `);
+          },
+          (err: any) => {
+            assert.equal(err.code, '23503');
+            assert.match(err.message, /nex_proj_reconciliation_case_fk/);
+            return true;
+          }
+        );
+      } finally {
+        client.release();
+      }
+    });
+
+    it('B4: Novo case persistente válido é aceito e referenciado por nova projection', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query(`SET search_path TO ${schemaLegacy}, public;`);
+
+        const validCaseId = 'case_valid_085d_test';
+        await client.query(`
+          INSERT INTO nex_reconciliation_case_revisions (
+            case_id, version, subject_domain, subject_entity_type, subject_entity_id,
+            observation_ids, review_ids, lifecycle, status, opened_at
+          ) VALUES (
+            $1, 1, 'supplier_product', 'product', 'prod_legacy_100',
+            '["obs_legacy_b1"]'::jsonb, '["rev_legacy_b1"]'::jsonb, 'open', 'open', now()
+          );
+        `, [validCaseId]);
+
+        await client.query(`
+          INSERT INTO nex_reconciliation_case_heads (case_id, current_version, updated_at)
+          VALUES ($1, 1, now());
+        `, [validCaseId]);
+
+        await client.query(`
+          INSERT INTO nex_canonical_projection_revisions (
+            projection_revision_id, domain, entity_type, entity_id, canonical_state,
+            reconciliation_case_id, supersedes_revision_id, materialized_at, explanation
+          ) VALUES (
+            'proj_valid_with_case', 'supplier_product', 'product', 'prod_legacy_100', '{"price": 120}'::jsonb,
+            $1, 'proj_legacy_b1', now(), 'Nova projeção com case válido existente'
+          );
+        `, [validCaseId]);
+
+        const check = await client.query(
+          `SELECT * FROM nex_canonical_projection_revisions WHERE projection_revision_id = 'proj_valid_with_case';`
+        );
+        assert.equal(check.rows.length, 1);
+        assert.equal(check.rows[0].reconciliation_case_id, validCaseId);
+      } finally {
+        client.release();
+      }
+    });
+
+    it('B5: Projection com reconciliation_case_id = NULL continua válida', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query(`SET search_path TO ${schemaLegacy}, public;`);
+
+        await client.query(`
+          INSERT INTO nex_canonical_projection_revisions (
+            projection_revision_id, domain, entity_type, entity_id, canonical_state,
+            reconciliation_case_id, supersedes_revision_id, materialized_at, explanation
+          ) VALUES (
+            'proj_null_case', 'supplier_product', 'product', 'prod_legacy_100', '{"price": 130}'::jsonb,
+            NULL, 'proj_legacy_b1', now(), 'Nova projeção com reconciliation_case_id NULL'
+          );
+        `);
+
+        const check = await client.query(
+          `SELECT * FROM nex_canonical_projection_revisions WHERE projection_revision_id = 'proj_null_case';`
+        );
+        assert.equal(check.rows.length, 1);
+        assert.equal(check.rows[0].reconciliation_case_id, null);
+      } finally {
+        client.release();
+      }
+    });
+
+    it('B6: Banco limpo termina com constraint validada (convalidated = true)', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query(`DROP SCHEMA IF EXISTS ${schemaClean} CASCADE;`);
+        await client.query(`CREATE SCHEMA ${schemaClean};`);
+        await client.query(`SET search_path TO ${schemaClean}, public;`);
+
+        const migrationDb = createMigrationDb(client);
+        await migration085B.up({ db: migrationDb } as any);
+
+        // Projeção com reconciliation_case_id = NULL (sem órfãos)
+        await client.query(`
+          INSERT INTO nex_canonical_projection_revisions (
+            projection_revision_id, domain, entity_type, entity_id, canonical_state,
+            reconciliation_case_id, supersedes_revision_id, materialized_at, explanation
+          ) VALUES (
+            'proj_clean_1', 'supplier_product', 'product', 'prod_clean_1', '{"price": 50}'::jsonb,
+            NULL, NULL, now(), 'Projeção sem reconciliation case'
+          );
+        `);
+
+        // Executar 0.85D
+        await migration085D.up({ db: migrationDb } as any);
+
+        const res = await client.query(`
+          SELECT conname, convalidated
+          FROM pg_constraint
+          WHERE conname = 'nex_proj_reconciliation_case_fk'
+            AND conrelid = '${schemaClean}.nex_canonical_projection_revisions'::regclass;
+        `);
+
+        assert.equal(res.rows.length, 1);
+        assert.equal(res.rows[0].convalidated, true);
+      } finally {
+        client.release();
+      }
+    });
+
+    it('B7: Referências preexistentes válidas terminam com constraint validada (convalidated = true)', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query(`DROP SCHEMA IF EXISTS ${schemaValidPre} CASCADE;`);
+        await client.query(`CREATE SCHEMA ${schemaValidPre};`);
+        await client.query(`SET search_path TO ${schemaValidPre}, public;`);
+
+        const migrationDb = createMigrationDb(client);
+        await migration085B.up({ db: migrationDb } as any);
+
+        const validPreCaseId = 'case_pre_valid_123';
+
+        // Projeção pré-existente referenciando case que existirá antes do VALIDATE
+        await client.query(`
+          INSERT INTO nex_canonical_projection_revisions (
+            projection_revision_id, domain, entity_type, entity_id, canonical_state,
+            reconciliation_case_id, supersedes_revision_id, materialized_at, explanation
+          ) VALUES (
+            'proj_pre_valid_1', 'supplier_product', 'product', 'prod_pre_1', '{"price": 75}'::jsonb,
+            $1, NULL, now(), 'Projeção pré-existente com case correspondente'
+          );
+        `, [validPreCaseId]);
+
+        // Criar tabelas 0.85D e head válido correspondente antes da validação
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS nex_reconciliation_case_revisions (
+            case_id varchar NOT NULL,
+            version integer NOT NULL CHECK (version >= 1),
+            subject_domain varchar NOT NULL,
+            subject_entity_type varchar NOT NULL,
+            subject_entity_id varchar NOT NULL,
+            observation_ids jsonb NOT NULL,
+            review_ids jsonb NOT NULL,
+            lifecycle varchar NOT NULL CHECK (lifecycle IN ('open', 'resolved')),
+            status varchar NOT NULL,
+            opened_at timestamp(3) with time zone NOT NULL,
+            resolved_at timestamp(3) with time zone,
+            resolution_summary text,
+            materialized_at timestamp(3) with time zone DEFAULT now() NOT NULL,
+            PRIMARY KEY (case_id, version)
+          );
+          CREATE TABLE IF NOT EXISTS nex_reconciliation_case_heads (
+            case_id varchar PRIMARY KEY NOT NULL,
+            current_version integer NOT NULL,
+            updated_at timestamp(3) with time zone DEFAULT now() NOT NULL,
+            FOREIGN KEY (case_id, current_version) REFERENCES nex_reconciliation_case_revisions(case_id, version) ON DELETE RESTRICT
+          );
+          CREATE TABLE IF NOT EXISTS nex_contextual_precedents (
+            precedent_id varchar PRIMARY KEY NOT NULL,
+            review_event_id varchar NOT NULL,
+            context_summary text NOT NULL,
+            applicability_conditions jsonb NOT NULL,
+            policy_proposal_ref varchar,
+            created_at timestamp(3) with time zone DEFAULT now() NOT NULL
+          );
+          INSERT INTO nex_reconciliation_case_revisions (
+            case_id, version, subject_domain, subject_entity_type, subject_entity_id,
+            observation_ids, review_ids, lifecycle, status, opened_at
+          ) VALUES (
+            '${validPreCaseId}', 1, 'supplier_product', 'product', 'prod_pre_1',
+            '[]'::jsonb, '[]'::jsonb, 'open', 'open', now()
+          );
+          INSERT INTO nex_reconciliation_case_heads (case_id, current_version, updated_at)
+          VALUES ('${validPreCaseId}', 1, now());
+        `);
+
+        // Executar 0.85D UP
+        await migration085D.up({ db: migrationDb } as any);
+
+        const res = await client.query(`
+          SELECT conname, convalidated
+          FROM pg_constraint
+          WHERE conname = 'nex_proj_reconciliation_case_fk'
+            AND conrelid = '${schemaValidPre}.nex_canonical_projection_revisions'::regclass;
+        `);
+
+        assert.equal(res.rows.length, 1);
+        assert.equal(res.rows[0].convalidated, true);
+      } finally {
+        client.release();
+      }
+    });
+
+    it('B8: Ciclo UP -> DOWN -> re-UP preserva dados legados e restaura constraint NOT VALID', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query(`SET search_path TO ${schemaLegacy}, public;`);
+        const migrationDb = createMigrationDb(client);
+
+        // 1. Executar DOWN
+        await migration085D.down({ db: migrationDb } as any);
+
+        // Tabelas 0.85D não devem mais existir
+        const checkTablesDown = await client.query(`
+          SELECT table_name FROM information_schema.tables
+          WHERE table_schema = '${schemaLegacy}'
+            AND table_name IN ('nex_reconciliation_case_revisions', 'nex_reconciliation_case_heads', 'nex_contextual_precedents');
+        `);
+        assert.equal(checkTablesDown.rows.length, 0);
+
+        // FK constraint não deve mais existir
+        const checkFkDown = await client.query(`
+          SELECT conname FROM pg_constraint
+          WHERE conname = 'nex_proj_reconciliation_case_fk'
+            AND conrelid = '${schemaLegacy}.nex_canonical_projection_revisions'::regclass;
+        `);
+        assert.equal(checkFkDown.rows.length, 0);
+
+        // Projeção histórica original continua 100% intacta
+        const checkProjDown = await client.query(
+          `SELECT * FROM nex_canonical_projection_revisions WHERE projection_revision_id = 'proj_legacy_b1';`
+        );
+        assert.equal(checkProjDown.rows.length, 1);
+        assert.equal(checkProjDown.rows[0].reconciliation_case_id, 'legacy_case_missing_123');
+
+        // 2. Executar re-UP
+        await migration085D.up({ db: migrationDb } as any);
+
+        // Tabelas 0.85D existem novamente
+        const checkTablesReUp = await client.query(`
+          SELECT table_name FROM information_schema.tables
+          WHERE table_schema = '${schemaLegacy}'
+            AND table_name IN ('nex_reconciliation_case_revisions', 'nex_reconciliation_case_heads', 'nex_contextual_precedents');
+        `);
+        assert.equal(checkTablesReUp.rows.length, 3);
+
+        // FK constraint foi recriada como NOT VALID (convalidated = false)
+        const checkFkReUp = await client.query(`
+          SELECT conname, convalidated FROM pg_constraint
+          WHERE conname = 'nex_proj_reconciliation_case_fk'
+            AND conrelid = '${schemaLegacy}.nex_canonical_projection_revisions'::regclass;
+        `);
+        assert.equal(checkFkReUp.rows.length, 1);
+        assert.equal(checkFkReUp.rows[0].convalidated, false);
+
+        // Projeção histórica original continua 100% intacta
+        const checkProjReUp = await client.query(
+          `SELECT * FROM nex_canonical_projection_revisions WHERE projection_revision_id = 'proj_legacy_b1';`
+        );
+        assert.equal(checkProjReUp.rows.length, 1);
+        assert.equal(checkProjReUp.rows[0].reconciliation_case_id, 'legacy_case_missing_123');
+      } finally {
+        client.release();
+      }
     });
   });
 });

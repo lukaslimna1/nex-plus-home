@@ -58,12 +58,31 @@ export async function up({ db }: MigrateUpArgs): Promise<void> {
     CREATE INDEX IF NOT EXISTS "nex_prec_review_id_idx" ON "nex_contextual_precedents" USING btree ("review_event_id");
     CREATE INDEX IF NOT EXISTS "nex_prec_created_at_idx" ON "nex_contextual_precedents" USING btree ("created_at");
 
-    -- 4. FK NA TABELA CANONICAL PROJECTIONS
+    -- 4. FK NA TABELA CANONICAL PROJECTIONS (NOT VALID para compatibilidade com dados legados)
     ALTER TABLE "nex_canonical_projection_revisions"
       ADD CONSTRAINT "nex_proj_reconciliation_case_fk"
       FOREIGN KEY ("reconciliation_case_id")
       REFERENCES "nex_reconciliation_case_heads"("case_id")
-      ON DELETE RESTRICT;
+      ON DELETE RESTRICT
+      NOT VALID;
+
+    -- Validação condicional: somente se NÃO existirem referências órfãs históricas
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM "nex_canonical_projection_revisions" p
+        WHERE p."reconciliation_case_id" IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM "nex_reconciliation_case_heads" h
+            WHERE h."case_id" = p."reconciliation_case_id"
+          )
+      ) THEN
+        ALTER TABLE "nex_canonical_projection_revisions"
+          VALIDATE CONSTRAINT "nex_proj_reconciliation_case_fk";
+      END IF;
+    END $$;
 
     -- 5. TRIGGERS DE PROTEÇÃO APPEND-ONLY NAS TABELAS 0.85D
     CREATE TRIGGER "nex_rec_revisions_mut_trg" BEFORE UPDATE OR DELETE ON "nex_reconciliation_case_revisions" FOR EACH ROW EXECUTE FUNCTION nex_reject_append_only_mutation();
