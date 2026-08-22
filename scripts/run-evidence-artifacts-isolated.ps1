@@ -103,9 +103,45 @@ try {
 
     # Ajustar ledger de batches
     & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 2 WHERE name = '20260820_030631_multiuser_auth';" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Falha ao ajustar batch da migration 20260820_030631_multiuser_auth para 2" }
+
     & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 3 WHERE name = '20260821_210000_observation_persistence';" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Falha ao ajustar batch da migration 20260821_210000_observation_persistence para 3" }
+
     & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 4 WHERE name = '20260821_220000_evidence_artifact_store';" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Falha ao ajustar batch da migration 20260821_220000_evidence_artifact_store para 4" }
+
     & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 5 WHERE name = '20260821_230000_reconciliation_and_precedents';" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Falha ao ajustar batch da migration 20260821_230000_reconciliation_and_precedents para 5" }
+
+    # Consultar o ledger e provar correspondência exata dos batches
+    $ledgerRowsRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT name || '=' || batch FROM payload_migrations ORDER BY name;"
+    if ($LASTEXITCODE -ne 0) { throw "Falha ao consultar ledger de payload_migrations" }
+
+    $ledgerMap = @{}
+    foreach ($row in ($ledgerRowsRaw -split "`n")) {
+        $trimmed = $row.Trim()
+        if ($trimmed) {
+            $parts = $trimmed.Split('=')
+            if ($parts.Length -eq 2) {
+                $ledgerMap[$parts[0]] = [int]$parts[1]
+            }
+        }
+    }
+
+    if ($ledgerMap['20260820_030631_multiuser_auth'] -ne 2) {
+        throw "Verificação do ledger falhou: 20260820_030631_multiuser_auth batch esperado 2, obtido $($ledgerMap['20260820_030631_multiuser_auth'])"
+    }
+    if ($ledgerMap['20260821_210000_observation_persistence'] -ne 3) {
+        throw "Verificação do ledger falhou: 20260821_210000_observation_persistence batch esperado 3, obtido $($ledgerMap['20260821_210000_observation_persistence'])"
+    }
+    if ($ledgerMap['20260821_220000_evidence_artifact_store'] -ne 4) {
+        throw "Verificação do ledger falhou: 20260821_220000_evidence_artifact_store batch esperado 4, obtido $($ledgerMap['20260821_220000_evidence_artifact_store'])"
+    }
+    if ($ledgerMap['20260821_230000_reconciliation_and_precedents'] -ne 5) {
+        throw "Verificação do ledger falhou: 20260821_230000_reconciliation_and_precedents batch esperado 5, obtido $($ledgerMap['20260821_230000_reconciliation_and_precedents'])"
+    }
+    Write-Host "Ledger de migrations verificado e validado com sucesso (batches 1..5 ordenados)." -ForegroundColor Green
 
     # Verificar tabelas 0.85C criadas pós-UP
     $tablesUpRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
@@ -126,9 +162,14 @@ try {
 
     # 6. Testar Migration DOWN (Rollback de 0.85D e 0.85C)
     Write-Host "`n[3/5] Testando rollback de migration (DOWN ordenado de 0.85D e 0.85C) no banco descartável..." -ForegroundColor Yellow
+
+    Write-Host "Executando DOWN 1/2 (0.85D: reconciliation_and_precedents)..."
     & npx payload migrate:down
+    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 1/2 (0.85D: reconciliation_and_precedents) no banco descartável" }
+
+    Write-Host "Executando DOWN 2/2 (0.85C: evidence_artifact_store)..."
     & npx payload migrate:down
-    if ($LASTEXITCODE -ne 0) { throw "Falha ao executar payload migrate:down para 0.85C no banco descartável" }
+    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 2/2 (0.85C: evidence_artifact_store) no banco descartável" }
 
     # Verificar estrutura pós-DOWN
     $tablesDownRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
@@ -183,11 +224,20 @@ finally {
     # 9. Destruição segura e garantida do Database Descartável
     Write-Host "`nLimpeza: destruindo banco de dados descartável..." -ForegroundColor Yellow
     if ($disposableDbName -and $disposableDbName.StartsWith("nex_art_") -and $disposableDbName -ne $operationalDbName) {
-        & psql -h $operationalHost -p $operationalPort -U $operationalUser -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$disposableDbName' AND pid <> pg_backend_pid();" | Out-Null
+        try {
+            & psql -h $operationalHost -p $operationalPort -U $operationalUser -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$disposableDbName' AND pid <> pg_backend_pid();" | Out-Null
+        } catch {}
+
         & dropdb -h $operationalHost -p $operationalPort -U $operationalUser $disposableDbName
-        Write-Host "Banco descartável '$disposableDbName' removido com sucesso." -ForegroundColor Green
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[FAIL] Falha ao destruir banco de dados descartável '$disposableDbName' (exit code: $LASTEXITCODE)." -ForegroundColor Red
+            $exitCode = 1
+        } else {
+            Write-Host "Banco descartável '$disposableDbName' removido com sucesso." -ForegroundColor Green
+        }
     } else {
         Write-Host "[SECURITY_WARN] Nome do banco não passou na validação de drop: $disposableDbName" -ForegroundColor Red
+        $exitCode = 1
     }
 }
 
