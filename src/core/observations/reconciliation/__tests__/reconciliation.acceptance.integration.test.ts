@@ -148,7 +148,7 @@ describe('Escopo 0.85D · Matriz de Aceitação de Reconciliação (Checkpoint 2
       await pool.end();
     }
     if (tempBlobDir) {
-      await fs.rm(tempBlobDir, { recursive: true, force: true }).catch(() => {});
+      await fs.rm(tempBlobDir, { recursive: true, force: true });
     }
   });
 
@@ -299,6 +299,26 @@ describe('Escopo 0.85D · Matriz de Aceitação de Reconciliação (Checkpoint 2
     assert.equal(readB.metadata.byteSize, renderPayload.length);
     assert.match(readB.metadata.sha256, /^[0-9a-f]{64}$/);
     assert.deepEqual(readB.bytes, renderPayload);
+
+    // 9. Prova de Releitura da Review do MAX e Vínculos de Evidência Material
+    const savedMaxRev = await obsPersistence.getReview(maxReview.reviewId);
+    assert.ok(savedMaxRev, 'Review do MAX deve ser encontrada ao reler do banco');
+    assert.equal(savedMaxRev.decision, 'divergent');
+    assert.ok(savedMaxRev.consideredEvidenceIds);
+    assert.deepEqual(
+      savedMaxRev.consideredEvidenceIds.slice().sort(),
+      [artifactA.artifactId, artifactB.artifactId].sort()
+    );
+
+    const pgEvidenceRows = await pool.query<{ evidence_artifact_id: string }>(
+      `SELECT evidence_artifact_id FROM nex_review_event_evidence WHERE review_id = $1 ORDER BY evidence_artifact_id ASC`,
+      [maxReview.reviewId]
+    );
+    assert.equal(pgEvidenceRows.rows.length, 2);
+    assert.deepEqual(
+      pgEvidenceRows.rows.map((r) => r.evidence_artifact_id).sort(),
+      [artifactA.artifactId, artifactB.artifactId].sort()
+    );
 
     // Nenhuma CanonicalProjection foi gerada
     const canonicalHead = await obsPersistence.getCurrentCanonicalHead(subjectP1);
@@ -894,6 +914,34 @@ describe('Escopo 0.85D · Matriz de Aceitação de Reconciliação (Checkpoint 2
     assert.equal(dbObs0.occurredAt, sameOccurredAt);
     assert.equal(dbObs1.occurredAt, sameOccurredAt);
     assert.equal(dbObs0.occurredAt, dbObs1.occurredAt, 'Ocorrência factual no mundo foi a mesma; erro foi de classificação humana');
+
+    // 9. Prova de Releitura das Reviews Persistidas e Vínculos de EvidenceArtifact
+    const savedHumanRev = await obsPersistence.getReview(reviewHumanT0.reviewId);
+    assert.ok(savedHumanRev, 'Review humana T0 deve ser encontrada no banco');
+    assert.deepEqual(savedHumanRev.consideredEvidenceIds, [artifactIncomplete.artifactId]);
+    assert.deepEqual(savedHumanRev.targetObservationIds, [obsP5T0.observationId]);
+
+    const savedMaxRev = await obsPersistence.getReview(maxReviewContest.reviewId);
+    assert.ok(savedMaxRev, 'Review do MAX deve ser encontrada no banco');
+    assert.ok(savedMaxRev.consideredEvidenceIds);
+    assert.deepEqual(
+      savedMaxRev.consideredEvidenceIds.slice().sort(),
+      [artifactIncomplete.artifactId, artifactComplete.artifactId].sort()
+    );
+    assert.deepEqual(
+      savedMaxRev.targetObservationIds.slice().sort(),
+      [obsP5T0.observationId, obsP5T1.observationId].sort()
+    );
+
+    const pgMaxEvidenceRows = await pool.query<{ evidence_artifact_id: string }>(
+      `SELECT evidence_artifact_id FROM nex_review_event_evidence WHERE review_id = $1 ORDER BY evidence_artifact_id ASC`,
+      [maxReviewContest.reviewId]
+    );
+    assert.equal(pgMaxEvidenceRows.rows.length, 2);
+    assert.deepEqual(
+      pgMaxEvidenceRows.rows.map((r) => r.evidence_artifact_id).sort(),
+      [artifactIncomplete.artifactId, artifactComplete.artifactId].sort()
+    );
   });
 
   // ==========================================================================

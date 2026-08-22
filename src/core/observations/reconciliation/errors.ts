@@ -82,3 +82,36 @@ export class CanonicalPromotionAuthorityError extends Error {
     this.explanation = explanation;
   }
 }
+
+export class StaleReviewPreservationError extends Error {
+  readonly reviewId: ReviewEventId;
+  readonly staleConflict: Error;
+
+  constructor(
+    reviewId: ReviewEventId,
+    staleConflict: Error,
+    explanation: string,
+    options?: { cause?: unknown }
+  ) {
+    super(`Failed to preserve stale review '${reviewId}': ${explanation}`, options);
+    this.name = 'StaleReviewPreservationError';
+    this.reviewId = reviewId;
+    this.staleConflict = staleConflict;
+  }
+}
+
+export class ReviewIdentityConflictError extends Error {
+  readonly reviewId: ReviewEventId;
+  readonly reason: string;
+
+  constructor(
+    reviewId: ReviewEventId,
+    reason: string,
+    options?: { cause?: unknown }
+  ) {
+    super(`Review identity conflict for '${reviewId}': ${reason}`, options);
+    this.name = 'ReviewIdentityConflictError';
+    this.reviewId = reviewId;
+    this.reason = reason;
+  }
+}

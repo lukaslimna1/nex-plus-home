@@ -3,6 +3,7 @@
  * Escopo 0.85 (Bloco 0.85D)
  */
 
+import { isDeepStrictEqual } from 'node:util';
 import type {
   ReviewEvent,
   NonCanonicalReviewEvent,
@@ -32,7 +33,44 @@ import {
   assertCanonicalPromotionAuthority,
   assertReconciliationCaseCoherence,
 } from './validators';
-import { CanonicalPromotionAuthorityError } from './errors';
+import {
+  CanonicalPromotionAuthorityError,
+  StaleReviewPreservationError,
+  ReviewIdentityConflictError,
+} from './errors';
+
+function normalizeArrayLinks<T extends string>(arr?: readonly T[]): readonly T[] | undefined {
+  if (!arr || arr.length === 0) {
+    return undefined;
+  }
+  return [...arr].sort();
+}
+
+function areContestedReviewsSemanticallyEquivalent(
+  existing: ReviewEvent,
+  expected: NonCanonicalReviewEvent
+): boolean {
+  if (existing.reviewId !== expected.reviewId) return false;
+  if (existing.decision !== expected.decision) return false;
+  if (!isDeepStrictEqual(existing.actor, expected.actor)) return false;
+  if ((existing.targetBaseRevisionId ?? null) !== (expected.targetBaseRevisionId ?? null)) return false;
+  if (existing.justification !== expected.justification) return false;
+  if (existing.reviewedAt !== expected.reviewedAt) return false;
+
+  const existingObs = normalizeArrayLinks(existing.targetObservationIds);
+  const expectedObs = normalizeArrayLinks(expected.targetObservationIds);
+  if (!isDeepStrictEqual(existingObs, expectedObs)) return false;
+
+  const existingPrev = normalizeArrayLinks(existing.previousReviewIds);
+  const expectedPrev = normalizeArrayLinks(expected.previousReviewIds);
+  if (!isDeepStrictEqual(existingPrev, expectedPrev)) return false;
+
+  const existingEv = normalizeArrayLinks(existing.consideredEvidenceIds);
+  const expectedEv = normalizeArrayLinks(expected.consideredEvidenceIds);
+  if (!isDeepStrictEqual(existingEv, expectedEv)) return false;
+
+  return true;
+}
 
 export class ReconciliationCoordinator {
   constructor(
@@ -61,7 +99,7 @@ export class ReconciliationCoordinator {
    * Exige HumanActor e HumanAuthorizationDecision com veredicto 'authorized'.
    * Se a transação atômica for abortada por conflito de base stale (StaleCanonicalBaseConflictError),
    * preserva a avaliação humana no histórico como ReviewEvent não-canônico com decision 'contested'
-   * e relança o erro original fail-closed.
+   * de forma fail-visible e relança o erro original fail-closed.
    */
   async submitCanonicalPromotion(
     params: SubmitCanonicalPromotionParams
@@ -78,30 +116,90 @@ export class ReconciliationCoordinator {
       });
     } catch (err: unknown) {
       if (err instanceof StaleCanonicalBaseConflictError) {
-        // Materializar a avaliação humana como NonCanonicalReviewEvent ('contested') para auditoria histórica
-        try {
-          const staleContestedReview: NonCanonicalReviewEvent = {
-            reviewId: params.review.reviewId,
-            actor: params.review.actor,
-            decision: 'contested',
-            targetObservationIds: params.review.targetObservationIds,
-            previousReviewIds: params.review.previousReviewIds,
-            consideredEvidenceIds: params.review.consideredEvidenceIds,
-            targetBaseRevisionId: params.review.targetBaseRevisionId ?? params.expectedBaseRevisionId,
-            justification: params.review.justification,
-            reviewedAt: params.review.reviewedAt,
-          };
+        const expectedContestedReview: NonCanonicalReviewEvent = {
+          reviewId: params.review.reviewId,
+          actor: params.review.actor,
+          decision: 'contested',
+          targetObservationIds: params.review.targetObservationIds,
+          previousReviewIds: params.review.previousReviewIds,
+          consideredEvidenceIds: params.review.consideredEvidenceIds,
+          targetBaseRevisionId: params.review.targetBaseRevisionId ?? params.expectedBaseRevisionId,
+          justification: params.review.justification,
+          reviewedAt: params.review.reviewedAt,
+        };
 
-          const existingReview = await this.observationPersistence.getReview(params.review.reviewId);
-          if (!existingReview) {
-            await this.observationPersistence.recordNonCanonicalReview(staleContestedReview);
-          }
-        } catch {
-          // Preservar sempre a propagação do StaleCanonicalBaseConflictError original
-        }
+        // Preservação fail-visible da avaliação stale no histórico
+        await this.ensureStaleReviewPreserved(expectedContestedReview, err);
+
+        // Se a preservação foi confirmada, relança o StaleCanonicalBaseConflictError original
         throw err;
       }
       throw err;
+    }
+  }
+
+  private async ensureStaleReviewPreserved(
+    expectedReview: NonCanonicalReviewEvent,
+    staleError: StaleCanonicalBaseConflictError
+  ): Promise<void> {
+    let existing: ReviewEvent | null = null;
+    try {
+      existing = await this.observationPersistence.getReview(expectedReview.reviewId);
+    } catch (readErr) {
+      throw new StaleReviewPreservationError(
+        expectedReview.reviewId,
+        staleError,
+        'Failed to read pre-existing review state.',
+        { cause: readErr }
+      );
+    }
+
+    if (existing) {
+      if (areContestedReviewsSemanticallyEquivalent(existing, expectedReview)) {
+        return; // Preservação já confirmada e equivalente
+      }
+      throw new ReviewIdentityConflictError(
+        expectedReview.reviewId,
+        'Pre-existing review with same reviewId has divergent semantic payload.'
+      );
+    }
+
+    // Tentar gravar a review contested
+    try {
+      await this.observationPersistence.recordNonCanonicalReview(expectedReview);
+      return; // Gravado com sucesso
+    } catch (insertErr) {
+      // Falha no INSERT: pode ser corrida concorrente de retry
+      let afterInsert: ReviewEvent | null = null;
+      try {
+        afterInsert = await this.observationPersistence.getReview(expectedReview.reviewId);
+      } catch (readAfterErr) {
+        throw new StaleReviewPreservationError(
+          expectedReview.reviewId,
+          staleError,
+          'Failed to verify review persistence after insert failure.',
+          { cause: readAfterErr }
+        );
+      }
+
+      if (afterInsert) {
+        if (areContestedReviewsSemanticallyEquivalent(afterInsert, expectedReview)) {
+          return; // Concorrência idempotente confirmada
+        }
+        throw new ReviewIdentityConflictError(
+          expectedReview.reviewId,
+          'Concurrently inserted review with same reviewId has divergent semantic payload.',
+          { cause: insertErr }
+        );
+      }
+
+      // Continua ausente: falha de preservação real
+      throw new StaleReviewPreservationError(
+        expectedReview.reviewId,
+        staleError,
+        'Failed to persist stale review to database.',
+        { cause: insertErr }
+      );
     }
   }
 
