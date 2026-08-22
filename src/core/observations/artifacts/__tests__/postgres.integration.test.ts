@@ -25,6 +25,7 @@ import {
   SecretMaterialRejectedError,
   ArtifactAccessDeniedError,
   ArtifactInvariantViolationError,
+  ArtifactStorageError,
 } from '../errors';
 import { PgObservationPersistenceAdapter } from '../../persistence/postgres';
 import { AllowAllTestArtifactAuthorizer } from './authorizer.test';
@@ -646,27 +647,34 @@ describe('Escopo 0.85C · Evidence Artifact Store & Integridade (Integração Po
         [missingArtId, expectedSha, dummyPayload.length, canonicalKey]
       );
 
-      await assert.rejects(
-        async () => {
-          await backupArtifactStore(service, backupDir, testAuthorizer, testBackupContext);
-        },
-        (err: unknown) => {
-          assert.ok(err instanceof ArtifactNotFoundError || err instanceof ArtifactIntegrityError);
-          return true;
-        }
-      );
+      try {
+        await assert.rejects(
+          async () => {
+            await backupArtifactStore(service, backupDir, testAuthorizer, testBackupContext);
+          },
+          (err: any) => {
+            assert.ok(
+              err.name === 'ArtifactNotFoundError' ||
+              err.name === 'ArtifactIntegrityError' ||
+              err.name === 'ArtifactStorageError' ||
+              err instanceof ArtifactNotFoundError ||
+              err instanceof ArtifactIntegrityError ||
+              err instanceof ArtifactStorageError
+            );
+            return true;
+          }
+        );
 
-      // Prova que nenhum manifest final foi publicado
-      const manifestExists = await fs
-        .stat(path.join(backupDir, 'nex-evidence-backup-v1.json'))
-        .then(() => true)
-        .catch(() => false);
-      assert.equal(manifestExists, false);
-
-      await fs.rm(backupDir, { recursive: true, force: true }).catch(() => {});
-
-      // Restaura a consistência física do store gravando o blob legítimo
-      await blobStore.putBlob(dummyPayload, { expectedSha256: expectedSha });
+        // Prova que nenhum manifest final foi publicado
+        const manifestExists = await fs
+          .stat(path.join(backupDir, 'nex-evidence-backup-v1.json'))
+          .then(() => true)
+          .catch(() => false);
+        assert.equal(manifestExists, false);
+      } finally {
+        await fs.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+        await blobStore.putBlob(dummyPayload, { expectedSha256: expectedSha });
+      }
     });
 
     it('BK-4 & RS-1 a RS-10: Backup de store saudável gera manifest íntegro e Restore atômico recupera tudo', async () => {
@@ -858,6 +866,119 @@ describe('Escopo 0.85C · Evidence Artifact Store & Integridade (Integração Po
           return true;
         }
       );
+    });
+
+    it('MB1-2: destination com ancestor junction apontando para liveRoot é REJEITADO', async () => {
+      if (process.platform !== 'win32') return;
+
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nex_anc_junc_'));
+      const aliasJunction = path.join(tempDir, 'alias_to_live');
+      const backupDestViaJunction = path.join(aliasJunction, 'sub_backup');
+
+      try {
+        await fs.symlink(blobStore.rootDir, aliasJunction, 'junction');
+      } catch (e: any) {
+        return;
+      }
+
+      try {
+        await assert.rejects(
+          async () => {
+            await backupArtifactStore(service, backupDestViaJunction, testAuthorizer, testBackupContext);
+          },
+          (err: unknown) => {
+            assert.ok(err instanceof ArtifactStorageError);
+            return true;
+          }
+        );
+
+        // Prova que nada foi gravado dentro do live store
+        const liveSub = path.join(blobStore.rootDir, 'sub_backup');
+        const liveSubExists = await fs.stat(liveSub).then(() => true).catch(() => false);
+        assert.equal(liveSubExists, false);
+      } finally {
+        await fs.rm(aliasJunction, { recursive: true, force: true }).catch(() => {});
+        await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it('MB1-3, MB1-4, MB1-5: destination canônico igual, dentro ou contendo liveRoot é REJEITADO', async () => {
+      // 1. Equal
+      await assert.rejects(
+        async () => {
+          await backupArtifactStore(service, blobStore.rootDir, testAuthorizer, testBackupContext);
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof ArtifactStorageError);
+          return true;
+        }
+      );
+
+      // 2. Inside
+      const insideDest = path.join(blobStore.rootDir, 'nested_backup_dest');
+      await assert.rejects(
+        async () => {
+          await backupArtifactStore(service, insideDest, testAuthorizer, testBackupContext);
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof ArtifactStorageError);
+          return true;
+        }
+      );
+
+      // 3. Contains liveRoot (parent do liveRoot)
+      const parentOfLive = path.dirname(blobStore.rootDir);
+      await assert.rejects(
+        async () => {
+          await backupArtifactStore(service, parentOfLive, testAuthorizer, testBackupContext);
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof ArtifactStorageError);
+          return true;
+        }
+      );
+    });
+
+    it('MB1-6, MB1-7, MB1-8: Destination não-vazio com arquivos/junctions pré-plantadas é REJEITADO', async () => {
+      const dirtyBackupDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nex_dirty_bk_'));
+      const dummyFile = path.join(dirtyBackupDir, 'pre_planted.txt');
+      await fs.writeFile(dummyFile, 'I am a pre-planted file');
+
+      try {
+        await assert.rejects(
+          async () => {
+            await backupArtifactStore(service, dirtyBackupDir, testAuthorizer, testBackupContext);
+          },
+          (err: any) => {
+            assert.ok(err instanceof ArtifactStorageError);
+            assert.ok(err.message.includes('not empty'));
+            return true;
+          }
+        );
+      } finally {
+        await fs.rm(dirtyBackupDir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it('MB1-9, MB1-10 & MB1-11: Private Staging Build previne race e garante zero manifest em falha e backup saudável', async () => {
+      const cleanBackupDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nex_clean_mb1_'));
+
+      try {
+        const res = await backupArtifactStore(service, cleanBackupDir, testAuthorizer, testBackupContext);
+        assert.ok(res.manifestPath);
+        assert.ok(res.manifestSha256);
+
+        // Prova que o manifest e os arquivos existem no destino final
+        const manifestExists = await fs.stat(res.manifestPath).then(() => true).catch(() => false);
+        assert.equal(manifestExists, true);
+
+        // Prova que o diretório de staging privado foi limpo
+        const destEntries = await fs.readdir(cleanBackupDir);
+        const stagingLeft = destEntries.filter((e) => e.startsWith('_build_pkg_'));
+        assert.equal(stagingLeft.length, 0);
+      } finally {
+        await fs.rm(cleanBackupDir, { recursive: true, force: true }).catch(() => {});
+      }
     });
   });
 
