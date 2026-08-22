@@ -64,12 +64,12 @@ import type {
 } from '../contracts';
 
 import { evaluateCandidateRoute } from '../route-evaluation';
-import { evaluateDecision } from '../selection';
 import {
-  assessContinuationAfterAttempt,
+  evaluateDecision,
   buildAttemptCreatedEvent,
-} from '../continuation';
-import { __resetAdmissionRuntimeForTestsOnly } from '../admission-authority';
+  __resetAdmissionRuntimeForTestsOnly,
+} from '../selection';
+import { assessContinuationAfterAttempt } from '../continuation';
 
 const defaultProvenance: FactProvenance = {
   source: 'official_docs',

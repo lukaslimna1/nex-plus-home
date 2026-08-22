@@ -15,16 +15,28 @@ import type {
   RouteEvaluationId,
 } from '../../execution/contracts';
 import type {
+  AdapterRevisionRef,
   BindingRevisionId,
+  CapabilityKey,
+  CapabilityRevision,
   CapabilityRevisionId,
+  CapabilityRouteBindingRevision,
+  FactProvenance,
+  RouteKey,
+  RouteRevision,
   RouteRevisionId,
+  RouteTermsKey,
+  RouteTermsRevision,
+  RouteTermsRevisionId,
+  TermsResolutionContext,
 } from '../../capabilities/contracts';
+import { createCapabilityRegistry } from '../../capabilities/registry';
+import type { PolicyKey, PolicyRevision, PolicyRevisionId } from '../../policy/contracts';
 import type {
   DecisionMaterialContextId,
   DispatchAdmission,
   DispatchAdmissionId,
 } from '../../evaluation/contracts';
-import type { PolicyRevisionId } from '../../policy/contracts';
 
 import type {
   GovernorDecision,
@@ -42,24 +54,112 @@ import {
   ResourceAdmissionMismatchError,
 } from '../integration/attempt-admission';
 import {
-  issueDispatchAdmissionInternal,
+  evaluateDecision,
   __resetAdmissionRuntimeForTestsOnly,
-} from '../../evaluation/admission-authority';
+} from '../../evaluation/selection';
+
+const defaultProvenance: FactProvenance = {
+  source: 'direct_observation',
+  acquisitionBasis: 'observed',
+  verificationStatus: 'empirically_verified',
+  observedAt: '2026-08-19T18:50:00.000Z',
+};
+
+const defaultPolicy: PolicyRevision = {
+  policyKey: 'policy.standard' as PolicyKey,
+  policyRevisionId: 'rev_pol_std' as PolicyRevisionId,
+  supersedesRevisionIds: [],
+  defaultSensitivity: 'NORMAL',
+  zeroCostRequired: true,
+};
+
+const defaultTermsContext: TermsResolutionContext = {
+  at: '2026-08-19T18:50:00.000Z',
+};
 
 function createMockDispatchAdmission(overrides: Partial<DispatchAdmission> = {}): DispatchAdmission {
-  const adm: DispatchAdmission = {
-    admissionId: `disp_adm_${Math.random().toString(36).substring(2, 8)}` as DispatchAdmissionId,
-    decisionId: 'dec_01' as DecisionId,
-    materialContextId: 'ctx_01' as DecisionMaterialContextId,
-    routeEvaluationId: 'eval_01' as RouteEvaluationId,
-    capabilityRevisionId: 'cap_rev_01' as CapabilityRevisionId,
-    bindingRevisionId: 'bind_rev_01' as BindingRevisionId,
-    routeRevisionId: 'route_rev_01' as RouteRevisionId,
-    policyRevisionId: 'pol_rev_01' as PolicyRevisionId,
-    admittedAt: '2026-08-19T20:00:00.000Z',
-    ...overrides,
+  const registry = createCapabilityRegistry();
+  const capId = overrides.capabilityRevisionId ?? ('cap_rev_01' as CapabilityRevisionId);
+  const routeId = overrides.routeRevisionId ?? ('route_rev_01' as RouteRevisionId);
+  const bindId = overrides.bindingRevisionId ?? ('bind_rev_01' as BindingRevisionId);
+  const polId = (overrides.policyRevisionId ?? defaultPolicy.policyRevisionId) as PolicyRevisionId;
+  const decisionId = overrides.decisionId ?? ('dec_01' as DecisionId);
+  const materialContextId = overrides.materialContextId ?? ('ctx_01' as DecisionMaterialContextId);
+
+  const cap: CapabilityRevision = {
+    capabilityKey: 'cap.mock' as CapabilityKey,
+    capabilityRevisionId: capId,
+    lifecycle: 'active',
+    supersedesRevisionIds: [],
+    title: 'Mock Cap',
+    description: 'Mock Description',
+    inputSchema: { type: 'object' },
+    outputSchema: { type: 'object' },
+    domainEffect: 'none',
   };
-  return issueDispatchAdmissionInternal(adm);
+  const route: RouteRevision = {
+    routeKey: 'route.mock' as RouteKey,
+    routeRevisionId: routeId,
+    lifecycle: 'active',
+    supersedesRevisionIds: [],
+    adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+    supportedExecutionModes: ['atomic_batch'],
+    idempotencyProfile: { supportType: 'none' },
+    networkTopologyScopes: ['loopback'],
+    controlOwnership: 'operator_managed',
+    externalServiceNature: 'none',
+    crossesEgressBoundary: false,
+    domainEffect: 'none',
+  };
+  const bind: CapabilityRouteBindingRevision = {
+    bindingKey: 'bind.mock' as any,
+    bindingRevisionId: bindId,
+    capabilityRevisionId: capId,
+    routeRevisionId: routeId,
+    adapterRevisionRef: 'adapter_v1' as AdapterRevisionRef,
+    supportedExecutionModes: ['atomic_batch'],
+    domainEffectAtested: 'none',
+    compatibilityProvenance: defaultProvenance,
+    supersedesRevisionIds: [],
+  };
+  const terms: RouteTermsRevision = {
+    termsKey: 'terms.mock' as RouteTermsKey,
+    termsRevisionId: 'terms_rev_01' as RouteTermsRevisionId,
+    routeRevisionId: routeId,
+    supersedesRevisionIds: [],
+    provenance: defaultProvenance,
+    billingStatus: 'known_none',
+    billingComponents: [],
+    freeEntitlementStatus: 'known_none',
+    freeEntitlements: [],
+    effectiveFrom: '2026-08-01T00:00:00.000Z',
+  };
+
+  registry.registerCapabilityRevision(cap);
+  registry.registerRouteRevision(route);
+  registry.registerTermsRevision(terms);
+  registry.registerBindingRevision(bind);
+
+  const policy: PolicyRevision = {
+    ...defaultPolicy,
+    policyRevisionId: polId,
+  };
+
+  const result = evaluateDecision({
+    decisionId,
+    materialContextId,
+    interpretation: { clarity: 'clear', potentiallyMutating: false, capabilityKey: cap.capabilityKey },
+    capabilityRegistry: registry,
+    policy,
+    containsSecretMaterial: false,
+    termsContext: defaultTermsContext,
+    decidedAt: overrides.admittedAt ?? '2026-08-19T20:00:00.000Z',
+  });
+
+  if (!result.admission) {
+    throw new Error(`[Test] Failed to create mock admission: ${result.reasonCode}`);
+  }
+  return result.admission;
 }
 
 function createMockRequest(overrides: Partial<ResourceRequest> = {}): ResourceRequest {
@@ -67,7 +167,7 @@ function createMockRequest(overrides: Partial<ResourceRequest> = {}): ResourceRe
     requestId: 'req_01' as ResourceRequestId,
     decisionId: 'dec_01' as DecisionId,
     materialContextId: 'ctx_01' as DecisionMaterialContextId,
-    routeEvaluationId: 'eval_01' as RouteEvaluationId,
+    routeEvaluationId: 'eval_dec_01_route_rev_01' as RouteEvaluationId,
     routeRevisionId: 'route_rev_01' as RouteRevisionId,
     profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId,
     targetModel: 'llama3:8b',
@@ -97,7 +197,7 @@ function createMockResourceAdmission(overrides: Partial<ResourceAdmission> = {})
     requestId: 'req_01' as ResourceRequestId,
     decisionId: 'dec_01' as DecisionId,
     materialContextId: 'ctx_01' as DecisionMaterialContextId,
-    routeEvaluationId: 'eval_01' as RouteEvaluationId,
+    routeEvaluationId: 'eval_dec_01_route_rev_01' as RouteEvaluationId,
     routeRevisionId: 'route_rev_01' as RouteRevisionId,
     profileRevisionId: 'prof_rev_std' as ResourceProfileRevisionId,
     resourceSnapshotId: 'snap_01' as ResourceSnapshotId,
@@ -379,7 +479,7 @@ describe('NEX+ Resource Governor · Core 0.5 Integration (Fase B & Hardening)', 
     assert.equal(event.type, 'AttemptCreated');
     assert.equal(event.attemptId, 'att_01');
     assert.equal(event.decisionId, 'dec_01');
-    assert.equal(event.routeEvaluationId, 'eval_01');
+    assert.equal(event.routeEvaluationId, dispatch.routeEvaluationId);
     assert.equal(event.routeRevisionId, 'route_rev_01');
     assert.equal(event.createdAt, '2026-08-19T20:00:01.000Z');
   });

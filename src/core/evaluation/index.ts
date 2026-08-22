@@ -10,5 +10,11 @@ export {
   DispatchAdmissionAlreadyConsumedError,
 } from './admission-authority';
 export * from './route-evaluation';
-export * from './selection';
+export {
+  evaluateDecision,
+  buildAttemptCreatedEvent,
+  type EvaluateDecisionParams,
+  type BuildAttemptCreatedEventParams,
+  type CapabilityRegistryStore,
+} from './selection';
 export * from './continuation';

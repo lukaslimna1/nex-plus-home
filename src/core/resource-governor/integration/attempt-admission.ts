@@ -9,7 +9,7 @@
 
 import type { AttemptCreatedEvent, AttemptId } from '../../execution/contracts';
 import type { DecisionMaterialContextId, DispatchAdmission } from '../../evaluation/contracts';
-import { buildAttemptCreatedEvent } from '../../evaluation/continuation';
+import { buildAttemptCreatedEvent } from '../../evaluation/selection';
 
 import type {
   GovernorDecision,

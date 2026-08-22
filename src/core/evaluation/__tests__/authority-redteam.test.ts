@@ -46,20 +46,19 @@ import type {
   RouteRuntimeFacts,
 } from '../contracts';
 
-import { evaluateDecision } from '../selection';
 import {
-  assessContinuationAfterAttempt,
+  evaluateDecision,
   buildAttemptCreatedEvent,
-} from '../continuation';
+  __resetAdmissionRuntimeForTestsOnly,
+} from '../selection';
+import { assessContinuationAfterAttempt } from '../continuation';
 import * as publicEvaluationExports from '../index';
+import * as admissionAuthorityExports from '../admission-authority';
+import * as selectionExports from '../selection';
 import {
   DispatchAdmissionNotFoundError,
   DispatchAdmissionConflictError,
   DispatchAdmissionAlreadyConsumedError,
-} from '../index';
-import {
-  issueDispatchAdmissionInternal,
-  __resetAdmissionRuntimeForTestsOnly,
 } from '../admission-authority';
 
 // ============================================================================
@@ -741,22 +740,31 @@ describe('NEX+ · Escopo 0.85D · Matriz de Aceitação de Autoridade & Red-Team
   });
 
   it('RT-9: DispatchAdmission usado com contexto material alterado é rejeitado exigindo re-avaliação', () => {
-    const admission = issueDispatchAdmissionInternal({
-      admissionId: 'adm_rt_9' as any,
-      decisionId: 'dec_01' as any,
+    const registry = createCapabilityRegistry();
+    const cap = createMockCapability('cap.text', 'cap_rt9');
+    const route = createMockRoute('route.text', 'route_rt9');
+    registry.registerCapabilityRevision(cap);
+    registry.registerRouteRevision(route);
+    registry.registerTermsRevision(createMockTerms('terms.text', 'terms_rt9', route.routeRevisionId));
+    registry.registerBindingRevision(createMockBinding('bind.text', 'bind_rt9', cap.capabilityRevisionId, route.routeRevisionId));
+
+    const result = evaluateDecision({
+      decisionId: 'dec_rt9' as DecisionId,
       materialContextId: 'ctx_original' as DecisionMaterialContextId,
-      routeEvaluationId: 'eval_01' as any,
-      capabilityRevisionId: 'cap_01' as any,
-      bindingRevisionId: 'bind_01' as any,
-      routeRevisionId: 'route_01' as any,
-      policyRevisionId: 'pol_01' as any,
-      admittedAt: '2026-08-22T18:00:00.000Z',
+      interpretation: { clarity: 'clear', potentiallyMutating: false, capabilityKey: cap.capabilityKey },
+      capabilityRegistry: registry,
+      policy: defaultPolicy,
+      containsSecretMaterial: false,
+      termsContext: defaultTermsContext,
+      decidedAt: '2026-08-22T18:00:00.000Z',
     });
+
+    assert.ok(result.admission);
 
     assert.throws(
       () => {
         buildAttemptCreatedEvent({
-          admissionId: admission.admissionId,
+          admissionId: result.admission!.admissionId,
           attemptId: 'att_01' as AttemptId,
           createdAt: '2026-08-22T18:00:01.000Z',
           currentMaterialContextId: 'ctx_mutated_drift' as DecisionMaterialContextId, // Contexto alterado
@@ -1021,7 +1029,8 @@ describe('NEX+ · Escopo 0.85D · Matriz de Aceitação de Autoridade & Red-Team
   // 5. BLOCKERS D/E & F: ISSUER PRIVADO, AUTORIDADE RUNTIME & SINGLE-USE CLAIM
   // ==========================================================================
 
-  it('AUTH-STRUCT: Superfície pública de evaluation NÃO exporta mutable authority, factory ou registerAdmission (D/E)', () => {
+  it('AUTH-STRUCT-FINAL: Nenhum módulo (barrel, admission-authority, selection) exporta mutable authority, issuer, claim ou internal store', () => {
+    // 1. Barrel público (index.ts)
     assert.equal((publicEvaluationExports as any).createDispatchAdmissionAuthority, undefined);
     assert.equal((publicEvaluationExports as any).defaultDispatchAdmissionAuthority, undefined);
     assert.equal((publicEvaluationExports as any).registerAdmission, undefined);
@@ -1029,11 +1038,45 @@ describe('NEX+ · Escopo 0.85D · Matriz de Aceitação de Autoridade & Red-Team
     assert.equal((publicEvaluationExports as any).DispatchAdmissionAuthority, undefined);
     assert.equal((publicEvaluationExports as any).InMemoryDispatchAdmissionAuthority, undefined);
     assert.equal((publicEvaluationExports as any).issueDispatchAdmissionInternal, undefined);
+    assert.equal((publicEvaluationExports as any).issueDispatchAdmission, undefined);
     assert.equal((publicEvaluationExports as any).claimAdmissionForAttempt, undefined);
+    assert.equal((publicEvaluationExports as any).internalStore, undefined);
+    assert.equal((publicEvaluationExports as any).admissionStore, undefined);
     assert.equal((publicEvaluationExports as any).__resetAdmissionRuntimeForTestsOnly, undefined);
     assert.ok(publicEvaluationExports.DispatchAdmissionNotFoundError);
     assert.ok(publicEvaluationExports.DispatchAdmissionConflictError);
     assert.ok(publicEvaluationExports.DispatchAdmissionAlreadyConsumedError);
+    assert.ok(publicEvaluationExports.evaluateDecision);
+    assert.ok(publicEvaluationExports.buildAttemptCreatedEvent);
+    assert.ok(publicEvaluationExports.assessContinuationAfterAttempt);
+
+    // 2. Deep import em admission-authority.ts (deve conter APENAS as 3 classes de erro)
+    assert.equal((admissionAuthorityExports as any).createDispatchAdmissionAuthority, undefined);
+    assert.equal((admissionAuthorityExports as any).defaultDispatchAdmissionAuthority, undefined);
+    assert.equal((admissionAuthorityExports as any).registerAdmission, undefined);
+    assert.equal((admissionAuthorityExports as any).clear, undefined);
+    assert.equal((admissionAuthorityExports as any).issueDispatchAdmissionInternal, undefined);
+    assert.equal((admissionAuthorityExports as any).issueDispatchAdmission, undefined);
+    assert.equal((admissionAuthorityExports as any).claimAdmissionForAttempt, undefined);
+    assert.equal((admissionAuthorityExports as any).internalStore, undefined);
+    assert.equal((admissionAuthorityExports as any).admissionStore, undefined);
+    assert.equal((admissionAuthorityExports as any).__resetAdmissionRuntimeForTestsOnly, undefined);
+    assert.ok(admissionAuthorityExports.DispatchAdmissionNotFoundError);
+    assert.ok(admissionAuthorityExports.DispatchAdmissionConflictError);
+    assert.ok(admissionAuthorityExports.DispatchAdmissionAlreadyConsumedError);
+
+    // 3. Deep import em selection.ts (não exporta issuer, claim, store; exporta apenas evaluateDecision, buildAttemptCreatedEvent e test reset)
+    assert.equal((selectionExports as any).createDispatchAdmissionAuthority, undefined);
+    assert.equal((selectionExports as any).defaultDispatchAdmissionAuthority, undefined);
+    assert.equal((selectionExports as any).registerAdmission, undefined);
+    assert.equal((selectionExports as any).clear, undefined);
+    assert.equal((selectionExports as any).issueDispatchAdmissionInternal, undefined);
+    assert.equal((selectionExports as any).issueDispatchAdmission, undefined);
+    assert.equal((selectionExports as any).claimAdmissionForAttempt, undefined);
+    assert.equal((selectionExports as any).internalStore, undefined);
+    assert.equal((selectionExports as any).admissionStore, undefined);
+    assert.ok(selectionExports.evaluateDecision);
+    assert.ok(selectionExports.buildAttemptCreatedEvent);
   });
 
   it('D/E-1: Tentativa de criar Attempt com admissionId arbitrário/forjado sem evaluateDecision é rejeitada com DispatchAdmissionNotFoundError', () => {
@@ -1549,38 +1592,38 @@ describe('NEX+ · Escopo 0.85D · Matriz de Aceitação de Autoridade & Red-Team
     );
   });
 
-  it('DUPLICATE-ID: Emissão interna duplicada com payload idêntico é idempotente; payload divergente lança DispatchAdmissionConflictError', () => {
-    const baseAdmission = {
-      admissionId: 'adm_dup_test' as any,
-      decisionId: 'dec_dup' as any,
+  it('DUPLICATE-ID: Avaliação determinística com mesma Decisão e Rota emite admissão idempotente', () => {
+    const registry = createCapabilityRegistry();
+    const cap = createMockCapability('cap.text', 'cap_dup');
+    const route = createMockRoute('route.text', 'route_dup');
+    registry.registerCapabilityRevision(cap);
+    registry.registerRouteRevision(route);
+    registry.registerTermsRevision(createMockTerms('terms.text', 'terms_dup', route.routeRevisionId));
+    registry.registerBindingRevision(createMockBinding('bind.text', 'bind_dup', cap.capabilityRevisionId, route.routeRevisionId));
+
+    const result1 = evaluateDecision({
+      decisionId: 'dec_dup' as DecisionId,
       materialContextId: 'ctx_dup' as DecisionMaterialContextId,
-      routeEvaluationId: 'eval_dup' as any,
-      capabilityRevisionId: 'cap_dup' as any,
-      bindingRevisionId: 'bind_dup' as any,
-      routeRevisionId: 'route_dup_v1' as any,
-      policyRevisionId: 'pol_dup' as any,
-      admittedAt: '2026-08-22T18:00:00.000Z',
-    };
+      interpretation: { clarity: 'clear', potentiallyMutating: false, capabilityKey: cap.capabilityKey },
+      capabilityRegistry: registry,
+      policy: defaultPolicy,
+      containsSecretMaterial: false,
+      termsContext: defaultTermsContext,
+      decidedAt: '2026-08-22T18:00:00.000Z',
+    });
+    assert.ok(result1.admission);
 
-    const issued1 = issueDispatchAdmissionInternal(baseAdmission);
-    assert.ok(issued1);
-
-    // Idêntico -> idempotente
-    const issuedSame = issueDispatchAdmissionInternal({ ...baseAdmission });
-    assert.equal(issuedSame, issued1);
-
-    // Divergente -> erro
-    assert.throws(
-      () => {
-        issueDispatchAdmissionInternal({
-          ...baseAdmission,
-          routeRevisionId: 'route_dup_v2_tampered' as any,
-        });
-      },
-      (err: any) => {
-        assert.ok(err instanceof DispatchAdmissionConflictError);
-        return true;
-      },
-    );
+    // Mesma avaliação -> idempotente
+    const result2 = evaluateDecision({
+      decisionId: 'dec_dup' as DecisionId,
+      materialContextId: 'ctx_dup' as DecisionMaterialContextId,
+      interpretation: { clarity: 'clear', potentiallyMutating: false, capabilityKey: cap.capabilityKey },
+      capabilityRegistry: registry,
+      policy: defaultPolicy,
+      containsSecretMaterial: false,
+      termsContext: defaultTermsContext,
+      decidedAt: '2026-08-22T18:00:00.000Z',
+    });
+    assert.equal(result2.admission?.admissionId, result1.admission.admissionId);
   });
 });
