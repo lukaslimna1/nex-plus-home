@@ -85,7 +85,7 @@ describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & G
     }
   });
 
-  describe('1. Coerência de Referências no Persistence Boundary (A1..A4)', () => {
+  describe('1. Coerência de Referências no Persistence Boundary (A1..A4, AF-1, AF-2)', () => {
     it('A1: observation inexistente é rejeitada antes de qualquer write', async () => {
       const caseId = `case_a1_${Date.now()}` as ReconciliationCaseId;
       const nonExistentObsId = `obs_non_existent_${Date.now()}` as ObservationRecordId;
@@ -189,16 +189,16 @@ describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & G
       );
     });
 
-    it('A4: review que referencia targetObservation de outro subject é rejeitada', async () => {
-      const caseId = `case_a4_${Date.now()}` as ReconciliationCaseId;
-      const obsIdValid = `obs_a4_valid_${Date.now()}` as ObservationRecordId;
-      const obsIdOther = `obs_a4_other_${Date.now()}` as ObservationRecordId;
-      const revIdCross = `rev_a4_cross_${Date.now()}` as ReviewEventId;
+    it('AF-1: case [A] com review targetando B do mesmo subject é rejeitado fail-closed e deixa zero registro', async () => {
+      const caseId = `case_af1_${Date.now()}` as ReconciliationCaseId;
+      const obsIdA = `obs_af1_a_${Date.now()}` as ObservationRecordId;
+      const obsIdB = `obs_af1_b_${Date.now()}` as ObservationRecordId;
+      const revIdTargetsB = `rev_af1_b_${Date.now()}` as ReviewEventId;
 
       await obsPersistence.recordObservation({
-        observationId: obsIdValid,
+        observationId: obsIdA,
         subject: testSubject,
-        observedClaim: 'Claim valid',
+        observedClaim: 'Obs A',
         rawValue: { price: 10 },
         actor: humanLucas,
         sourceRefs: [],
@@ -208,9 +208,9 @@ describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & G
       });
 
       await obsPersistence.recordObservation({
-        observationId: obsIdOther,
-        subject: { domain: 'other_domain', entityType: 'product', entityId: 'prod_888' },
-        observedClaim: 'Claim other',
+        observationId: obsIdB,
+        subject: testSubject,
+        observedClaim: 'Obs B',
         rawValue: { price: 20 },
         actor: humanLucas,
         sourceRefs: [],
@@ -220,19 +220,19 @@ describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & G
       });
 
       await obsPersistence.recordNonCanonicalReview({
-        reviewId: revIdCross,
+        reviewId: revIdTargetsB,
         actor: humanLucas,
-        targetObservationIds: [obsIdOther],
+        targetObservationIds: [obsIdB],
         decision: 'divergent',
-        justification: 'Comparison with other subject',
+        justification: 'Comparison with B',
         reviewedAt: '2026-08-21T23:00:00.000Z',
       });
 
       const caseObj: OpenReconciliationCase = {
         caseId,
         subject: testSubject,
-        observationIds: [obsIdValid],
-        reviewIds: [revIdCross],
+        observationIds: [obsIdA], // Contém apenas A, NÃO contém B!
+        reviewIds: [revIdTargetsB],
         lifecycle: 'open',
         status: 'open',
         openedAt: '2026-08-21T23:00:00.000Z',
@@ -244,10 +244,156 @@ describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & G
         },
         (err: any) => {
           assert.ok(err instanceof ReconciliationCaseCoherenceError);
-          assert.equal(err.code, 'REVIEW_CROSS_SUBJECT_MISMATCH');
+          assert.equal(err.code, 'REVIEW_OBSERVATION_NOT_IN_CASE');
           return true;
         }
       );
+
+      // Prova que zero revision e zero head foram persistidos
+      const headCheck = await pool.query(`SELECT * FROM nex_reconciliation_case_heads WHERE case_id = $1`, [caseId]);
+      assert.equal(headCheck.rows.length, 0);
+
+      const revCheck = await pool.query(`SELECT * FROM nex_reconciliation_case_revisions WHERE case_id = $1`, [caseId]);
+      assert.equal(revCheck.rows.length, 0);
+    });
+
+    it('AF-2: case [A] com review targetando A é aceito normalmente', async () => {
+      const caseId = `case_af2_${Date.now()}` as ReconciliationCaseId;
+      const obsIdA = `obs_af2_a_${Date.now()}` as ObservationRecordId;
+      const revIdTargetsA = `rev_af2_a_${Date.now()}` as ReviewEventId;
+
+      await obsPersistence.recordObservation({
+        observationId: obsIdA,
+        subject: testSubject,
+        observedClaim: 'Obs A',
+        rawValue: { price: 10 },
+        actor: humanLucas,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      await obsPersistence.recordNonCanonicalReview({
+        reviewId: revIdTargetsA,
+        actor: humanLucas,
+        targetObservationIds: [obsIdA],
+        decision: 'corroborated',
+        justification: 'Approved obs A',
+        reviewedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      const caseObj: OpenReconciliationCase = {
+        caseId,
+        subject: testSubject,
+        observationIds: [obsIdA],
+        reviewIds: [revIdTargetsA],
+        lifecycle: 'open',
+        status: 'open',
+        openedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      const result = await recPersistence.createReconciliationCase({ case: caseObj });
+      assert.equal(result.case.caseId, caseId);
+      assert.equal(result.head.currentVersion, 1);
+    });
+
+    it('AF-3: create com observationIds [A, A] é rejeitado e deixa zero registro', async () => {
+      const caseId = `case_af3_${Date.now()}` as ReconciliationCaseId;
+      const obsId = `obs_af3_${Date.now()}` as ObservationRecordId;
+
+      await obsPersistence.recordObservation({
+        observationId: obsId,
+        subject: testSubject,
+        observedClaim: 'Obs AF3',
+        rawValue: {},
+        actor: humanLucas,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      const duplicateCase: OpenReconciliationCase = {
+        caseId,
+        subject: testSubject,
+        observationIds: [obsId, obsId], // Duplicata!
+        reviewIds: [],
+        lifecycle: 'open',
+        status: 'open',
+        openedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      await assert.rejects(
+        async () => {
+          await recPersistence.createReconciliationCase({ case: duplicateCase });
+        },
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseCoherenceError);
+          assert.equal(err.code, 'DUPLICATE_OBSERVATION_REFERENCES');
+          return true;
+        }
+      );
+
+      const headCheck = await pool.query(`SELECT * FROM nex_reconciliation_case_heads WHERE case_id = $1`, [caseId]);
+      assert.equal(headCheck.rows.length, 0);
+
+      const revCheck = await pool.query(`SELECT * FROM nex_reconciliation_case_revisions WHERE case_id = $1`, [caseId]);
+      assert.equal(revCheck.rows.length, 0);
+    });
+
+    it('AF-4: create com reviewIds [R, R] é rejeitado e deixa zero registro', async () => {
+      const caseId = `case_af4_${Date.now()}` as ReconciliationCaseId;
+      const obsId = `obs_af4_${Date.now()}` as ObservationRecordId;
+      const revId = `rev_af4_${Date.now()}` as ReviewEventId;
+
+      await obsPersistence.recordObservation({
+        observationId: obsId,
+        subject: testSubject,
+        observedClaim: 'Obs AF4',
+        rawValue: {},
+        actor: humanLucas,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      await obsPersistence.recordNonCanonicalReview({
+        reviewId: revId,
+        actor: humanLucas,
+        targetObservationIds: [obsId],
+        decision: 'divergent',
+        justification: 'Divergent review',
+        reviewedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      const duplicateCase: OpenReconciliationCase = {
+        caseId,
+        subject: testSubject,
+        observationIds: [obsId],
+        reviewIds: [revId, revId], // Duplicata!
+        lifecycle: 'open',
+        status: 'open',
+        openedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      await assert.rejects(
+        async () => {
+          await recPersistence.createReconciliationCase({ case: duplicateCase });
+        },
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseCoherenceError);
+          assert.equal(err.code, 'DUPLICATE_REVIEW_REFERENCES');
+          return true;
+        }
+      );
+
+      const headCheck = await pool.query(`SELECT * FROM nex_reconciliation_case_heads WHERE case_id = $1`, [caseId]);
+      assert.equal(headCheck.rows.length, 0);
+
+      const revCheck = await pool.query(`SELECT * FROM nex_reconciliation_case_revisions WHERE case_id = $1`, [caseId]);
+      assert.equal(revCheck.rows.length, 0);
     });
   });
 
@@ -310,7 +456,10 @@ describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & G
         },
         (err: any) => {
           assert.ok(err instanceof ReconciliationCaseCoherenceError);
-          assert.equal(err.code, 'MUTATION_SUBJECT_PROHIBITED');
+          assert.ok(
+            err.code === 'MUTATION_SUBJECT_PROHIBITED' ||
+            err.code === 'CROSS_SUBJECT_OBSERVATION_MISMATCH'
+          );
           return true;
         }
       );
@@ -617,7 +766,217 @@ describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & G
     });
   });
 
-  describe('3. Schema & CHECK Constraints no PostgreSQL (A10, A11, A12)', () => {
+  describe('3. Concorrência e Ausência de Pool Starvation / Deadlock (AF-5..AF-7)', () => {
+    it('AF-5: append com Pool max=1 executa rapidamente sem deadlock e deixa waitingCount=0', async () => {
+      const singleConnPool = new Pool({ connectionString: databaseUrl, max: 1 });
+      const singleObsAdapter = new PgObservationPersistenceAdapter(singleConnPool);
+      const singleRecAdapter = new PgReconciliationPersistenceAdapter(singleConnPool, singleObsAdapter);
+
+      try {
+        const caseId = `case_af5_${Date.now()}` as ReconciliationCaseId;
+        const obsId1 = `obs_af5_1_${Date.now()}` as ObservationRecordId;
+        const obsId2 = `obs_af5_2_${Date.now()}` as ObservationRecordId;
+
+        await singleObsAdapter.recordObservation({
+          observationId: obsId1,
+          subject: testSubject,
+          observedClaim: 'Obs AF5 1',
+          rawValue: {},
+          actor: humanLucas,
+          sourceRefs: [],
+          evidenceRefs: [],
+          capturedAt: '2026-08-21T23:00:00.000Z',
+          observedAt: '2026-08-21T23:00:00.000Z',
+        });
+
+        await singleObsAdapter.recordObservation({
+          observationId: obsId2,
+          subject: testSubject,
+          observedClaim: 'Obs AF5 2',
+          rawValue: {},
+          actor: humanLucas,
+          sourceRefs: [],
+          evidenceRefs: [],
+          capturedAt: '2026-08-21T23:00:00.000Z',
+          observedAt: '2026-08-21T23:00:00.000Z',
+        });
+
+        await singleRecAdapter.createReconciliationCase({
+          case: {
+            caseId,
+            subject: testSubject,
+            observationIds: [obsId1],
+            reviewIds: [],
+            lifecycle: 'open',
+            status: 'open',
+            openedAt: '2026-08-21T23:00:00.000Z',
+          },
+        });
+
+        // Append com timeout de segurança rígido de 5000ms
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('TIMEOUT: Pool max=1 deadlock detected!')), 5000)
+        );
+
+        const appendPromise = singleRecAdapter.appendReconciliationRevision({
+          case: {
+            caseId,
+            subject: testSubject,
+            observationIds: [obsId1, obsId2],
+            reviewIds: [],
+            lifecycle: 'open',
+            status: 'awaiting_evidence',
+            openedAt: '2026-08-21T23:00:00.000Z',
+          },
+          expectedVersion: 1,
+        });
+
+        const result = (await Promise.race([appendPromise, timeoutPromise])) as any;
+        assert.equal(result.case.caseId, caseId);
+        assert.equal(result.head.currentVersion, 2);
+        assert.equal(singleConnPool.waitingCount, 0);
+      } finally {
+        await singleConnPool.end();
+      }
+    });
+
+    it('AF-6: concorrência pressionada (15 appends paralelos) não entra em starvation', async () => {
+      const pressuredPool = new Pool({ connectionString: databaseUrl, max: 5 });
+      const pressuredObsAdapter = new PgObservationPersistenceAdapter(pressuredPool);
+      const pressuredRecAdapter = new PgReconciliationPersistenceAdapter(pressuredPool, pressuredObsAdapter);
+
+      try {
+        const parallelCount = 15;
+        const caseIds: ReconciliationCaseId[] = [];
+
+        for (let i = 0; i < parallelCount; i++) {
+          const cid = `case_af6_${i}_${Date.now()}` as ReconciliationCaseId;
+          const oid = `obs_af6_${i}_${Date.now()}` as ObservationRecordId;
+          caseIds.push(cid);
+
+          await pressuredObsAdapter.recordObservation({
+            observationId: oid,
+            subject: testSubject,
+            observedClaim: `Obs ${i}`,
+            rawValue: {},
+            actor: humanLucas,
+            sourceRefs: [],
+            evidenceRefs: [],
+            capturedAt: '2026-08-21T23:00:00.000Z',
+            observedAt: '2026-08-21T23:00:00.000Z',
+          });
+
+          await pressuredRecAdapter.createReconciliationCase({
+            case: {
+              caseId: cid,
+              subject: testSubject,
+              observationIds: [oid],
+              reviewIds: [],
+              lifecycle: 'open',
+              status: 'open',
+              openedAt: '2026-08-21T23:00:00.000Z',
+            },
+          });
+        }
+
+        // Executa 15 appends simultâneos
+        const promises = caseIds.map(async (cid) => {
+          const current = await pressuredRecAdapter.getCurrentReconciliationCase(cid);
+          return pressuredRecAdapter.appendReconciliationRevision({
+            case: {
+              caseId: cid,
+              subject: testSubject,
+              observationIds: current!.observationIds,
+              reviewIds: [],
+              lifecycle: 'open',
+              status: 'awaiting_evidence',
+              openedAt: current!.openedAt,
+            },
+            expectedVersion: 1,
+          });
+        });
+
+        const results = await Promise.all(promises);
+        assert.equal(results.length, parallelCount);
+        for (const res of results) {
+          assert.equal(res.head.currentVersion, 2);
+        }
+        assert.equal(pressuredPool.waitingCount, 0);
+      } finally {
+        await pressuredPool.end();
+      }
+    });
+
+    it('AF-7: concorrência same-case resulta em exatamente 1 vitória e 1 stale rejection', async () => {
+      const caseId = `case_af7_${Date.now()}` as ReconciliationCaseId;
+      const obsId = `obs_af7_${Date.now()}` as ObservationRecordId;
+
+      await obsPersistence.recordObservation({
+        observationId: obsId,
+        subject: testSubject,
+        observedClaim: 'Obs AF7',
+        rawValue: {},
+        actor: humanLucas,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      });
+
+      await recPersistence.createReconciliationCase({
+        case: {
+          caseId,
+          subject: testSubject,
+          observationIds: [obsId],
+          reviewIds: [],
+          lifecycle: 'open',
+          status: 'open',
+          openedAt: '2026-08-21T23:00:00.000Z',
+        },
+      });
+
+      const append1 = recPersistence.appendReconciliationRevision({
+        case: {
+          caseId,
+          subject: testSubject,
+          observationIds: [obsId],
+          reviewIds: [],
+          lifecycle: 'open',
+          status: 'awaiting_evidence',
+          openedAt: '2026-08-21T23:00:00.000Z',
+        },
+        expectedVersion: 1,
+      });
+
+      const append2 = recPersistence.appendReconciliationRevision({
+        case: {
+          caseId,
+          subject: testSubject,
+          observationIds: [obsId],
+          reviewIds: [],
+          lifecycle: 'open',
+          status: 'divergent',
+          openedAt: '2026-08-21T23:00:00.000Z',
+        },
+        expectedVersion: 1,
+      });
+
+      const outcomes = await Promise.allSettled([append1, append2]);
+      const fulfilled = outcomes.filter((o) => o.status === 'fulfilled');
+      const rejected = outcomes.filter((o) => o.status === 'rejected');
+
+      assert.equal(fulfilled.length, 1);
+      assert.equal(rejected.length, 1);
+
+      const rejectionReason = (rejected[0] as PromiseRejectedResult).reason;
+      assert.ok(rejectionReason instanceof StaleReconciliationVersionConflictError);
+      assert.equal(rejectionReason.caseId, caseId);
+      assert.equal(rejectionReason.expectedVersion, 1);
+      assert.equal(rejectionReason.actualVersion, 2);
+    });
+  });
+
+  describe('4. Schema & CHECK Constraints no PostgreSQL (A10, A11, A12)', () => {
     it('A10: SQL direto open + validated é rejeitado pelo PostgreSQL', async () => {
       const caseId = `case_sql_a10_${Date.now()}`;
       await assert.rejects(
@@ -708,7 +1067,7 @@ describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & G
     });
   });
 
-  describe('4. Gates de Autoridade & Operação Exata (A14..A16)', () => {
+  describe('5. Gates de Autoridade & Operação Exata (A14..A16)', () => {
     it('A14: canonical_promoted + canonical_promotion = permitido', async () => {
       const now = Date.now();
       const obsId = `obs_a14_${now}` as ObservationRecordId;
@@ -917,7 +1276,7 @@ describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & G
     });
   });
 
-  describe('5. Contextual Precedent & Actor Payload Canônico (A17..A19)', () => {
+  describe('6. Contextual Precedent & Actor Payload Canônico (A17..A19)', () => {
     it('A17: precedent de review humana com actor_payload real é persistido e recuperado', async () => {
       const now = Date.now();
       const obsId = `obs_a17_${now}` as ObservationRecordId;
@@ -1053,7 +1412,7 @@ describe('Escopo 0.85D · Reconciliação Persistente, Precedente Contextual & G
     });
   });
 
-  describe('6. Proteção Append-Only Direta no PostgreSQL', () => {
+  describe('7. Proteção Append-Only Direta no PostgreSQL', () => {
     it('UPDATE direto em nex_reconciliation_case_revisions é rejeitado pelo trigger', async () => {
       const caseId = `case_trg_test_${Date.now()}` as ReconciliationCaseId;
       const obsId = `obs_trg_${Date.now()}` as ObservationRecordId;

@@ -162,10 +162,11 @@ export class PgReconciliationPersistenceAdapter implements ReconciliationPersist
   }
 
   /**
-   * Validação profunda de referências no Persistence Boundary antes de qualquer escrita.
+   * Validação de referências no Persistence Boundary antes de adquirir conexões de escrita.
+   * Carrega estritamente as observações e reviews explicitamente declaradas no case.
    */
   private async validateReferencesCoherence(caseObj: ReconciliationCase): Promise<void> {
-    // 1. Carrega todas as observações diretas do caso
+    // 1. Carrega estritamente as observações declaradas em caseObj.observationIds
     const loadedObservations: ObservationRecord[] = [];
     for (const obsId of caseObj.observationIds) {
       const obs = await this.obsPersistence.getObservation(obsId);
@@ -174,24 +175,16 @@ export class PgReconciliationPersistenceAdapter implements ReconciliationPersist
       }
     }
 
-    // 2. Carrega todas as reviews do caso e suas targetObservations
+    // 2. Carrega estritamente as reviews declaradas em caseObj.reviewIds
     const loadedReviews: ReviewEvent[] = [];
     for (const revId of caseObj.reviewIds) {
       const rev = await this.obsPersistence.getReview(revId);
       if (rev) {
         loadedReviews.push(rev);
-        for (const targetObsId of rev.targetObservationIds) {
-          if (!loadedObservations.some((o) => o.observationId === targetObsId)) {
-            const targetObs = await this.obsPersistence.getObservation(targetObsId);
-            if (targetObs) {
-              loadedObservations.push(targetObs);
-            }
-          }
-        }
       }
     }
 
-    // 3. Executa assertReconciliationCaseCoherence
+    // 3. Executa assertReconciliationCaseCoherence (valida existence, subject e membership estrito)
     assertReconciliationCaseCoherence(caseObj, loadedObservations, loadedReviews);
   }
 
@@ -201,9 +194,10 @@ export class PgReconciliationPersistenceAdapter implements ReconciliationPersist
     const caseObj = params.case;
     assertValidReconciliationCase(caseObj);
 
-    // Validação estrita de coerência de referências no persistence boundary antes de abrir a transação de escrita
+    // FASE 1: Validação de coerência de referências append-only antes de qualquer lock transacional
     await this.validateReferencesCoherence(caseObj);
 
+    // FASE 2: Conexão transacional para escrita
     const client: PoolClient = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -320,13 +314,19 @@ export class PgReconciliationPersistenceAdapter implements ReconciliationPersist
     const caseObj = params.case;
     assertValidReconciliationCase(caseObj);
 
+    // FASE 1: Validação de referências append-only ANTES de reservar conexão ou abrir transação
+    await this.validateReferencesCoherence(caseObj);
+
+    // FASE 2: Reserva PoolClient para transação
     const client: PoolClient = await this.pool.connect();
     try {
+      // FASE 3: BEGIN
       await client.query('BEGIN');
 
-      // Advisory lock transacional determinístico no caseId
+      // FASE 4: Advisory lock transacional determinístico no caseId
       await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [caseObj.caseId]);
 
+      // FASE 5: Lock/read head
       const headRes = await client.query(
         `SELECT * FROM nex_reconciliation_case_heads WHERE case_id = $1 FOR UPDATE`,
         [caseObj.caseId]
@@ -342,6 +342,7 @@ export class PgReconciliationPersistenceAdapter implements ReconciliationPersist
       const currentHead = headRes.rows[0];
       const currentVersion = Number(currentHead.current_version);
 
+      // FASE 6: expectedVersion check
       if (currentVersion !== params.expectedVersion) {
         throw new StaleReconciliationVersionConflictError(
           caseObj.caseId,
@@ -350,7 +351,7 @@ export class PgReconciliationPersistenceAdapter implements ReconciliationPersist
         );
       }
 
-      // Carrega a revisão corrente apontada pela head para validar continuidade histórica
+      // FASE 7: Carrega a revisão anterior usando o MESMO client da transação
       const prevRevRes = await client.query(
         `SELECT * FROM nex_reconciliation_case_revisions WHERE case_id = $1 AND version = $2`,
         [caseObj.caseId, currentVersion]
@@ -365,11 +366,8 @@ export class PgReconciliationPersistenceAdapter implements ReconciliationPersist
 
       const previousCase = this.rowToReconciliationCase(prevRevRes.rows[0]);
 
-      // Validação estrita de continuidade e imutabilidade histórica entre revisões
+      // FASE 8: Validação estrita de continuidade e imutabilidade histórica entre revisões
       assertReconciliationRevisionContinuity(previousCase, caseObj);
-
-      // Validação de coerência das referências da nova revisão no persistence boundary
-      await this.validateReferencesCoherence(caseObj);
 
       const nextVersion = currentVersion + 1;
       const resolvedAt = caseObj.lifecycle === 'resolved' ? (caseObj as ResolvedReconciliationCase).resolvedAt : null;
@@ -378,7 +376,7 @@ export class PgReconciliationPersistenceAdapter implements ReconciliationPersist
           ? (caseObj as ResolvedReconciliationCase).resolutionSummary
           : (caseObj as OpenReconciliationCase).resolutionSummary ?? null;
 
-      // Insere nova revisão (Append-Only)
+      // FASE 9: Insere nova revisão (Append-Only) + Atualiza Head operacional
       await client.query(
         `INSERT INTO nex_reconciliation_case_revisions (
           case_id, version, subject_domain, subject_entity_type, subject_entity_id,
@@ -400,7 +398,6 @@ export class PgReconciliationPersistenceAdapter implements ReconciliationPersist
         ]
       );
 
-      // Atualiza Head operacional
       await client.query(
         `UPDATE nex_reconciliation_case_heads
          SET current_version = $1,
@@ -409,6 +406,7 @@ export class PgReconciliationPersistenceAdapter implements ReconciliationPersist
         [nextVersion, caseObj.caseId]
       );
 
+      // FASE 10: COMMIT
       await client.query('COMMIT');
 
       const headInfo: ReconciliationHeadInfo = {

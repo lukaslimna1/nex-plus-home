@@ -31,6 +31,27 @@ export function assertValidReconciliationCase(caseObj: ReconciliationCase): void
       result.errors.join('; ')
     );
   }
+
+  // Validação estrita de unicidade (proíbe duplicatas tanto na criação v1 quanto em revisões subsequentes)
+  if (Array.isArray(caseObj.observationIds)) {
+    const obsSet = new Set(caseObj.observationIds);
+    if (obsSet.size !== caseObj.observationIds.length) {
+      throw new ReconciliationCaseCoherenceError(
+        'DUPLICATE_OBSERVATION_REFERENCES',
+        `ReconciliationCase '${caseObj.caseId}' contains duplicate observationIds.`
+      );
+    }
+  }
+
+  if (Array.isArray(caseObj.reviewIds)) {
+    const revSet = new Set(caseObj.reviewIds);
+    if (revSet.size !== caseObj.reviewIds.length) {
+      throw new ReconciliationCaseCoherenceError(
+        'DUPLICATE_REVIEW_REFERENCES',
+        `ReconciliationCase '${caseObj.caseId}' contains duplicate reviewIds.`
+      );
+    }
+  }
 }
 
 /**
@@ -48,6 +69,8 @@ export function assertReconciliationCaseCoherence(
   for (const obs of observations) {
     obsMap.set(obs.observationId, obs);
   }
+
+  const caseObservationIdSet = new Set(caseObj.observationIds);
 
   for (const obsId of caseObj.observationIds) {
     const obs = obsMap.get(obsId);
@@ -70,7 +93,7 @@ export function assertReconciliationCaseCoherence(
     }
   }
 
-  // 2. Todas as reviews referenciadas pelo caso devem existir e ter seus alvos coerentes com o subject do caso
+  // 2. Todas as reviews referenciadas pelo caso devem existir, estar vinculadas a observações do próprio caso e ter alvos coerentes com o subject
   const revMap = new Map<string, ReviewEvent>();
   for (const rev of reviews) {
     revMap.set(rev.reviewId, rev);
@@ -85,13 +108,20 @@ export function assertReconciliationCaseCoherence(
       );
     }
 
-    // Cada targetObservationId da review deve existir e pertencer ao mesmo subject do caso
+    // Cada targetObservationId da review DEVE estar explicitamente declarado em case.observationIds
     for (const targetObsId of rev.targetObservationIds) {
+      if (!caseObservationIdSet.has(targetObsId)) {
+        throw new ReconciliationCaseCoherenceError(
+          'REVIEW_OBSERVATION_NOT_IN_CASE',
+          `Review '${revId}' in case '${caseObj.caseId}' targets observation '${targetObsId}', which is not declared in case.observationIds.`
+        );
+      }
+
       const targetObs = obsMap.get(targetObsId);
       if (!targetObs) {
         throw new ReconciliationCaseCoherenceError(
           'REVIEW_OBSERVATION_NOT_FOUND',
-          `Review '${revId}' in case '${caseObj.caseId}' targets observation '${targetObsId}', which is not present among the case's verified observations.`
+          `Review '${revId}' in case '${caseObj.caseId}' targets observation '${targetObsId}', which is missing from loaded case observations.`
         );
       }
 
@@ -154,13 +184,6 @@ export function assertReconciliationRevisionContinuity(
 
   // 5. Histórico cumulativo de observationIds: não pode remover referências anteriores
   const newObsSet = new Set(newCase.observationIds);
-  if (newObsSet.size !== newCase.observationIds.length) {
-    throw new ReconciliationCaseCoherenceError(
-      'DUPLICATE_OBSERVATION_REFERENCES',
-      `ReconciliationCase contains duplicate observationIds.`
-    );
-  }
-
   for (const prevObsId of previousCase.observationIds) {
     if (!newObsSet.has(prevObsId)) {
       throw new ReconciliationCaseCoherenceError(
@@ -172,13 +195,6 @@ export function assertReconciliationRevisionContinuity(
 
   // 6. Histórico cumulativo de reviewIds: não pode remover referências anteriores
   const newRevSet = new Set(newCase.reviewIds);
-  if (newRevSet.size !== newCase.reviewIds.length) {
-    throw new ReconciliationCaseCoherenceError(
-      'DUPLICATE_REVIEW_REFERENCES',
-      `ReconciliationCase contains duplicate reviewIds.`
-    );
-  }
-
   for (const prevRevId of previousCase.reviewIds) {
     if (!newRevSet.has(prevRevId)) {
       throw new ReconciliationCaseCoherenceError(

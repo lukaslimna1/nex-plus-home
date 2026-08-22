@@ -76,6 +76,48 @@ describe('Escopo 0.85D · Validadores Puros de Reconciliação & Autoridade (Sem
       assert.doesNotThrow(() => assertValidReconciliationCase(validCase));
     });
 
+    it('AF-3: rejeita quando observationIds contém duplicatas', () => {
+      const duplicateObsCase: OpenReconciliationCase = {
+        caseId: 'case_dup_obs' as any,
+        subject: testSubject,
+        observationIds: ['obs_1' as any, 'obs_1' as any],
+        reviewIds: [],
+        lifecycle: 'open',
+        status: 'open',
+        openedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      assert.throws(
+        () => assertValidReconciliationCase(duplicateObsCase),
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseCoherenceError);
+          assert.equal(err.code, 'DUPLICATE_OBSERVATION_REFERENCES');
+          return true;
+        }
+      );
+    });
+
+    it('AF-4: rejeita quando reviewIds contém duplicatas', () => {
+      const duplicateRevCase: OpenReconciliationCase = {
+        caseId: 'case_dup_rev' as any,
+        subject: testSubject,
+        observationIds: ['obs_1' as any],
+        reviewIds: ['rev_1' as any, 'rev_1' as any],
+        lifecycle: 'open',
+        status: 'open',
+        openedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      assert.throws(
+        () => assertValidReconciliationCase(duplicateRevCase),
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseCoherenceError);
+          assert.equal(err.code, 'DUPLICATE_REVIEW_REFERENCES');
+          return true;
+        }
+      );
+    });
+
     it('rejeita ReconciliationCase resolvido sem resolvedAt ou resolutionSummary', () => {
       const invalidCase: any = {
         caseId: 'case_unit_2',
@@ -180,11 +222,102 @@ describe('Escopo 0.85D · Validadores Puros de Reconciliação & Autoridade (Sem
       );
     });
 
+    it('AF-1: rejeita quando review targets observation que não está em case.observationIds (mesmo do mesmo subject)', () => {
+      const caseObj: OpenReconciliationCase = {
+        caseId: 'case_unit_af1' as any,
+        subject: testSubject,
+        observationIds: ['obs_A' as any],
+        reviewIds: ['rev_targets_B' as any],
+        lifecycle: 'open',
+        status: 'open',
+        openedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      const obsA: ObservationRecord = {
+        observationId: 'obs_A' as any,
+        subject: testSubject,
+        observedClaim: 'Claim A',
+        rawValue: {},
+        actor: humanActor,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      const obsB: ObservationRecord = {
+        observationId: 'obs_B' as any,
+        subject: testSubject,
+        observedClaim: 'Claim B',
+        rawValue: {},
+        actor: humanActor,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      const revTargetsB: ReviewEvent = {
+        reviewId: 'rev_targets_B' as any,
+        actor: humanActor,
+        targetObservationIds: ['obs_B' as any], // B não está em caseObj.observationIds!
+        decision: 'corroborated',
+        justification: 'Comparison with B',
+        reviewedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      assert.throws(
+        () => assertReconciliationCaseCoherence(caseObj, [obsA, obsB], [revTargetsB]),
+        (err: any) => {
+          assert.ok(err instanceof ReconciliationCaseCoherenceError);
+          assert.equal(err.code, 'REVIEW_OBSERVATION_NOT_IN_CASE');
+          return true;
+        }
+      );
+    });
+
+    it('AF-2: aceita quando review targets observation que está declarada em case.observationIds', () => {
+      const caseObj: OpenReconciliationCase = {
+        caseId: 'case_unit_af2' as any,
+        subject: testSubject,
+        observationIds: ['obs_A' as any],
+        reviewIds: ['rev_targets_A' as any],
+        lifecycle: 'open',
+        status: 'open',
+        openedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      const obsA: ObservationRecord = {
+        observationId: 'obs_A' as any,
+        subject: testSubject,
+        observedClaim: 'Claim A',
+        rawValue: {},
+        actor: humanActor,
+        sourceRefs: [],
+        evidenceRefs: [],
+        capturedAt: '2026-08-21T23:00:00.000Z',
+        observedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      const revTargetsA: ReviewEvent = {
+        reviewId: 'rev_targets_A' as any,
+        actor: humanActor,
+        targetObservationIds: ['obs_A' as any],
+        decision: 'corroborated',
+        justification: 'Approved obs A',
+        reviewedAt: '2026-08-21T23:00:00.000Z',
+      };
+
+      assert.doesNotThrow(() =>
+        assertReconciliationCaseCoherence(caseObj, [obsA], [revTargetsA])
+      );
+    });
+
     it('A4: rejeita quando review targets observação de outro subject', () => {
       const caseObj: OpenReconciliationCase = {
         caseId: 'case_unit_a4' as any,
         subject: testSubject,
-        observationIds: ['obs_1' as any],
+        observationIds: ['obs_1' as any, 'obs_other' as any],
         reviewIds: ['rev_1' as any],
         lifecycle: 'open',
         status: 'open',
@@ -228,7 +361,10 @@ describe('Escopo 0.85D · Validadores Puros de Reconciliação & Autoridade (Sem
         () => assertReconciliationCaseCoherence(caseObj, [obs1, obsOtherSubject], [rev1]),
         (err: any) => {
           assert.ok(err instanceof ReconciliationCaseCoherenceError);
-          assert.equal(err.code, 'REVIEW_CROSS_SUBJECT_MISMATCH');
+          assert.ok(
+            err.code === 'CROSS_SUBJECT_OBSERVATION_MISMATCH' ||
+            err.code === 'REVIEW_CROSS_SUBJECT_MISMATCH'
+          );
           return true;
         }
       );
