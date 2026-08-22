@@ -105,6 +105,7 @@ try {
     & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 2 WHERE name = '20260820_030631_multiuser_auth';" | Out-Null
     & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 3 WHERE name = '20260821_210000_observation_persistence';" | Out-Null
     & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 4 WHERE name = '20260821_220000_evidence_artifact_store';" | Out-Null
+    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 5 WHERE name = '20260821_230000_reconciliation_and_precedents';" | Out-Null
 
     # Verificar tabelas 0.85C criadas pós-UP
     $tablesUpRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
@@ -123,8 +124,9 @@ try {
     }
     Write-Host "Todas as tabelas do 0.85C verificadas com sucesso pós-UP." -ForegroundColor Green
 
-    # 6. Testar Migration DOWN (Rollback exclusivo do 0.85C)
-    Write-Host "`n[3/5] Testando rollback de migration (DOWN do 0.85C) no banco descartável..." -ForegroundColor Yellow
+    # 6. Testar Migration DOWN (Rollback de 0.85D e 0.85C)
+    Write-Host "`n[3/5] Testando rollback de migration (DOWN ordenado de 0.85D e 0.85C) no banco descartável..." -ForegroundColor Yellow
+    & npx payload migrate:down
     & npx payload migrate:down
     if ($LASTEXITCODE -ne 0) { throw "Falha ao executar payload migrate:down para 0.85C no banco descartável" }
 

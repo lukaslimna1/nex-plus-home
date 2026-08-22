@@ -15,7 +15,8 @@
     "test": "tsx --test src/**/__tests__/*.test.ts src/**/tests/*.test.ts tools/**/__tests__/*.test.ts",
     "test:e2e:auth:isolated": "powershell.exe -NoLogo -NoProfile -File ./scripts/run-auth-validation-isolated.ps1",
     "test:db:observations:isolated": "powershell.exe -NoLogo -NoProfile -File ./scripts/run-observation-persistence-isolated.ps1",
-    "test:db:evidence:isolated": "powershell.exe -NoLogo -NoProfile -File ./scripts/run-evidence-artifacts-isolated.ps1"
+    "test:db:evidence:isolated": "powershell.exe -NoLogo -NoProfile -File ./scripts/run-evidence-artifacts-isolated.ps1",
+    "test:db:reconciliation:isolated": "powershell.exe -NoLogo -NoProfile -File ./scripts/run-reconciliation-isolated.ps1"
   },
   "dependencies": {
     "@payloadcms/db-postgres": "3.88.0",
