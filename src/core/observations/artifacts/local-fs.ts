@@ -376,20 +376,23 @@ export class LocalFsArtifactBlobStore implements ArtifactBlobStore {
     const hash = createHash('sha256');
 
     const sourceStream = createReadStream(finalPath);
-    const countingTransform = new Transform({
-      transform(chunk: Buffer, _encoding, callback) {
-        totalBytes += chunk.length;
-        hash.update(chunk);
-        callback(null, chunk);
-      },
-    });
+
+    // Gerador assíncrono para streaming O(1) com cálculo de hash simultâneo
+    async function* makeHashingIterable() {
+      for await (const chunk of sourceStream) {
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        totalBytes += buf.length;
+        hash.update(buf);
+        yield buf;
+      }
+    }
 
     // Abertura exclusiva para escrita E leitura (wx+)
     const fileHandle = await fs.open(snapshotPath, 'wx+');
-    const snapshotWriteStream = fileHandle.createWriteStream({ autoClose: false });
 
     try {
-      await streamPipeline(sourceStream, countingTransform, snapshotWriteStream);
+      // Gravação no snapshot via AsyncIterable sem criar WriteStream titular
+      await fileHandle.writeFile(makeHashingIterable());
       await fileHandle.sync();
 
       const calculatedHash = hash.digest('hex');
@@ -410,10 +413,16 @@ export class LocalFsArtifactBlobStore implements ArtifactBlobStore {
         autoClose: true,
       });
 
-      // Remoção garantida do snapshot após o fechamento do ReadStream / FileHandle
-      snapshotReadStream.on('close', () => {
+      // Remoção garantida e idempotente do snapshot após o fechamento do ReadStream / FileHandle
+      let cleaned = false;
+      const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
         fs.unlink(snapshotPath).catch(() => {});
-      });
+      };
+
+      snapshotReadStream.on('close', cleanup);
+      snapshotReadStream.on('error', cleanup);
 
       return snapshotReadStream;
     } catch (err) {

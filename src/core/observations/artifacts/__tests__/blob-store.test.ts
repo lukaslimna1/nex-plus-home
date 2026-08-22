@@ -362,19 +362,39 @@ describe('Escopo 0.85C · LocalFsArtifactBlobStore (Hardening Pós-Red-Team)', (
       assert.deepEqual(Buffer.concat(readChunks), content);
     });
 
-    it('MB2-3: Manipulação da entrada de path do snapshot não afeta o stream já aberto no handle', async () => {
-      const content = Buffer.from('MB2-3 uncorrupted original bytes');
-      const hash = createHash('sha256').update(content).digest('hex');
-      const putRes = await store.putBlob(content);
+    it('MB2-3: Manipulação/substituição do path do snapshot no filesystem não altera o stream vinculado ao handle', async () => {
+      const originalContent = Buffer.from('MB2-3 authentic original bytes verified before read');
+      const hash = createHash('sha256').update(originalContent).digest('hex');
+      const putRes = await store.putBlob(originalContent);
 
       const stream = await store.getBlobStream(putRes.storageKey, hash);
-      const readChunks: Buffer[] = [];
 
+      // Encontra o snapshot temporário no _staging
+      const stagingDir = path.join(tempRoot, '_staging');
+      const stagingEntries = await fs.readdir(stagingDir);
+      const snapFile = stagingEntries.find((f) => f.startsWith('_snap_'));
+      assert.ok(snapFile, 'Snapshot file must exist in _staging directory');
+
+      const snapPath = path.join(stagingDir, snapFile);
+
+      // Tenta substituir a entrada de path no filesystem
+      try {
+        const decoyPath = path.join(stagingDir, `decoy_${Date.now()}.tmp`);
+        await fs.writeFile(decoyPath, Buffer.from('DECOY CORRUPTED BYTES'));
+        await fs.rename(decoyPath, snapPath).catch(() => {});
+        await fs.unlink(decoyPath).catch(() => {});
+      } catch {
+        // Se o SO bloquear a substituição por lock de handle aberto, confirma proteção no nível do SO
+      }
+
+      // Consome o stream já retornado
+      const readChunks: Buffer[] = [];
       for await (const chunk of stream) {
         readChunks.push(chunk as Buffer);
       }
 
-      assert.deepEqual(Buffer.concat(readChunks), content);
+      // Prova que o stream consumiu os bytes autênticos originais e não foi desviado
+      assert.deepEqual(Buffer.concat(readChunks), originalContent);
     });
 
     it('MB2-4, MB2-5 & MB2-6: destroy() precoce fecha o handle e remove o snapshot temporário do staging', async () => {
