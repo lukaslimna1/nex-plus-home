@@ -1491,4 +1491,446 @@ describe('Escopo 0.85D · Matriz de Aceitação de Reconciliação (Checkpoint 2
       assert.ok(o.observedAt);
     }
   });
+
+  // ==========================================================================
+  // RED-TEAM: EVIDÊNCIA INCOMPLETA, METADATA ANTIGA, PÁGINA DINÂMICA & LATE OBS
+  // ==========================================================================
+
+  it('RT-4: Evidência material incompleta preserva artefato e observação sem forçar projeção automática', async () => {
+    const subjectRT4: ObservationSubject = {
+      domain: 'commerce_offer',
+      entityType: 'product_offer',
+      entityId: 'prod_rt4_incomplete_ev_sku_801',
+    };
+
+    // 1. EvidenceArtifact incompleto / parcial gravado no store
+    const partialPayload = Buffer.from('{"status":"partial_capture","image_bytes_truncated":true}');
+    const partialArtifact = await artifactService.materializeArtifact(
+      partialPayload,
+      {
+        artifactId: 'art_rt4_incomplete_capture' as EvidenceArtifactRefId,
+        kind: 'snapshot',
+        mimeType: 'application/json',
+        safeDescription: 'Truncated mobile viewport capture',
+        containsSecretMaterial: false,
+      },
+      { actor: humanLucas, operation: 'write' },
+    );
+
+    // 2. Observation referenciando a evidência incompleta
+    const obsRT4: ObservationRecord = {
+      observationId: 'obs_rt4_partial_viewport' as ObservationRecordId,
+      subject: subjectRT4,
+      observedClaim: 'promotional_banner',
+      rawValue: { bannerFound: true, textExtracted: null },
+      actor: { kind: 'system', component: 'headless_browser' } as SystemActor,
+      sourceRefs: [],
+      evidenceRefs: [partialArtifact.artifactId],
+      observedAt: '2026-08-22T14:00:00.000Z',
+      capturedAt: '2026-08-22T14:00:01.000Z',
+    };
+    await obsPersistence.recordObservation(obsRT4);
+
+    // 3. Review do MAX apontando que a evidência é insuficiente
+    const maxReviewIncomplete: NonCanonicalReviewEvent = {
+      reviewId: 'rev_rt4_max_awaiting_ev' as ReviewEventId,
+      targetObservationIds: [obsRT4.observationId],
+      consideredEvidenceIds: [partialArtifact.artifactId],
+      actor: maxAgent,
+      decision: 'awaiting_evidence',
+      justification: 'Screenshot payload is truncated; banner text cannot be verified without full page render.',
+      reviewedAt: '2026-08-22T14:05:00.000Z',
+    };
+    await coordinator.submitReview(maxReviewIncomplete);
+
+    // 4. Caso aberto
+    const caseRT4: OpenReconciliationCase = {
+      caseId: 'case_rt4_incomplete_ev_801' as ReconciliationCaseId,
+      subject: subjectRT4,
+      lifecycle: 'open',
+      status: 'open',
+      observationIds: [obsRT4.observationId],
+      reviewIds: [maxReviewIncomplete.reviewId],
+      openedAt: '2026-08-22T14:05:05.000Z',
+      resolutionSummary: 'Awaiting complete evidence for promotional banner.',
+    };
+    await coordinator.createReconciliationCase({ case: caseRT4 });
+
+    // 5. Verificações no PostgreSQL: ZERO CanonicalProjection criada
+    const head = await obsPersistence.getCurrentCanonicalHead(subjectRT4);
+    assert.equal(head, null, 'Nenhum head canônico deve ser criado com evidência incompleta');
+
+    const dbReview = await obsPersistence.getReview(maxReviewIncomplete.reviewId);
+    assert.ok(dbReview);
+    assert.equal(dbReview.decision, 'awaiting_evidence');
+    assert.deepEqual(dbReview.consideredEvidenceIds, [partialArtifact.artifactId]);
+
+    const dbCase = await recPersistence.getCurrentReconciliationCase(caseRT4.caseId);
+    assert.ok(dbCase);
+    assert.equal(dbCase.status, 'open');
+  });
+
+  it('RT-5: Metadata antiga vs render atual divergente preserva ambas as fontes sem votação simples', async () => {
+    const subjectRT5: ObservationSubject = {
+      domain: 'commerce_offer',
+      entityType: 'product_offer',
+      entityId: 'prod_rt5_stale_metadata_sku_802',
+    };
+
+    // Obs A: Metadata com timestamp antigo
+    const obsMetaOld: ObservationRecord = {
+      observationId: 'obs_rt5_meta_old' as ObservationRecordId,
+      subject: subjectRT5,
+      observedClaim: 'price',
+      rawValue: { amount: 199.90, currency: 'BRL', source: 'json_ld_metadata' },
+      actor: { kind: 'system', component: 'meta_parser' } as SystemActor,
+      sourceRefs: [],
+      evidenceRefs: [],
+      observedAt: '2026-08-22T06:00:00.000Z',
+      capturedAt: '2026-08-22T06:00:01.000Z',
+    };
+    await obsPersistence.recordObservation(obsMetaOld);
+
+    // Obs B: Render visual atual divergente
+    const obsRenderNew: ObservationRecord = {
+      observationId: 'obs_rt5_render_new' as ObservationRecordId,
+      subject: subjectRT5,
+      observedClaim: 'price',
+      rawValue: { amount: 249.90, currency: 'BRL', source: 'dom_rendered_text' },
+      actor: { kind: 'system', component: 'dom_renderer' } as SystemActor,
+      sourceRefs: [],
+      evidenceRefs: [],
+      observedAt: '2026-08-22T14:30:00.000Z',
+      capturedAt: '2026-08-22T14:30:01.000Z',
+    };
+    await obsPersistence.recordObservation(obsRenderNew);
+
+    // Review do MAX marcando divergência
+    const maxReviewDivergent: NonCanonicalReviewEvent = {
+      reviewId: 'rev_rt5_max_divergent' as ReviewEventId,
+      targetObservationIds: [obsMetaOld.observationId, obsRenderNew.observationId],
+      actor: maxAgent,
+      decision: 'divergent',
+      justification: 'Metadata price (199.90) conflicts with rendered DOM price (249.90); requires human resolution.',
+      reviewedAt: '2026-08-22T14:35:00.000Z',
+    };
+    await coordinator.submitReview(maxReviewDivergent);
+
+    // Verificação no PostgreSQL: ambas as observações intactas e sem projeção automática
+    const dbObs1 = await obsPersistence.getObservation(obsMetaOld.observationId);
+    const dbObs2 = await obsPersistence.getObservation(obsRenderNew.observationId);
+    assert.ok(dbObs1);
+    assert.ok(dbObs2);
+    assert.equal((dbObs1.rawValue as any).amount, 199.90);
+    assert.equal((dbObs2.rawValue as any).amount, 249.90);
+
+    const head = await obsPersistence.getCurrentCanonicalHead(subjectRT5);
+    assert.equal(head, null, 'Nenhuma projeção automática gerada por votação simples');
+  });
+
+  it('RT-6: Página dinâmica preserva snapshots T1 e T2 como registros e artefatos distintos', async () => {
+    const subjectRT6: ObservationSubject = {
+      domain: 'commerce_offer',
+      entityType: 'product_offer',
+      entityId: 'prod_rt6_dynamic_page_sku_803',
+    };
+
+    // T1 Snapshot
+    const payloadT1 = Buffer.from('HTML_SNAPSHOT_T1_MORNING_PRICE_49.90');
+    const artT1 = await artifactService.materializeArtifact(
+      payloadT1,
+      {
+        artifactId: 'art_rt6_snap_t1' as EvidenceArtifactRefId,
+        kind: 'snapshot',
+        mimeType: 'text/html',
+        safeDescription: 'Morning dynamic price snapshot 49.90',
+        containsSecretMaterial: false,
+      },
+      { actor: humanLucas, operation: 'write' },
+    );
+
+    const obsT1: ObservationRecord = {
+      observationId: 'obs_rt6_t1_morning' as ObservationRecordId,
+      subject: subjectRT6,
+      observedClaim: 'price',
+      rawValue: { amount: 49.90, currency: 'BRL' },
+      actor: { kind: 'system', component: 'crawler' } as SystemActor,
+      sourceRefs: [],
+      evidenceRefs: [artT1.artifactId],
+      observedAt: '2026-08-22T08:00:00.000Z',
+      capturedAt: '2026-08-22T08:00:01.000Z',
+    };
+    await obsPersistence.recordObservation(obsT1);
+
+    // T2 Snapshot (Preço dinâmico atualizado à tarde)
+    const payloadT2 = Buffer.from('HTML_SNAPSHOT_T2_AFTERNOON_PRICE_54.90');
+    const artT2 = await artifactService.materializeArtifact(
+      payloadT2,
+      {
+        artifactId: 'art_rt6_snap_t2' as EvidenceArtifactRefId,
+        kind: 'snapshot',
+        mimeType: 'text/html',
+        safeDescription: 'Afternoon dynamic price snapshot 54.90',
+        containsSecretMaterial: false,
+      },
+      { actor: humanLucas, operation: 'write' },
+    );
+
+    const obsT2: ObservationRecord = {
+      observationId: 'obs_rt6_t2_afternoon' as ObservationRecordId,
+      subject: subjectRT6,
+      observedClaim: 'price',
+      rawValue: { amount: 54.90, currency: 'BRL' },
+      actor: { kind: 'system', component: 'crawler' } as SystemActor,
+      sourceRefs: [],
+      evidenceRefs: [artT2.artifactId],
+      observedAt: '2026-08-22T15:00:00.000Z',
+      capturedAt: '2026-08-22T15:00:01.000Z',
+    };
+    await obsPersistence.recordObservation(obsT2);
+
+    // Ambos os artefatos e observações existem no banco e disco
+    const dbObsT1 = await obsPersistence.getObservation(obsT1.observationId);
+    const dbObsT2 = await obsPersistence.getObservation(obsT2.observationId);
+    assert.ok(dbObsT1);
+    assert.ok(dbObsT2);
+    assert.notEqual(dbObsT1.observationId, dbObsT2.observationId);
+    assert.deepEqual(dbObsT1.evidenceRefs, [artT1.artifactId]);
+    assert.deepEqual(dbObsT2.evidenceRefs, [artT2.artifactId]);
+
+    const readT1 = await artifactService.readArtifact(artT1.artifactId, { actor: humanLucas, operation: 'read' });
+    const readT2 = await artifactService.readArtifact(artT2.artifactId, { actor: humanLucas, operation: 'read' });
+    assert.equal(readT1.metadata.artifactId, artT1.artifactId);
+    assert.equal(readT2.metadata.artifactId, artT2.artifactId);
+  });
+
+  it('RT-7: Observação tardia (descoberta após o fato) é inserida no histórico sem retroagir canonical head atual', async () => {
+    const subjectRT7: ObservationSubject = {
+      domain: 'commerce_offer',
+      entityType: 'product_offer',
+      entityId: 'prod_rt7_late_observation_sku_804',
+    };
+
+    // 1. Estado Canônico V1 estabelecido em T1
+    const obsCurrent: ObservationRecord = {
+      observationId: 'obs_rt7_current_t1' as ObservationRecordId,
+      subject: subjectRT7,
+      observedClaim: 'price',
+      rawValue: { amount: 300.00, currency: 'BRL' },
+      actor: humanLucas,
+      sourceRefs: [],
+      evidenceRefs: [],
+      observedAt: '2026-08-22T10:00:00.000Z',
+      capturedAt: '2026-08-22T10:00:01.000Z',
+    };
+    await obsPersistence.recordObservation(obsCurrent);
+
+    const revCurrent: CanonicalPromotedReviewEvent = {
+      reviewId: 'rev_rt7_prom_t1' as ReviewEventId,
+      targetObservationIds: [obsCurrent.observationId],
+      actor: humanLucas,
+      decision: 'canonical_promoted',
+      canonicalEffect: { action: 'promote', targetCanonicalState: { price: 300.00 } },
+      justification: 'Canonical price established at 300.00.',
+      reviewedAt: '2026-08-22T10:05:00.000Z',
+    };
+
+    const projCurrent: CanonicalProjection = {
+      projectionRevisionId: 'proj_rt7_v1' as CanonicalProjectionRevisionId,
+      subject: subjectRT7,
+      canonicalState: { price: 300.00 },
+      underlyingObservationIds: [obsCurrent.observationId],
+      authorizingReviewIds: [revCurrent.reviewId],
+      materializedAt: '2026-08-22T10:05:05.000Z',
+      explanation: 'Established canonical price V1.',
+    };
+
+    await coordinator.submitCanonicalPromotion({
+      review: revCurrent,
+      projection: projCurrent,
+      authorization: validHumanAuthDecision,
+    });
+
+    const headBefore = await obsPersistence.getCurrentCanonicalHead(subjectRT7);
+    assert.ok(headBefore);
+    assert.equal(headBefore.currentProjectionRevisionId, projCurrent.projectionRevisionId);
+
+    // 2. Observação Tardia chega em T3 (capturedAt 16:00), mas refere-se a fato ocorrido em T0 (08:00)
+    const obsLate: ObservationRecord = {
+      observationId: 'obs_rt7_late_fact_t0' as ObservationRecordId,
+      subject: subjectRT7,
+      observedClaim: 'price',
+      rawValue: { amount: 280.00, currency: 'BRL', note: 'Historical paper invoice scanned late' },
+      actor: { kind: 'system', component: 'document_importer' } as SystemActor,
+      sourceRefs: [],
+      evidenceRefs: [],
+      observedAt: '2026-08-22T08:00:00.000Z', // Fato anterior a T1!
+      capturedAt: '2026-08-22T16:00:00.000Z', // Descoberto tardiamente
+    };
+    await obsPersistence.recordObservation(obsLate);
+
+    // 3. Verificação: Observação gravada no histórico, mas Head V1 permanece inalterado
+    const dbLateObs = await obsPersistence.getObservation(obsLate.observationId);
+    assert.ok(dbLateObs);
+    assert.equal(dbLateObs.observedAt, '2026-08-22T08:00:00.000Z');
+    assert.equal(dbLateObs.capturedAt, '2026-08-22T16:00:00.000Z');
+
+    const headAfter = await obsPersistence.getCurrentCanonicalHead(subjectRT7);
+    assert.ok(headAfter);
+    assert.equal(
+      headAfter.currentProjectionRevisionId,
+      projCurrent.projectionRevisionId,
+      'Observação tardia não deve retroagir silenciosamente o head canônico atual',
+    );
+  });
+
+  // ==========================================================================
+  // CENÁRIO OVR-1: OVERRIDE HUMANO GOVERNADO
+  // ==========================================================================
+  it('OVR-1: Override humano governado por ACL preserva justificativa e evidência contrária no PostgreSQL', async () => {
+    const subjectOVR1: ObservationSubject = {
+      domain: 'commerce_offer',
+      entityType: 'product_offer',
+      entityId: 'prod_ovr1_human_override_sku_901',
+    };
+
+    // 1. Estado canônico V1 pré-existente
+    const obsV1: ObservationRecord = {
+      observationId: 'obs_ovr1_v1' as ObservationRecordId,
+      subject: subjectOVR1,
+      observedClaim: 'price',
+      rawValue: { amount: 299.90, currency: 'BRL' },
+      actor: humanLucas,
+      sourceRefs: [],
+      evidenceRefs: [],
+      observedAt: '2026-08-22T08:00:00.000Z',
+      capturedAt: '2026-08-22T08:00:01.000Z',
+    };
+    await obsPersistence.recordObservation(obsV1);
+
+    const revV1: CanonicalPromotedReviewEvent = {
+      reviewId: 'rev_ovr1_v1' as ReviewEventId,
+      targetObservationIds: [obsV1.observationId],
+      actor: humanLucas,
+      decision: 'canonical_promoted',
+      canonicalEffect: { action: 'promote', targetCanonicalState: { price: 299.90 } },
+      justification: 'Base standard price approved.',
+      reviewedAt: '2026-08-22T08:05:00.000Z',
+    };
+
+    const projV1: CanonicalProjection = {
+      projectionRevisionId: 'proj_ovr1_v1' as CanonicalProjectionRevisionId,
+      subject: subjectOVR1,
+      canonicalState: { price: 299.90 },
+      underlyingObservationIds: [obsV1.observationId],
+      authorizingReviewIds: [revV1.reviewId],
+      materializedAt: '2026-08-22T08:05:05.000Z',
+      explanation: 'Initial canonical state V1.',
+    };
+
+    await coordinator.submitCanonicalPromotion({
+      review: revV1,
+      projection: projV1,
+      authorization: validHumanAuthDecision,
+    });
+
+    // 2. Chega Observação contrária com EvidenceArtifact material real
+    const contraryPayload = Buffer.from('SCREENSHOT_SHOWING_COMPETITOR_MATCH_PRICE_349.90');
+    const contraryArtifact = await artifactService.materializeArtifact(
+      contraryPayload,
+      {
+        artifactId: 'art_ovr1_contrary_screenshot' as EvidenceArtifactRefId,
+        kind: 'snapshot',
+        mimeType: 'image/png',
+        safeDescription: 'Screenshot showing competitor price 349.90',
+        containsSecretMaterial: false,
+      },
+      { actor: humanLucas, operation: 'write' },
+    );
+
+    const obsContrary: ObservationRecord = {
+      observationId: 'obs_ovr1_contrary' as ObservationRecordId,
+      subject: subjectOVR1,
+      observedClaim: 'price',
+      rawValue: { amount: 349.90, currency: 'BRL' },
+      actor: { kind: 'system', component: 'price_monitor' } as SystemActor,
+      sourceRefs: [],
+      evidenceRefs: [contraryArtifact.artifactId],
+      observedAt: '2026-08-22T11:00:00.000Z',
+      capturedAt: '2026-08-22T11:00:01.000Z',
+    };
+    await obsPersistence.recordObservation(obsContrary);
+
+    // 3. MAX cria review divergent/contested apontando o conflito
+    const maxReviewContrary: NonCanonicalReviewEvent = {
+      reviewId: 'rev_ovr1_max_contrary' as ReviewEventId,
+      targetObservationIds: [obsContrary.observationId],
+      consideredEvidenceIds: [contraryArtifact.artifactId],
+      actor: maxAgent,
+      decision: 'divergent',
+      justification: 'Automated crawler detected 349.90 conflicting with canonical 299.90.',
+      reviewedAt: '2026-08-22T11:05:00.000Z',
+    };
+    await coordinator.submitReview(maxReviewContrary);
+
+    // 4. Humano autorizado decide conscientemente substituir o estado e promover V2,
+    //    referenciando explicitamente a evidência contrária e a review do MAX.
+    const humanOverrideReview: CanonicalPromotedReviewEvent = {
+      reviewId: 'rev_ovr1_human_override' as ReviewEventId,
+      targetObservationIds: [obsContrary.observationId],
+      previousReviewIds: [maxReviewContrary.reviewId],
+      targetBaseRevisionId: projV1.projectionRevisionId,
+      consideredEvidenceIds: [contraryArtifact.artifactId], // Inclui explicitamente a evidência contrária!
+      actor: humanLucas,
+      decision: 'canonical_promoted',
+      canonicalEffect: { action: 'promote', targetCanonicalState: { price: 349.90 } },
+      justification: 'Human supervisor explicitly verified contrary artifact art_ovr1_contrary_screenshot and approved new price 349.90.',
+      reviewedAt: '2026-08-22T11:30:00.000Z',
+    };
+
+    const projV2: CanonicalProjection = {
+      projectionRevisionId: 'proj_ovr1_v2' as CanonicalProjectionRevisionId,
+      subject: subjectOVR1,
+      canonicalState: { price: 349.90 },
+      underlyingObservationIds: [obsV1.observationId, obsContrary.observationId],
+      authorizingReviewIds: [revV1.reviewId, humanOverrideReview.reviewId],
+      supersedesRevisionId: projV1.projectionRevisionId,
+      materializedAt: '2026-08-22T11:30:05.000Z',
+      explanation: 'Governed human override: updated price to 349.90 superseding V1 while preserving contrary evidence.',
+    };
+
+    await coordinator.submitCanonicalPromotion({
+      review: humanOverrideReview,
+      projection: projV2,
+      expectedBaseRevisionId: projV1.projectionRevisionId,
+      authorization: validHumanAuthDecision,
+    });
+
+    // 5. RELER DO POSTGRESQL E COMPROVAR QUE NADA FOI APAGADO
+    const currentHead = await obsPersistence.getCurrentCanonicalHead(subjectOVR1);
+    assert.ok(currentHead);
+    assert.equal(currentHead.currentProjectionRevisionId, projV2.projectionRevisionId);
+
+    const dbProjV2 = await obsPersistence.getCanonicalProjectionRevision(projV2.projectionRevisionId);
+    assert.ok(dbProjV2);
+    assert.deepEqual(dbProjV2.canonicalState, { price: 349.90 });
+    assert.equal(dbProjV2.supersedesRevisionId, projV1.projectionRevisionId);
+
+    const dbProjV1 = await obsPersistence.getCanonicalProjectionRevision(projV1.projectionRevisionId);
+    assert.ok(dbProjV1, 'Projeção V1 deve permanecer histórica no banco');
+
+    const dbHumanReview = await obsPersistence.getReview(humanOverrideReview.reviewId);
+    assert.ok(dbHumanReview);
+    assert.equal(dbHumanReview.justification, humanOverrideReview.justification);
+    assert.deepEqual(dbHumanReview.consideredEvidenceIds, [contraryArtifact.artifactId]);
+
+    const dbMaxReview = await obsPersistence.getReview(maxReviewContrary.reviewId);
+    assert.ok(dbMaxReview, 'Review anterior do MAX deve permanecer intacta');
+
+    const dbContraryObs = await obsPersistence.getObservation(obsContrary.observationId);
+    assert.ok(dbContraryObs, 'Observação contrária deve permanecer intacta');
+
+    const dbContraryArt = await artifactPersistence.getArtifactMetadata(contraryArtifact.artifactId);
+    assert.ok(dbContraryArt, 'EvidenceArtifact contrário deve permanecer no banco de artefatos');
+  });
 });

@@ -34,6 +34,11 @@ export type SelectionPlanId = string & { readonly __brand?: 'SelectionPlanId' };
 // 2. HUMAN CONFIRMATION, AUTHORIZATION & INTERPRETATION READINESS
 // ============================================================================
 
+export interface ContextualAuthorizationRequirement {
+  readonly operation: string;
+  readonly resourceTarget?: string;
+}
+
 export interface ContextualAuthorizationDecision {
   readonly authorizationId: AuthorizationDecisionId;
   readonly materialContextId: DecisionMaterialContextId;

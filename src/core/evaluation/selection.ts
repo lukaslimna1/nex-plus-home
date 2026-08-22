@@ -24,6 +24,7 @@ import type { DecisionId, RouteEvaluationId } from '../execution/contracts';
 import type {
   ConfirmationDecision,
   ContextualAuthorizationDecision,
+  ContextualAuthorizationRequirement,
   DecisionMaterialContextId,
   DecisionResult,
   DispatchAdmission,
@@ -47,6 +48,7 @@ export interface EvaluateDecisionParams {
   readonly policy: PolicyRevision;
   readonly authorization?: ContextualAuthorizationDecision;
   readonly authorizationRequired?: boolean;
+  readonly requiredAuthorizationScope?: ContextualAuthorizationRequirement;
   readonly confirmation?: ConfirmationDecision;
   readonly confirmationRequired?: boolean;
   readonly containsSecretMaterial: boolean;
@@ -73,6 +75,7 @@ export function evaluateDecision(params: EvaluateDecisionParams): DecisionResult
     policy,
     authorization,
     authorizationRequired = false,
+    requiredAuthorizationScope,
     confirmation,
     confirmationRequired = false,
     containsSecretMaterial,
@@ -193,7 +196,7 @@ export function evaluateDecision(params: EvaluateDecisionParams): DecisionResult
     }
   }
 
-  // 3. Gate de Autorização Humana (0.5C / 0.5E)
+  // 3. Gate de Autorização Humana (0.5C / 0.5E / 0.85D)
   if (authorizationRequired) {
     if (!authorization) {
       const escalation: HumanEscalation = {
@@ -293,6 +296,76 @@ export function evaluateDecision(params: EvaluateDecisionParams): DecisionResult
         decidedAt,
       };
     }
+
+    // Validação de Escopo Explícito de Autorização (INV-01 / 0.85D Passagem 2)
+    if (!requiredAuthorizationScope || !requiredAuthorizationScope.operation) {
+      const escalation: HumanEscalation = {
+        escalationId: `esc_auth_scope_req_${decisionId}` as HumanEscalationId,
+        decisionId,
+        materialContextId,
+        kind: 'authorization_pending',
+        reasonCode: 'AUTHORIZATION_SCOPE_REQUIRED',
+        detail: 'Explicit authorization scope (operation and optional resourceTarget) is required when authorizationRequired=true.',
+        escalatedAt: decidedAt,
+      };
+
+      return {
+        decisionId,
+        materialContextId,
+        disposition: 'awaiting_human',
+        reasonCode: 'AUTHORIZATION_SCOPE_REQUIRED',
+        evaluations: [],
+        escalation,
+        decidedAt,
+      };
+    }
+
+    if (authorization.operation !== requiredAuthorizationScope.operation) {
+      const escalation: HumanEscalation = {
+        escalationId: `esc_auth_op_${decisionId}` as HumanEscalationId,
+        decisionId,
+        materialContextId,
+        kind: 'authorization_pending',
+        reasonCode: 'AUTHORIZATION_OPERATION_MISMATCH',
+        detail: `Authorization operation '${authorization.operation}' does not match required operation '${requiredAuthorizationScope.operation}'.`,
+        escalatedAt: decidedAt,
+      };
+
+      return {
+        decisionId,
+        materialContextId,
+        disposition: 'awaiting_human',
+        reasonCode: 'AUTHORIZATION_OPERATION_MISMATCH',
+        evaluations: [],
+        escalation,
+        decidedAt,
+      };
+    }
+
+    if (
+      requiredAuthorizationScope.resourceTarget !== undefined &&
+      authorization.resourceTarget !== requiredAuthorizationScope.resourceTarget
+    ) {
+      const escalation: HumanEscalation = {
+        escalationId: `esc_auth_res_${decisionId}` as HumanEscalationId,
+        decisionId,
+        materialContextId,
+        kind: 'authorization_pending',
+        reasonCode: 'AUTHORIZATION_RESOURCE_MISMATCH',
+        detail: `Authorization resourceTarget '${authorization.resourceTarget}' does not match required resourceTarget '${requiredAuthorizationScope.resourceTarget}'.`,
+        escalatedAt: decidedAt,
+      };
+
+      return {
+        decisionId,
+        materialContextId,
+        disposition: 'awaiting_human',
+        reasonCode: 'AUTHORIZATION_RESOURCE_MISMATCH',
+        evaluations: [],
+        escalation,
+        decidedAt,
+      };
+    }
   } else {
     // authorizationRequired = false
     if (authorization) {
@@ -347,6 +420,53 @@ export function evaluateDecision(params: EvaluateDecisionParams): DecisionResult
           escalation,
           decidedAt,
         };
+      }
+      if (requiredAuthorizationScope) {
+        if (requiredAuthorizationScope.operation && authorization.operation !== requiredAuthorizationScope.operation) {
+          const escalation: HumanEscalation = {
+            escalationId: `esc_auth_op_${decisionId}` as HumanEscalationId,
+            decisionId,
+            materialContextId,
+            kind: 'authorization_pending',
+            reasonCode: 'AUTHORIZATION_OPERATION_MISMATCH',
+            detail: `Authorization operation '${authorization.operation}' does not match required operation '${requiredAuthorizationScope.operation}'.`,
+            escalatedAt: decidedAt,
+          };
+
+          return {
+            decisionId,
+            materialContextId,
+            disposition: 'awaiting_human',
+            reasonCode: 'AUTHORIZATION_OPERATION_MISMATCH',
+            evaluations: [],
+            escalation,
+            decidedAt,
+          };
+        }
+        if (
+          requiredAuthorizationScope.resourceTarget !== undefined &&
+          authorization.resourceTarget !== requiredAuthorizationScope.resourceTarget
+        ) {
+          const escalation: HumanEscalation = {
+            escalationId: `esc_auth_res_${decisionId}` as HumanEscalationId,
+            decisionId,
+            materialContextId,
+            kind: 'authorization_pending',
+            reasonCode: 'AUTHORIZATION_RESOURCE_MISMATCH',
+            detail: `Authorization resourceTarget '${authorization.resourceTarget}' does not match required resourceTarget '${requiredAuthorizationScope.resourceTarget}'.`,
+            escalatedAt: decidedAt,
+          };
+
+          return {
+            decisionId,
+            materialContextId,
+            disposition: 'awaiting_human',
+            reasonCode: 'AUTHORIZATION_RESOURCE_MISMATCH',
+            evaluations: [],
+            escalation,
+            decidedAt,
+          };
+        }
       }
     }
   }
