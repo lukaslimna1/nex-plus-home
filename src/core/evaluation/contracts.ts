@@ -166,6 +166,7 @@ export interface DispatchAdmission {
   readonly policyRevisionId: PolicyRevisionId;
   readonly authorizationDecisionId?: AuthorizationDecisionId;
   readonly confirmationDecisionId?: ConfirmationDecisionId;
+  readonly authorizationScope?: ContextualAuthorizationRequirement;
   readonly admittedAt: string;
 }
 

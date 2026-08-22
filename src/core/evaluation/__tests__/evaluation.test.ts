@@ -5,7 +5,7 @@
  * Suíte Completa: 64 Cenários da Matriz de Aceitação de L0.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import type {
@@ -69,6 +69,7 @@ import {
   assessContinuationAfterAttempt,
   buildAttemptCreatedEvent,
 } from '../continuation';
+import { defaultDispatchAdmissionAuthority } from '../admission-authority';
 
 const defaultProvenance: FactProvenance = {
   source: 'official_docs',
@@ -158,6 +159,10 @@ function createMockTerms(termsKey: string, id: string, routeRevisionId: RouteRev
 }
 
 describe('NEX+ L0 Route Eligibility, Selection & Escalation (Bloco 0.5E)', () => {
+  beforeEach(() => {
+    defaultDispatchAdmissionAuthority.clear();
+  });
+
   // 1. Capability inexistente → clarification_required
   it('1. Capability inexistente → clarification_required', () => {
     const registry = createCapabilityRegistry();
@@ -1311,8 +1316,8 @@ describe('NEX+ L0 Route Eligibility, Selection & Escalation (Bloco 0.5E)', () =>
 
   // 41. Admission context M1 não pode ser reutilizada para M2
   it('41. Admission context M1 não pode ser reutilizada para M2', () => {
-    const admission = {
-      admissionId: 'adm_01' as any,
+    const admission = defaultDispatchAdmissionAuthority.registerAdmission({
+      admissionId: 'adm_01_ctx_test' as any,
       decisionId: 'dec_01' as DecisionId,
       materialContextId: 'ctx_M1' as DecisionMaterialContextId,
       routeEvaluationId: 'eval_01' as RouteEvaluationId,
@@ -1321,7 +1326,7 @@ describe('NEX+ L0 Route Eligibility, Selection & Escalation (Bloco 0.5E)', () =>
       routeRevisionId: 'route_01' as RouteRevisionId,
       policyRevisionId: 'pol_01' as PolicyRevisionId,
       admittedAt: '2026-08-19T18:50:00.000Z',
-    };
+    });
 
     assert.throws(
       () =>
@@ -1337,8 +1342,8 @@ describe('NEX+ L0 Route Eligibility, Selection & Escalation (Bloco 0.5E)', () =>
 
   // 42. buildAttemptCreatedEvent usa refs exatas da Admission
   it('42. buildAttemptCreatedEvent usa refs exatas da Admission', () => {
-    const admission = {
-      admissionId: 'adm_01' as any,
+    const admission = defaultDispatchAdmissionAuthority.registerAdmission({
+      admissionId: 'adm_02_refs_test' as any,
       decisionId: 'dec_01' as DecisionId,
       materialContextId: 'ctx_M1' as DecisionMaterialContextId,
       routeEvaluationId: 'eval_01' as RouteEvaluationId,
@@ -1347,7 +1352,7 @@ describe('NEX+ L0 Route Eligibility, Selection & Escalation (Bloco 0.5E)', () =>
       routeRevisionId: 'route_01' as RouteRevisionId,
       policyRevisionId: 'pol_01' as PolicyRevisionId,
       admittedAt: '2026-08-19T18:50:00.000Z',
-    };
+    });
 
     const event = buildAttemptCreatedEvent(
       admission,

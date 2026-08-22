@@ -41,10 +41,11 @@ import {
   materializeResourceAdmission,
   ResourceAdmissionMismatchError,
 } from '../integration/attempt-admission';
+import { defaultDispatchAdmissionAuthority } from '../../evaluation/admission-authority';
 
 function createMockDispatchAdmission(overrides: Partial<DispatchAdmission> = {}): DispatchAdmission {
-  return {
-    admissionId: 'disp_adm_01' as DispatchAdmissionId,
+  const adm: DispatchAdmission = {
+    admissionId: `disp_adm_${Math.random().toString(36).substring(2, 8)}` as DispatchAdmissionId,
     decisionId: 'dec_01' as DecisionId,
     materialContextId: 'ctx_01' as DecisionMaterialContextId,
     routeEvaluationId: 'eval_01' as RouteEvaluationId,
@@ -55,6 +56,7 @@ function createMockDispatchAdmission(overrides: Partial<DispatchAdmission> = {})
     admittedAt: '2026-08-19T20:00:00.000Z',
     ...overrides,
   };
+  return defaultDispatchAdmissionAuthority.registerAdmission(adm);
 }
 
 function createMockRequest(overrides: Partial<ResourceRequest> = {}): ResourceRequest {

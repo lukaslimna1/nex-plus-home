@@ -37,7 +37,16 @@ import type {
   RouteSelectionPlan,
 } from './contracts';
 
+import {
+  DispatchAdmissionAuthority,
+  defaultDispatchAdmissionAuthority,
+} from './admission-authority';
+
 import { evaluateCandidateRoute } from './route-evaluation';
+
+function isValidOperation(op: unknown): op is string {
+  return typeof op === 'string' && op.length > 0 && op === op.trim();
+}
 
 export interface EvaluateDecisionParams {
   readonly decisionId: DecisionId;
@@ -49,6 +58,7 @@ export interface EvaluateDecisionParams {
   readonly authorization?: ContextualAuthorizationDecision;
   readonly authorizationRequired?: boolean;
   readonly requiredAuthorizationScope?: ContextualAuthorizationRequirement;
+  readonly admissionAuthority?: DispatchAdmissionAuthority;
   readonly confirmation?: ConfirmationDecision;
   readonly confirmationRequired?: boolean;
   readonly containsSecretMaterial: boolean;
@@ -297,15 +307,20 @@ export function evaluateDecision(params: EvaluateDecisionParams): DecisionResult
       };
     }
 
-    // Validação de Escopo Explícito de Autorização (INV-01 / 0.85D Passagem 2)
-    if (!requiredAuthorizationScope || !requiredAuthorizationScope.operation) {
+    // Validação de Escopo Explícito de Autorização (INV-01 / 0.85D Passagem 2 / Blocker I)
+    if (
+      !requiredAuthorizationScope ||
+      !isValidOperation(requiredAuthorizationScope.operation) ||
+      (requiredAuthorizationScope.resourceTarget !== undefined &&
+        !isValidOperation(requiredAuthorizationScope.resourceTarget))
+    ) {
       const escalation: HumanEscalation = {
         escalationId: `esc_auth_scope_req_${decisionId}` as HumanEscalationId,
         decisionId,
         materialContextId,
         kind: 'authorization_pending',
         reasonCode: 'AUTHORIZATION_SCOPE_REQUIRED',
-        detail: 'Explicit authorization scope (operation and optional resourceTarget) is required when authorizationRequired=true.',
+        detail: 'Explicit authorization scope (operation and optional resourceTarget) without whitespace is required when authorizationRequired=true.',
         escalatedAt: decidedAt,
       };
 
@@ -422,7 +437,33 @@ export function evaluateDecision(params: EvaluateDecisionParams): DecisionResult
         };
       }
       if (requiredAuthorizationScope) {
-        if (requiredAuthorizationScope.operation && authorization.operation !== requiredAuthorizationScope.operation) {
+        if (
+          !isValidOperation(requiredAuthorizationScope.operation) ||
+          (requiredAuthorizationScope.resourceTarget !== undefined &&
+            !isValidOperation(requiredAuthorizationScope.resourceTarget))
+        ) {
+          const escalation: HumanEscalation = {
+            escalationId: `esc_auth_scope_req_${decisionId}` as HumanEscalationId,
+            decisionId,
+            materialContextId,
+            kind: 'authorization_pending',
+            reasonCode: 'AUTHORIZATION_SCOPE_REQUIRED',
+            detail: 'Explicit authorization scope without whitespace is required.',
+            escalatedAt: decidedAt,
+          };
+
+          return {
+            decisionId,
+            materialContextId,
+            disposition: 'awaiting_human',
+            reasonCode: 'AUTHORIZATION_SCOPE_REQUIRED',
+            evaluations: [],
+            escalation,
+            decidedAt,
+          };
+        }
+
+        if (authorization.operation !== requiredAuthorizationScope.operation) {
           const escalation: HumanEscalation = {
             escalationId: `esc_auth_op_${decisionId}` as HumanEscalationId,
             decisionId,
@@ -726,7 +767,8 @@ export function evaluateDecision(params: EvaluateDecisionParams): DecisionResult
     }
 
     const chosenEval = eligible.find((e) => e.routeRevisionId === chosenRouteId)!;
-    const admission: DispatchAdmission = {
+    const authority = params.admissionAuthority ?? defaultDispatchAdmissionAuthority;
+    const rawAdmission: DispatchAdmission = {
       admissionId: `adm_${decisionId}_${chosenEval.routeRevisionId}` as DispatchAdmissionId,
       decisionId,
       materialContextId,
@@ -737,8 +779,10 @@ export function evaluateDecision(params: EvaluateDecisionParams): DecisionResult
       policyRevisionId: chosenEval.policyRevisionId,
       authorizationDecisionId: authorization?.authorizationId,
       confirmationDecisionId: confirmation?.confirmationId,
+      authorizationScope: requiredAuthorizationScope,
       admittedAt: decidedAt,
     };
+    const admission = authority.registerAdmission(rawAdmission);
 
     return {
       decisionId,
@@ -755,7 +799,8 @@ export function evaluateDecision(params: EvaluateDecisionParams): DecisionResult
   // Caso B: Exatamente 1 rota elegível sem plano
   if (eligible.length === 1) {
     const chosenEval = eligible[0];
-    const admission: DispatchAdmission = {
+    const authority = params.admissionAuthority ?? defaultDispatchAdmissionAuthority;
+    const rawAdmission: DispatchAdmission = {
       admissionId: `adm_${decisionId}_${chosenEval.routeRevisionId}` as DispatchAdmissionId,
       decisionId,
       materialContextId,
@@ -766,8 +811,10 @@ export function evaluateDecision(params: EvaluateDecisionParams): DecisionResult
       policyRevisionId: chosenEval.policyRevisionId,
       authorizationDecisionId: authorization?.authorizationId,
       confirmationDecisionId: confirmation?.confirmationId,
+      authorizationScope: requiredAuthorizationScope,
       admittedAt: decidedAt,
     };
+    const admission = authority.registerAdmission(rawAdmission);
 
     return {
       decisionId,
