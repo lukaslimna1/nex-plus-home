@@ -15,6 +15,8 @@
  * 5. SessionRef NÃO autentica nem autoriza requisições.
  */
 
+import 'server-only';
+
 import * as crypto from 'node:crypto';
 import {
   SESSION_REF_DOMAIN_NAMESPACE,

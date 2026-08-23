@@ -12,6 +12,8 @@
  * 6. _sid, JWT, cookies e user.sessions permanecem confinados na fronteira e não vazam no DTO.
  */
 
+import 'server-only';
+
 import { headers as getNextHeaders } from 'next/headers';
 import { getPayload } from 'payload';
 import type { HumanActor } from '../core/observations/contracts';
@@ -57,9 +59,12 @@ export class AuthInternalError extends Error {
 
 /**
  * Converte o resultado autenticado do Payload em AuthenticatedSessionContext.
- * Helper interno estritamente confinado ao módulo.
+ * Helper interno do módulo (utilizado internamente e exposto apenas para testes unitários do módulo).
  */
-function processPayloadAuthUser(user: unknown): SessionResolutionResult {
+export function deriveSessionContextFromPayloadUser(
+  user: unknown,
+  secretOverride?: string,
+): SessionResolutionResult {
   if (!user || typeof user !== 'object') {
     return Object.freeze({
       status: 'unauthenticated',
@@ -106,6 +111,7 @@ function processPayloadAuthUser(user: unknown): SessionResolutionResult {
       collection: 'users',
       userId,
       sid,
+      secret: secretOverride,
     });
 
     const actor: HumanActor = Object.freeze({
@@ -180,7 +186,7 @@ export async function resolveAuthenticatedSessionContext(): Promise<SessionResol
       });
     }
 
-    return processPayloadAuthUser(authResult?.user);
+    return deriveSessionContextFromPayloadUser(authResult?.user);
   } catch (outerError: any) {
     return Object.freeze({
       status: 'error',
