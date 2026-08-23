@@ -1,6 +1,6 @@
 /**
  * NEX+ · Auth Layer
- * Testes Unitários de SessionRef (HMAC, Domain Separation & Invariantes) — Escopo 0.86B-1
+ * Testes Unitários de SessionRef (HMAC, Canonical JSON & Anti-Delimiter-Injection) — Escopo 0.86B-1 (Hardening)
  */
 
 import { describe, it } from 'node:test';
@@ -9,16 +9,18 @@ import * as crypto from 'node:crypto';
 
 import {
   deriveSessionRef,
-  isValidSessionRef,
-  SESSION_REF_DOMAIN_NAMESPACE,
   SessionSecretMissingError,
   InvalidSessionRefInputError,
 } from '../session-ref';
+import {
+  isValidSessionRef,
+  SESSION_REF_DOMAIN_NAMESPACE,
+} from '../session-ref.types';
 
-describe('NEX+ Auth · SessionRef Derivation & Invariants (0.86B-1)', () => {
+describe('NEX+ Auth · SessionRef Derivation & Hardening (0.86B-1)', () => {
   const TEST_SECRET = 'test_secret_for_session_ref_derivation_12345';
 
-  it('SR-1: Derivação legítima produz SessionRef em formato hexadecimal SHA-256 (64 chars)', () => {
+  it('SR-1: Derivação legítima produz SessionRef em formato hexadecimal SHA-256 (64 chars minúsculos)', () => {
     const sessionRef = deriveSessionRef({
       collection: 'users',
       userId: 'usr_001',
@@ -95,7 +97,7 @@ describe('NEX+ Auth · SessionRef Derivation & Invariants (0.86B-1)', () => {
     assert.notEqual(refUser1, refUser2);
   });
 
-  it('SR-5: Domain separation garante que payload prefixado com namespace oficial é utilizado', () => {
+  it('SR-5: Domain separation com serialização canônica JSON é utilizada', () => {
     const sessionRef = deriveSessionRef({
       collection: 'users',
       userId: 'usr_001',
@@ -103,18 +105,39 @@ describe('NEX+ Auth · SessionRef Derivation & Invariants (0.86B-1)', () => {
       secret: TEST_SECRET,
     });
 
-    // Calcula HMAC manual com namespace oficial
-    const expectedPayload = `${SESSION_REF_DOMAIN_NAMESPACE}:users:usr_001:sid_001`;
-    const expectedHmac = crypto.createHmac('sha256', TEST_SECRET).update(expectedPayload, 'utf8').digest('hex');
+    const canonicalMessage = JSON.stringify([
+      SESSION_REF_DOMAIN_NAMESPACE,
+      'users',
+      'usr_001',
+      'sid_001',
+    ]);
+    const expectedHmac = crypto.createHmac('sha256', TEST_SECRET).update(canonicalMessage, 'utf8').digest('hex');
 
     assert.equal(sessionRef, expectedHmac);
-
-    // Sem namespace ou com namespace diferente não coincide
-    const unnamespacedHmac = crypto.createHmac('sha256', TEST_SECRET).update('users:usr_001:sid_001', 'utf8').digest('hex');
-    assert.notEqual(sessionRef, unnamespacedHmac);
   });
 
-  it('SR-6: Segredo ausente ou vazio falha fechado com SessionSecretMissingError', () => {
+  it('SR-6 (Anti-Delimiter-Injection): Valores contendo dois-pontos ":" não geram a mesma mensagem HMAC', () => {
+    // Par 1: userId tem "u:1", sid tem "s2"
+    const ref1 = deriveSessionRef({
+      collection: 'users',
+      userId: 'u:1',
+      sid: 's2',
+      secret: TEST_SECRET,
+    });
+
+    // Par 2: userId tem "u", sid tem "1:s2" (se fosse concatenação 'users:u:1:s2', colidiriam)
+    const ref2 = deriveSessionRef({
+      collection: 'users',
+      userId: 'u',
+      sid: '1:s2',
+      secret: TEST_SECRET,
+    });
+
+    // A serialização canônica JSON garante que as mensagens são estritamente distintas
+    assert.notEqual(ref1, ref2);
+  });
+
+  it('SR-7: Segredo ausente ou vazio falha fechado com SessionSecretMissingError', () => {
     const originalEnvSecret = process.env.SESSION_REF_SECRET;
     const originalPayloadSecret = process.env.PAYLOAD_SECRET;
 
@@ -142,7 +165,7 @@ describe('NEX+ Auth · SessionRef Derivation & Invariants (0.86B-1)', () => {
     }
   });
 
-  it('SR-7: Inputs vazios ou não-string são rejeitados com InvalidSessionRefInputError', () => {
+  it('SR-8: Inputs vazios ou não-string são rejeitados com InvalidSessionRefInputError', () => {
     assert.throws(
       () => deriveSessionRef({ collection: '', userId: 'u1', sid: 's1', secret: TEST_SECRET }),
       (err: any) => err instanceof InvalidSessionRefInputError && err.fieldName === 'collection',
@@ -159,16 +182,16 @@ describe('NEX+ Auth · SessionRef Derivation & Invariants (0.86B-1)', () => {
     );
   });
 
-  it('SR-8: isValidSessionRef valida estritamente digests hexadecimais de 64 caracteres', () => {
+  it('SR-9: isValidSessionRef valida estritamente digests hexadecimais de 64 caracteres', () => {
     assert.equal(isValidSessionRef('a'.repeat(64)), true);
     assert.equal(isValidSessionRef('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'), true);
 
     // Inválidos
     assert.equal(isValidSessionRef(''), false);
-    assert.equal(isValidSessionRef('a'.repeat(63)), false); // 63 chars
-    assert.equal(isValidSessionRef('a'.repeat(65)), false); // 65 chars
-    assert.equal(isValidSessionRef('g'.repeat(64)), false); // 'g' não é hex
-    assert.equal(isValidSessionRef('A'.repeat(64)), false); // maiúsculo não é lowercase hex
+    assert.equal(isValidSessionRef('a'.repeat(63)), false);
+    assert.equal(isValidSessionRef('a'.repeat(65)), false);
+    assert.equal(isValidSessionRef('g'.repeat(64)), false);
+    assert.equal(isValidSessionRef('A'.repeat(64)), false);
     assert.equal(isValidSessionRef(null), false);
     assert.equal(isValidSessionRef(123), false);
   });

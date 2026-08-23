@@ -1,53 +1,30 @@
 /**
  * NEX+ · Auth Layer
- * Server-Side Session Boundary (Fail-Closed) — Escopo 0.86B-1
+ * Server-Side Session Boundary (Fail-Closed) — Escopo 0.86B-1 (Hardening)
  *
  * Princípios Fundamentais:
- * 1. Transforma sessão Payload autenticada em HumanActor (L0) + SessionRef (opaca).
- * 2. Rejeição explícita de identidades 'admins' e anônimas para ações de App User material.
- * 3. Falha fechada: erros internos do Payload não são convertidos silenciosamente em anônimos.
- * 4. _sid, JWT, cookies e user.sessions permanecem confinados na fronteira e não vazam no DTO.
- * 5. O cliente nunca fornece actor, humanId ou SessionRef confiáveis.
+ * 1. Existe APENAS UM entrypoint confiável para produzir AuthenticatedSessionContext material:
+ *    request server-side → headers() → getPayload({ config }) → payload.auth({ headers }) → user → HumanActor + SessionRef.
+ * 2. Impossibilidade de Bypass: callers não conseguem fabricar contextos fornecendo user, _sid, payload, headers ou secret.
+ * 3. Rejeição explícita de identidades 'admins' para ações de App User material.
+ * 4. Honestidade Semântica (INV-CTX-AUTH-10): quando payload.auth() retorna user: null (por ausência de token, token inválido, expirado ou revogado), o boundary classifica honestamente como 'not_authenticated' sem suposições diagnósticas infundadas.
+ * 5. Falhas de infraestrutura (banco indisponível, crash interno) propagam status 'error' / AuthInternalError.
+ * 6. _sid, JWT, cookies e user.sessions permanecem confinados na fronteira e não vazam no DTO.
  */
 
 import { headers as getNextHeaders } from 'next/headers';
-import { getPayload, type Payload } from 'payload';
+import { getPayload } from 'payload';
 import type { HumanActor } from '../core/observations/contracts';
-import { deriveSessionRef, type SessionRef } from './session-ref';
+import {
+  type AuthenticatedSessionContext,
+  type SessionResolutionResult,
+  type UnauthenticatedReason,
+} from './session-ref.types';
+import { deriveSessionRef } from './session-ref';
 import { classifyIdentity } from './identity';
 
 // ============================================================================
-// 1. DTO E RESULTADOS DA FRONTEIRA
-// ============================================================================
-
-/**
- * Contexto de sessão autenticada exposto para as camadas Core do NEX+.
- * Não contém dados sensíveis de infraestrutura auth (_sid, JWT, cookies, sessions).
- */
-export interface AuthenticatedSessionContext {
-  readonly actor: HumanActor;
-  readonly sessionRef: SessionRef;
-}
-
-export type UnauthenticatedReason = 'anonymous' | 'admin_rejected' | 'missing_session';
-
-export type SessionResolutionResult =
-  | {
-      readonly status: 'authenticated';
-      readonly context: AuthenticatedSessionContext;
-    }
-  | {
-      readonly status: 'unauthenticated';
-      readonly reason: UnauthenticatedReason;
-      readonly detail?: string;
-    }
-  | {
-      readonly status: 'error';
-      readonly error: Error;
-    };
-
-// ============================================================================
-// 2. ERROS TIPADOS DE AUTENTICAÇÃO MATERIAL
+// 1. ERROS TIPADOS DE AUTENTICAÇÃO MATERIAL
 // ============================================================================
 
 export class UnauthenticatedSessionError extends Error {
@@ -75,32 +52,37 @@ export class AuthInternalError extends Error {
 }
 
 // ============================================================================
-// 3. RESOLUÇÃO A PARTIR DO USUÁRIO PAYLOAD
+// 2. HELPER INTERNO DE CONVERSÃO DO RESULTADO AUTENTICADO
 // ============================================================================
 
 /**
- * Deriva deterministicamente o contexto de sessão autenticada a partir do objeto `user` do Payload.
- * Função pura e síncrona adequada para isolamento de testes e chamadas diretas.
+ * Converte o resultado autenticado do Payload em AuthenticatedSessionContext.
+ * Helper interno estritamente confinado ao módulo.
  */
-export function resolveSessionContextFromAuthUser(
-  user: unknown,
-  secretOverride?: string,
-): SessionResolutionResult {
-  const identityClass = classifyIdentity(user);
-
-  if (identityClass === 'anonymous' || !user || typeof user !== 'object') {
+function processPayloadAuthUser(user: unknown): SessionResolutionResult {
+  if (!user || typeof user !== 'object') {
     return Object.freeze({
       status: 'unauthenticated',
-      reason: 'anonymous',
-      detail: 'No authenticated user document present.',
+      reason: 'not_authenticated',
+      detail: 'payload.auth() returned null/empty user.',
     });
   }
+
+  const identityClass = classifyIdentity(user);
 
   if (identityClass === 'admin') {
     return Object.freeze({
       status: 'unauthenticated',
       reason: 'admin_rejected',
       detail: 'Admin identities are strictly rejected in App User material actions.',
+    });
+  }
+
+  if (identityClass !== 'app_user') {
+    return Object.freeze({
+      status: 'unauthenticated',
+      reason: 'not_authenticated',
+      detail: 'Authenticated identity does not belong to users collection.',
     });
   }
 
@@ -111,19 +93,11 @@ export function resolveSessionContextFromAuthUser(
   const userId = typeof rawId === 'string' || typeof rawId === 'number' ? String(rawId).trim() : '';
   const sid = typeof rawSid === 'string' ? rawSid.trim() : '';
 
-  if (!userId) {
+  if (!userId || !sid) {
     return Object.freeze({
       status: 'unauthenticated',
-      reason: 'anonymous',
-      detail: 'User document is missing a valid id.',
-    });
-  }
-
-  if (!sid) {
-    return Object.freeze({
-      status: 'unauthenticated',
-      reason: 'missing_session',
-      detail: 'User is authenticated but missing a valid session identifier (_sid).',
+      reason: 'invalid_or_unavailable_auth',
+      detail: 'User document is missing valid userId or session identifier (_sid).',
     });
   }
 
@@ -132,7 +106,6 @@ export function resolveSessionContextFromAuthUser(
       collection: 'users',
       userId,
       sid,
-      secret: secretOverride,
     });
 
     const actor: HumanActor = Object.freeze({
@@ -158,57 +131,56 @@ export function resolveSessionContextFromAuthUser(
 }
 
 // ============================================================================
-// 4. RESOLUÇÃO SERVER-SIDE VIA HEADERS & PAYLOAD
+// 3. ENTRYPOINTS PÚBLICOS DA FRONTEIRA MATERIAL
 // ============================================================================
 
-export interface ResolveSessionContextOptions {
-  readonly headers?: Headers | Record<string, string | string[] | undefined>;
-  readonly payload?: Payload;
-  readonly secret?: string;
-}
-
 /**
- * Resolve o contexto de sessão autenticada utilizando a autoridade oficial do Payload.
- * Falha fechado: não mascara erros de infraestrutura como anônimos.
+ * Resolve o contexto de sessão autenticada obtendo headers e Payload reais internamente.
+ * Não aceita injeção de parâmetros por callers para garantir integridade do trust boundary.
  */
-export async function resolveAuthenticatedSessionContext(
-  options: ResolveSessionContextOptions = {},
-): Promise<SessionResolutionResult> {
+export async function resolveAuthenticatedSessionContext(): Promise<SessionResolutionResult> {
   try {
-    let reqHeaders: any = options.headers;
-    if (!reqHeaders) {
+    let reqHeaders: Headers;
+    try {
       reqHeaders = await getNextHeaders();
+    } catch (headersError: any) {
+      return Object.freeze({
+        status: 'error',
+        error: new AuthInternalError(
+          `Failed to retrieve request headers: ${headersError instanceof Error ? headersError.message : String(headersError)}`,
+          headersError,
+        ),
+      });
     }
 
-    let payloadInstance = options.payload;
-    if (!payloadInstance) {
+    let payloadInstance: any;
+    try {
       const { default: configPromise } = await import('@/payload.config');
       payloadInstance = await getPayload({ config: configPromise });
+    } catch (configError: any) {
+      return Object.freeze({
+        status: 'error',
+        error: new AuthInternalError(
+          `Failed to initialize Payload instance: ${configError instanceof Error ? configError.message : String(configError)}`,
+          configError,
+        ),
+      });
     }
 
     let authResult: { user?: unknown } | null = null;
     try {
       authResult = await payloadInstance.auth({ headers: reqHeaders });
     } catch (authError: any) {
-      // Erro na execução de payload.auth() (ex: banco de dados indisponível, JWT decodificado com crash)
       return Object.freeze({
         status: 'error',
         error: new AuthInternalError(
-          authError instanceof Error ? authError.message : String(authError),
+          `payload.auth() execution failed: ${authError instanceof Error ? authError.message : String(authError)}`,
           authError,
         ),
       });
     }
 
-    if (!authResult || !authResult.user) {
-      return Object.freeze({
-        status: 'unauthenticated',
-        reason: 'anonymous',
-        detail: 'payload.auth() returned null/empty user.',
-      });
-    }
-
-    return resolveSessionContextFromAuthUser(authResult.user, options.secret);
+    return processPayloadAuthUser(authResult?.user);
   } catch (outerError: any) {
     return Object.freeze({
       status: 'error',
@@ -218,16 +190,14 @@ export async function resolveAuthenticatedSessionContext(
 }
 
 /**
- * Requer uma sessão autenticada válida, lançando exceção se anônimo, admin ou em caso de erro.
- * Indicada para Server Actions, endpoints de mutação e pontos de entrada materiais do Core.
+ * Requer uma sessão autenticada válida, lançando exceção se não autenticado, admin ou em erro.
+ * Ponto de entrada canônico para Server Actions e rotas materiais do Core.
  *
- * @throws UnauthenticatedSessionError se o usuário for anônimo, admin ou sem sessão válida.
- * @throws Error se ocorrer erro interno ou falha de configuração de segredo.
+ * @throws UnauthenticatedSessionError se o usuário não estiver autenticado ou for admin.
+ * @throws AuthInternalError se ocorrer falha interna de execução.
  */
-export async function requireAuthenticatedSessionContext(
-  options: ResolveSessionContextOptions = {},
-): Promise<AuthenticatedSessionContext> {
-  const result = await resolveAuthenticatedSessionContext(options);
+export async function requireAuthenticatedSessionContext(): Promise<AuthenticatedSessionContext> {
+  const result = await resolveAuthenticatedSessionContext();
 
   if (result.status === 'authenticated') {
     return result.context;

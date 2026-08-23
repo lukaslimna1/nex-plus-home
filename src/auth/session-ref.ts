@@ -1,33 +1,28 @@
 /**
  * NEX+ · Auth Layer
- * Derivação Segura e Determinística de SessionRef — Escopo 0.86B-1
+ * Derivação Criptográfica Server-Side de SessionRef — Escopo 0.86B-1 (Hardening)
  *
  * Princípios Fundamentais:
- * 1. SessionRef é um identificador opaco (branded type) derivado exclusivamente server-side via HMAC-SHA-256.
- * 2. Domain separation e versionamento canônico: 'nex-session-ref:v1:${collection}:${userId}:${sid}'.
- * 3. Segredo server-only (PAYLOAD_SECRET / SESSION_REF_SECRET), nunca hardcodado e nunca exposto.
- * 4. User != Session: o mesmo usuário com diferentes sids produz SessionRefs distintas.
- * 5. SessionRef NÃO autentica nem autoriza: serve unicamente para correlação, proveniência e isolamento.
- * 6. _sid, tokens e sessões brutas permanecem confinados na fronteira auth.
+ * 1. SessionRef é um identificador opaco derivado exclusivamente server-side via HMAC-SHA-256.
+ * 2. Domain separation com serialização canônica inequívoca (JSON array tupla):
+ *    JSON.stringify(['nex-session-ref:v1', collection, userId, sid])
+ *    Impede ataques de injeção de delimitadores (ex: valores contendo dois-pontos ':').
+ * 3. Resolução Server-Only de Segredo:
+ *    - SESSION_REF_SECRET dedicada (permite rotação independente de segredo de auditoria/sessão);
+ *    - Fallback para PAYLOAD_SECRET (mantém ciclo de vida acoplado ao auth; rotação invalida JWTs).
+ *    - Segredo ausente ou vazio falha fechado imediatamente.
+ * 4. User != Session: sessões distintas (diferentes sids) do mesmo usuário produzem SessionRefs distintas.
+ * 5. SessionRef NÃO autentica nem autoriza requisições.
  */
 
 import * as crypto from 'node:crypto';
+import {
+  SESSION_REF_DOMAIN_NAMESPACE,
+  type SessionRef,
+} from './session-ref.types';
 
 // ============================================================================
-// 1. IDENTIFICADOR BRANDED
-// ============================================================================
-
-export type SessionRef = string & { readonly __brand?: 'SessionRef' };
-
-// ============================================================================
-// 2. CONSTANTES DE DOMÍNIO
-// ============================================================================
-
-export const SESSION_REF_DOMAIN_NAMESPACE = 'nex-session-ref:v1';
-const SESSION_REF_HEX_REGEX = /^[a-f0-9]{64}$/;
-
-// ============================================================================
-// 3. ERROS TIPADOS
+// 1. ERROS TIPADOS DE DERIVAÇÃO
 // ============================================================================
 
 export class SessionSecretMissingError extends Error {
@@ -55,7 +50,7 @@ export class InvalidSessionRefInputError extends Error {
 }
 
 // ============================================================================
-// 4. PARÂMETROS E DERIVAÇÃO
+// 2. DERIVAÇÃO CRIPTOGRÁFICA
 // ============================================================================
 
 export interface DeriveSessionRefParams {
@@ -66,9 +61,9 @@ export interface DeriveSessionRefParams {
 }
 
 /**
- * Deriva deterministicamente um SessionRef opaco usando HMAC-SHA-256 com separação de domínio.
+ * Deriva deterministicamente um SessionRef utilizando HMAC-SHA-256 com serialização canônica JSON.
  *
- * @throws InvalidSessionRefInputError se collection, userId ou sid forem vazios/inválidos.
+ * @throws InvalidSessionRefInputError se collection, userId ou sid forem vazios ou inválidos.
  * @throws SessionSecretMissingError se o segredo server-side estiver ausente ou vazio.
  */
 export function deriveSessionRef(params: DeriveSessionRefParams): SessionRef {
@@ -96,18 +91,17 @@ export function deriveSessionRef(params: DeriveSessionRefParams): SessionRef {
   const normalizedSid = sid.trim();
   const secret = rawSecret.trim();
 
-  const message = `${SESSION_REF_DOMAIN_NAMESPACE}:${normalizedCollection}:${normalizedUserId}:${normalizedSid}`;
+  // Serialização canônica inequívoca em tupla JSON fixa para impedir colisão de delimitadores
+  const canonicalMessage = JSON.stringify([
+    SESSION_REF_DOMAIN_NAMESPACE,
+    normalizedCollection,
+    normalizedUserId,
+    normalizedSid,
+  ]);
 
   const hmac = crypto.createHmac('sha256', secret);
-  hmac.update(message, 'utf8');
+  hmac.update(canonicalMessage, 'utf8');
   const digest = hmac.digest('hex');
 
   return digest as SessionRef;
-}
-
-/**
- * Valida o formato estrutural de um SessionRef (digest SHA-256 em 64 caracteres hexadecimais minúsculos).
- */
-export function isValidSessionRef(value: unknown): value is SessionRef {
-  return typeof value === 'string' && SESSION_REF_HEX_REGEX.test(value);
 }
