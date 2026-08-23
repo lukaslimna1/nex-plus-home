@@ -7,3 +7,5 @@ export * from './identity';
 export * from './current-user';
 export * from './actions';
 export * from './edge-config';
+export * from './session-ref';
+export * from './session-boundary';
