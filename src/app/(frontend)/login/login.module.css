@@ -310,66 +310,14 @@
   outline-offset: 1px;
 }
 
-/* Opções adicionais (Manter conectado & Esqueci senha) */
+/* Opções */
 .optionsRow {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   margin-top: clamp(2px, 0.4vh, 4px);
   margin-bottom: clamp(2px, 0.5vh, 6px);
   font-size: clamp(0.8rem, 0.9vw, 0.88rem);
-  gap: 8px;
-}
-
-.rememberLabel {
-  display: inline-flex;
-  align-items: center;
-  gap: clamp(6px, 0.8vw, 9px);
-  color: #cbd5e1;
-  cursor: pointer;
-  user-select: none;
-  font-size: inherit;
-  white-space: nowrap;
-}
-
-.customCheckbox {
-  appearance: none;
-  -webkit-appearance: none;
-  width: 17px;
-  height: 17px;
-  min-width: 17px;
-  min-height: 17px;
-  border: 1.5px solid rgba(148, 163, 184, 0.4);
-  border-radius: 5px;
-  background: rgba(18, 20, 36, 0.8);
-  cursor: pointer;
-  display: grid;
-  place-content: center;
-  transition: all 0.15s ease;
-  margin: 0;
-}
-
-.customCheckbox:hover {
-  border-color: #818cf8;
-}
-
-.customCheckbox:checked {
-  background: #6366f1;
-  border-color: #6366f1;
-}
-
-.customCheckbox:checked::before {
-  content: "";
-  width: 9px;
-  height: 5px;
-  border-left: 2px solid #ffffff;
-  border-bottom: 2px solid #ffffff;
-  transform: rotate(-45deg) translate(1px, -1px);
-}
-
-.customCheckbox:focus-visible {
-  outline: 2px solid #a855f7;
-  outline-offset: 2px;
 }
 
 .forgotLink {
@@ -614,8 +562,7 @@
   .inputGroup,
   .submitButton,
   .passwordToggle,
-  .forgotLink,
-  .customCheckbox {
+  .forgotLink {
     transition: none !important;
   }
   .submitButton:hover {

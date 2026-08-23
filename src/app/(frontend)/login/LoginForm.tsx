@@ -269,26 +269,8 @@ export function LoginForm() {
                   </button>
                 </div>
 
-                {/* Opções (Manter conectado & Esqueci minha senha) */}
+                {/* Opções */}
                 <div className={styles.optionsRow}>
-                  <label
-                    className={`${styles.rememberLabel} ${styles.disabledControl}`}
-                    htmlFor="rememberMe"
-                    title="Disponível em uma etapa futura."
-                  >
-                    <input
-                      id="rememberMe"
-                      name="rememberMe"
-                      type="checkbox"
-                      disabled
-                      aria-label="Manter conectado (Disponível em uma etapa futura)"
-                      className={styles.customCheckbox}
-                      checked={false}
-                      onChange={() => {}}
-                    />
-                    <span>Manter conectado</span>
-                  </label>
-
                   <a
                     href="#esqueci-senha"
                     className={`${styles.forgotLink} ${styles.disabledControl}`}
