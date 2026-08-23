@@ -102,9 +102,15 @@ try {
     }
     Write-Host "Banco descartável conectado e verificado: $currentDb" -ForegroundColor Green
 
+    # 4. Backup temporário do .env para garantir isolamento do build Next.js
+    Copy-Item -Path $envFilePath -Destination "$envFilePath.isolated.bak" -Force
+    $isolatedEnvContent = "DATABASE_URL=$disposableDbUrl`nPAYLOAD_SECRET=$payloadSecret`n"
+    Set-Content -Path $envFilePath -Value $isolatedEnvContent -Encoding utf8
+
     # Configuração de ambiente filho isolado
     $env:DATABASE_URL = $disposableDbUrl
     $env:PAYLOAD_SECRET = $payloadSecret
+    $env:NODE_ENV = "production"
     $env:NEX_E2E_ISOLATED = "1"
     $env:PORT = "3108"
     $env:PAYLOAD_PUBLIC_SERVER_URL = ""
@@ -181,7 +187,11 @@ finally {
         Write-Host "[SECURITY_WARN] Nome do banco não passou na validação de drop: $disposableDbName" -ForegroundColor Red
     }
 
-    # 11. Restauração do ambiente original
+    # 11. Restauração do ambiente e arquivo .env original
+    if (Test-Path "$envFilePath.isolated.bak") {
+        Move-Item -Path "$envFilePath.isolated.bak" -Destination $envFilePath -Force
+    }
+
     if ($hadOriginalEdgeUrl) {
         $env:PAYLOAD_PUBLIC_SERVER_URL = $originalEdgeUrl
     } else {
