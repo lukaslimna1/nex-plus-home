@@ -174,53 +174,91 @@ describe('NEX+ Module Registry & ResourceRef (0.86A)', () => {
     );
   });
 
-  it('MR-5: Ciclo de supersession no mesmo módulo é rejeitado com SupersessionCycleError', () => {
+  it('MR-5: Aciclicidade do grafo de supersession é garantida por construção (impossibilidade de referência futura ou redefinição retroativa)', () => {
     const registry = createModuleRegistry();
 
     const rev1: ModuleManifestRevision = {
-      moduleKey: 'module.cycle' as ModuleKey,
-      moduleRevisionId: 'mod_rev_c1' as ModuleRevisionId,
+      moduleKey: 'module.acyclic' as ModuleKey,
+      moduleRevisionId: 'mod_rev_ac_1' as ModuleRevisionId,
       lifecycle: 'active',
       supersedesRevisionIds: [],
-      title: 'C1',
-      description: 'Cycle 1',
-      ownedResourceTypes: [],
-      emittedEventTypes: [],
-    };
-
-    const rev2: ModuleManifestRevision = {
-      moduleKey: 'module.cycle' as ModuleKey,
-      moduleRevisionId: 'mod_rev_c2' as ModuleRevisionId,
-      lifecycle: 'active',
-      supersedesRevisionIds: ['mod_rev_c1' as ModuleRevisionId],
-      title: 'C2',
-      description: 'Cycle 2',
+      title: 'Acyclic 1',
+      description: 'First revision',
       ownedResourceTypes: [],
       emittedEventTypes: [],
     };
 
     registry.registerModuleRevision(rev1);
+
+    const rev2: ModuleManifestRevision = {
+      moduleKey: 'module.acyclic' as ModuleKey,
+      moduleRevisionId: 'mod_rev_ac_2' as ModuleRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: ['mod_rev_ac_1' as ModuleRevisionId],
+      title: 'Acyclic 2',
+      description: 'Second revision superseding first',
+      ownedResourceTypes: [],
+      emittedEventTypes: [],
+    };
+
     registry.registerModuleRevision(rev2);
 
-    // rev3 supersedes rev2 e tenta fingir que rev1 também é superseded por rev3 com loop
-    // Criamos um caso onde rev3 supersedes rev2 e depois rev1 tenta registrar supersedendo rev3 (se pudesse)
-    // Ou rev3 supersedendo rev2 que por sua vez aponta para rev1
-    // Para testar ciclo real: rev3 supersedes rev2, e uma rev4 que cria loop se rev1 pudesse ser re-registrado.
-    // Como duplicate ID é proibido, testamos DAG: rev1 -> rev2 -> rev3 -> rev1
+    // Vetor de ataque 1: Tentar criar ciclo apontando para uma revisão futura/inexistente que depois apontaria de volta
+    assert.throws(
+      () => {
+        registry.registerModuleRevision({
+          moduleKey: 'module.acyclic' as ModuleKey,
+          moduleRevisionId: 'mod_rev_future' as ModuleRevisionId,
+          lifecycle: 'active',
+          supersedesRevisionIds: ['mod_rev_not_yet_created' as ModuleRevisionId],
+          title: 'Future',
+          description: 'Forward reference',
+          ownedResourceTypes: [],
+          emittedEventTypes: [],
+        });
+      },
+      (err: any) => {
+        assert.ok(err instanceof SupersededRevisionNotFoundError);
+        assert.equal(err.missingSupersededId, 'mod_rev_not_yet_created');
+        return true;
+      },
+    );
+
+    // Vetor de ataque 2: Tentar reescrever uma revisão antiga (rev1) para criar back-edge apontando para rev2 (ciclo rev1 -> rev2 -> rev1)
+    assert.throws(
+      () => {
+        registry.registerModuleRevision({
+          moduleKey: 'module.acyclic' as ModuleKey,
+          moduleRevisionId: 'mod_rev_ac_1' as ModuleRevisionId, // Tenta redefinir rev1
+          lifecycle: 'active',
+          supersedesRevisionIds: ['mod_rev_ac_2' as ModuleRevisionId], // Back-edge para rev2
+          title: 'Tampered Rev1',
+          description: 'Attempting to create cycle',
+          ownedResourceTypes: [],
+          emittedEventTypes: [],
+        });
+      },
+      (err: any) => {
+        assert.ok(err instanceof DuplicateModuleRevisionError);
+        assert.equal(err.revisionId, 'mod_rev_ac_1');
+        return true;
+      },
+    );
+
+    // Grafo legítimo permanece como DAG acíclico
     const rev3: ModuleManifestRevision = {
-      moduleKey: 'module.cycle' as ModuleKey,
-      moduleRevisionId: 'mod_rev_c3' as ModuleRevisionId,
+      moduleKey: 'module.acyclic' as ModuleKey,
+      moduleRevisionId: 'mod_rev_ac_3' as ModuleRevisionId,
       lifecycle: 'active',
-      supersedesRevisionIds: ['mod_rev_c2' as ModuleRevisionId, 'mod_rev_c1' as ModuleRevisionId],
-      title: 'C3',
-      description: 'Cycle 3 DAG',
+      supersedesRevisionIds: ['mod_rev_ac_2' as ModuleRevisionId],
+      title: 'Acyclic 3',
+      description: 'Third revision in chain',
       ownedResourceTypes: [],
       emittedEventTypes: [],
     };
     registry.registerModuleRevision(rev3);
 
-    // Sucesso para DAG acíclica
-    assert.equal(registry.getActiveHead('module.cycle' as ModuleKey)?.moduleRevisionId, 'mod_rev_c3');
+    assert.equal(registry.getActiveHead('module.acyclic' as ModuleKey)?.moduleRevisionId, 'mod_rev_ac_3');
   });
 
   it('MR-6: Superseded revision inexistente é rejeitada fail-visible com SupersededRevisionNotFoundError', () => {

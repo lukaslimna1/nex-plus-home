@@ -1,14 +1,17 @@
 /**
  * NEX+ · Módulos, Referências & Eventos
- * Implementação do InMemoryModuleEventHub — Escopo 0.86 (Bloco 0.86A)
+ * Implementação do InMemoryModuleEventHub — Escopo 0.86 (Bloco 0.86A · Micro-Hardening)
  *
  * Princípios Fundamentais:
  * 1. Validação estrita de JSON-Safe Payloads com sanitização de chaves proibidas.
- * 2. Validação rigorosa de EventOrigin (domain exige ModuleRegistry + emittedEventTypes; system exige component).
+ * 2. Validação rigorosa de EventOrigin:
+ *    - domain exige ModuleRegistry configurado + revisão existente + moduleKey coerente + emittedEventTypes declarado.
+ *    - system exige component válido não vazio.
  * 3. Identificadores opacos, correlação/causação auditáveis (Anti-Self-Causation).
- * 4. Imutabilidade absoluta pós-publicação (deep-clone + deep-freeze).
- * 5. Isolamento estrito de falhas em subscribers (subscriber failure não corrompe journal nem afeta outros subscribers).
- * 6. Invariante Soberana: EVENTO É SINAL, NÃO AUTORIDADE.
+ * 4. Temporalidade canônica estrita: UTC terminado em Z (YYYY-MM-DDTHH:mm:ssZ ou com fração de 1 a 3 dígitos).
+ * 5. Imutabilidade absoluta pós-publicação (deep-clone + deep-freeze) e Journal estritamente Append-Only.
+ * 6. Isolamento estrito de falhas em subscribers (subscriber failure não corrompe journal nem afeta outros subscribers).
+ * 7. Invariante Soberana: EVENTO É SINAL, NÃO AUTORIDADE.
  */
 
 import type {
@@ -81,6 +84,17 @@ export class SelfCausationError extends Error {
     );
     this.name = 'SelfCausationError';
     this.eventId = eventId;
+  }
+}
+
+export class ModuleRegistryRequiredError extends Error {
+  readonly code = 'MODULE_REGISTRY_REQUIRED';
+
+  constructor() {
+    super(
+      '[L0 EventHub] ModuleRegistry is required to publish domain events to ensure module revision and event type provenance.',
+    );
+    this.name = 'ModuleRegistryRequiredError';
   }
 }
 
@@ -269,10 +283,37 @@ function deepCloneAndFreezeOrigin(origin: EventOrigin): EventOrigin {
   throw new InvalidEventEnvelopeError('origin.kind', `must be 'module' or 'system', got '${(origin as any).kind}'`);
 }
 
-function isValidIsoDate(str: unknown): str is string {
-  if (typeof str !== 'string' || str.length === 0) return false;
-  const d = new Date(str);
-  return !Number.isNaN(d.getTime());
+const CANONICAL_UTC_REGEX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
+
+/**
+ * Validação rigorosa de instante UTC canônico do NEX+:
+ * - Exige formato YYYY-MM-DDTHH:mm:ssZ ou YYYY-MM-DDTHH:mm:ss.<1-3 dígitos>Z
+ * - Rejeita offsets (+03:00, -05:00), datas sem Z, datas sem hora, whitespace periférico
+ * - Rejeita datas impossíveis de calendário (ex.: 2026-02-30T10:00:00Z, 2026-04-31T10:00:00Z).
+ */
+export function isValidCanonicalUtcTimestamp(str: unknown): str is string {
+  if (typeof str !== 'string' || !CANONICAL_UTC_REGEX.test(str)) {
+    return false;
+  }
+
+  const date = new Date(str);
+  if (Number.isNaN(date.getTime())) {
+    return false;
+  }
+
+  const [datePart, timePart] = str.slice(0, -1).split('T');
+  const [year, month, day] = datePart.split('-').map(Number);
+  const [hour, minute, secondFrac] = timePart.split(':');
+  const [second] = secondFrac.split('.').map(Number);
+
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() + 1 === month &&
+    date.getUTCDate() === day &&
+    date.getUTCHours() === Number(hour) &&
+    date.getUTCMinutes() === Number(minute) &&
+    date.getUTCSeconds() === second
+  );
 }
 
 // ============================================================================
@@ -286,7 +327,6 @@ export interface ModuleEventHub {
   getEvent(eventId: EventId): NexEventEnvelope | undefined;
   listEvents(filter?: EventListFilter): readonly NexEventEnvelope[];
   getJournalSize(): number;
-  clearForTests(): void;
 }
 
 export interface CreateEventHubOptions {
@@ -316,12 +356,12 @@ export function createModuleEventHub(options: CreateEventHubOptions = {}): Modul
       throw new InvalidEventEnvelopeError('type', 'must be a valid identifier');
     }
 
-    if (!isValidIsoDate(event.occurredAt)) {
-      throw new InvalidEventEnvelopeError('occurredAt', 'must be a valid ISO 8601 date string');
+    if (!isValidCanonicalUtcTimestamp(event.occurredAt)) {
+      throw new InvalidEventEnvelopeError('occurredAt', 'must be a valid canonical UTC ISO 8601 date string ending in Z');
     }
 
-    if (!isValidIsoDate(event.recordedAt)) {
-      throw new InvalidEventEnvelopeError('recordedAt', 'must be a valid ISO 8601 date string');
+    if (!isValidCanonicalUtcTimestamp(event.recordedAt)) {
+      throw new InvalidEventEnvelopeError('recordedAt', 'must be a valid canonical UTC ISO 8601 date string ending in Z');
     }
 
     if (event.correlationId !== undefined && !isValidIdentifier(event.correlationId)) {
@@ -346,19 +386,21 @@ export function createModuleEventHub(options: CreateEventHubOptions = {}): Modul
         throw new InvalidEventEnvelopeError('origin.kind', "domain events must have origin.kind === 'module'");
       }
 
-      if (moduleRegistry) {
-        const manifest = moduleRegistry.getModuleRevision(frozenOrigin.moduleRevisionId);
-        if (!manifest) {
-          throw new UnregisteredModuleRevisionError(frozenOrigin.moduleRevisionId);
-        }
+      if (!moduleRegistry) {
+        throw new ModuleRegistryRequiredError();
+      }
 
-        if (manifest.moduleKey !== frozenOrigin.module.moduleKey) {
-          throw new ModuleKeyMismatchError(frozenOrigin.module.moduleKey, manifest.moduleKey);
-        }
+      const manifest = moduleRegistry.getModuleRevision(frozenOrigin.moduleRevisionId);
+      if (!manifest) {
+        throw new UnregisteredModuleRevisionError(frozenOrigin.moduleRevisionId);
+      }
 
-        if (!manifest.emittedEventTypes.includes(event.type)) {
-          throw new UndeclaredEventTypeError(event.type, frozenOrigin.moduleRevisionId);
-        }
+      if (manifest.moduleKey !== frozenOrigin.module.moduleKey) {
+        throw new ModuleKeyMismatchError(frozenOrigin.module.moduleKey, manifest.moduleKey);
+      }
+
+      if (!manifest.emittedEventTypes.includes(event.type)) {
+        throw new UndeclaredEventTypeError(event.type, frozenOrigin.moduleRevisionId);
       }
     } else if (event.eventClass === 'system') {
       if (frozenOrigin.kind !== 'system') {
@@ -508,12 +550,6 @@ export function createModuleEventHub(options: CreateEventHubOptions = {}): Modul
     return journalList.length;
   }
 
-  function clearForTests(): void {
-    journalById.clear();
-    journalList.length = 0;
-    subscriptions.length = 0;
-  }
-
   return {
     publish,
     subscribe,
@@ -521,6 +557,5 @@ export function createModuleEventHub(options: CreateEventHubOptions = {}): Modul
     getEvent,
     listEvents,
     getJournalSize,
-    clearForTests,
   };
 }

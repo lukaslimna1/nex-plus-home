@@ -1,13 +1,14 @@
 /**
  * NEX+ · Módulos, Referências & Eventos
- * Testes Unitários de InMemoryModuleEventHub — Escopo 0.86 (Bloco 0.86A)
+ * Testes Unitários de InMemoryModuleEventHub — Escopo 0.86 (Bloco 0.86A · Micro-Hardening)
  *
- * Cenários EV-1 a EV-11 + SUB-1 a SUB-5:
+ * Cenários EV-1 a EV-11 + SUB-1 a SUB-5 + Hardening H-1..H-6, L-1..L-3, R-1:
  * 1. Validação estrutural e semântica de Domain e System events.
- * 2. Validação contra ModuleRegistry (revisão existente, módulo correto, tipo declarado).
- * 3. Unicidade de EventId e proibição de self-causation.
- * 4. Validação rigorosa de JSON-Safe Payloads e imutabilidade pós-publicação.
- * 5. Determinismo de entrega e isolamento absoluto de falhas em subscribers.
+ * 2. Validação contra ModuleRegistry (exigência para domain events, revisão existente, módulo correto, tipo declarado).
+ * 3. Unicidade de EventId, proibição de self-causation e append-only journal inalterável.
+ * 4. Validação rigorosa de temporalidade canônica UTC (terminada em Z, sem offsets, sem datas de calendário impossíveis).
+ * 5. Validação rigorosa de JSON-Safe Payloads e imutabilidade pós-publicação.
+ * 6. Determinismo de entrega e isolamento absoluto de falhas em subscribers.
  */
 
 import { describe, it, beforeEach } from 'node:test';
@@ -29,14 +30,17 @@ import { createModuleRegistry } from '../registry';
 import {
   createModuleEventHub,
   DuplicateEventIdError,
+  InvalidEventEnvelopeError,
   InvalidJsonPayloadError,
   ModuleKeyMismatchError,
+  ModuleRegistryRequiredError,
   SelfCausationError,
   UndeclaredEventTypeError,
   UnregisteredModuleRevisionError,
+  isValidCanonicalUtcTimestamp,
 } from '../events';
 
-describe('NEX+ Module Event Hub & Envelope (0.86A)', () => {
+describe('NEX+ Module Event Hub & Envelope (0.86A · Hardening)', () => {
   let registry: ReturnType<typeof createCapabilityRegistryMock>;
   let hub: ReturnType<typeof createModuleEventHub>;
 
@@ -67,7 +71,297 @@ describe('NEX+ Module Event Hub & Envelope (0.86A)', () => {
   });
 
   // ==========================================================================
-  // 1. EVENT VALIDATION & ENVELOPE (EV-1 .. EV-11)
+  // 1. BLOCKER H: DOMAIN EVENT EXIGE MODULE REGISTRY (H-1 .. H-6)
+  // ==========================================================================
+
+  it('H-1, H-2, H-3: Hub sem ModuleRegistry + Domain event falha fechado com ModuleRegistryRequiredError sem gravar no journal e sem acionar subscriber', async () => {
+    const hubWithoutRegistry = createModuleEventHub(); // Sem registry
+    let subscriberCalls = 0;
+
+    hubWithoutRegistry.subscribe({
+      subscriberId: 'sub_test_h' as SubscriberId,
+      handler: () => {
+        subscriberCalls++;
+      },
+    });
+
+    const domainEvent: NexEventEnvelope = {
+      eventId: 'evt_domain_no_reg' as EventId,
+      eventClass: 'domain',
+      type: 'orders.order_created' as EventType,
+      origin: {
+        kind: 'module',
+        module: { moduleKey: 'module.orders' as ModuleKey },
+        moduleRevisionId: 'mod_rev_orders_v1' as ModuleRevisionId,
+      },
+      occurredAt: '2026-08-22T10:00:00.000Z',
+      recordedAt: '2026-08-22T10:00:00.100Z',
+      payload: { test: true },
+    };
+
+    // H-1: Falha fechado com ModuleRegistryRequiredError
+    await assert.rejects(
+      async () => {
+        await hubWithoutRegistry.publish(domainEvent);
+      },
+      (err: any) => {
+        assert.ok(err instanceof ModuleRegistryRequiredError);
+        return true;
+      },
+    );
+
+    // H-2: Journal size continua 0
+    assert.equal(hubWithoutRegistry.getJournalSize(), 0);
+    assert.equal(hubWithoutRegistry.getEvent('evt_domain_no_reg' as EventId), undefined);
+
+    // H-3: Subscriber não foi chamado
+    assert.equal(subscriberCalls, 0);
+  });
+
+  it('H-4: Hub sem ModuleRegistry + System event legítimo publica normalmente', async () => {
+    const hubWithoutRegistry = createModuleEventHub();
+    let subscriberReceived = false;
+
+    hubWithoutRegistry.subscribe({
+      subscriberId: 'sub_sys' as SubscriberId,
+      handler: () => {
+        subscriberReceived = true;
+      },
+    });
+
+    const systemEvent: NexEventEnvelope = {
+      eventId: 'evt_sys_no_reg' as EventId,
+      eventClass: 'system',
+      type: 'system.node_ping' as EventType,
+      origin: { kind: 'system', component: 'healthcheck' },
+      occurredAt: '2026-08-22T10:00:00.000Z',
+      recordedAt: '2026-08-22T10:00:00.050Z',
+      payload: { healthy: true },
+    };
+
+    const res = await hubWithoutRegistry.publish(systemEvent);
+    assert.equal(res.event.eventId, 'evt_sys_no_reg');
+    assert.equal(hubWithoutRegistry.getJournalSize(), 1);
+    assert.equal(subscriberReceived, true);
+  });
+
+  it('H-5: Hub com ModuleRegistry + Domain event legítimo publica com sucesso', async () => {
+    const domainEvent: NexEventEnvelope = {
+      eventId: 'evt_domain_with_reg' as EventId,
+      eventClass: 'domain',
+      type: 'orders.order_created' as EventType,
+      origin: {
+        kind: 'module',
+        module: { moduleKey: 'module.orders' as ModuleKey },
+        moduleRevisionId: 'mod_rev_orders_v1' as ModuleRevisionId,
+      },
+      occurredAt: '2026-08-22T10:00:00.000Z',
+      recordedAt: '2026-08-22T10:00:00.100Z',
+      payload: { orderId: 'ord-1' },
+    };
+
+    const res = await hub.publish(domainEvent);
+    assert.equal(res.event.eventId, 'evt_domain_with_reg');
+    assert.equal(hub.getJournalSize(), 1);
+  });
+
+  it('H-6: As três validações semânticas de ModuleRegistry (unregistered revision, module key mismatch, undeclared event type) são preservadas', async () => {
+    // 1. Unregistered revision
+    await assert.rejects(
+      async () => {
+        await hub.publish({
+          eventId: 'evt_unreg' as EventId,
+          eventClass: 'domain',
+          type: 'orders.order_created' as EventType,
+          origin: {
+            kind: 'module',
+            module: { moduleKey: 'module.orders' as ModuleKey },
+            moduleRevisionId: 'mod_rev_ghost' as ModuleRevisionId,
+          },
+          occurredAt: '2026-08-22T10:00:00.000Z',
+          recordedAt: '2026-08-22T10:00:00.100Z',
+          payload: {},
+        });
+      },
+      (err: any) => err instanceof UnregisteredModuleRevisionError,
+    );
+
+    // 2. Module key mismatch
+    registry.registerModuleRevision({
+      moduleKey: 'module.other' as ModuleKey,
+      moduleRevisionId: 'mod_rev_other_1' as ModuleRevisionId,
+      lifecycle: 'active',
+      supersedesRevisionIds: [],
+      title: 'Other',
+      description: 'Other module',
+      ownedResourceTypes: [],
+      emittedEventTypes: ['orders.order_created' as EventType],
+    });
+
+    await assert.rejects(
+      async () => {
+        await hub.publish({
+          eventId: 'evt_mismatch' as EventId,
+          eventClass: 'domain',
+          type: 'orders.order_created' as EventType,
+          origin: {
+            kind: 'module',
+            module: { moduleKey: 'module.orders' as ModuleKey },
+            moduleRevisionId: 'mod_rev_other_1' as ModuleRevisionId,
+          },
+          occurredAt: '2026-08-22T10:00:00.000Z',
+          recordedAt: '2026-08-22T10:00:00.100Z',
+          payload: {},
+        });
+      },
+      (err: any) => err instanceof ModuleKeyMismatchError,
+    );
+
+    // 3. Undeclared event type
+    await assert.rejects(
+      async () => {
+        await hub.publish({
+          eventId: 'evt_undeclared' as EventId,
+          eventClass: 'domain',
+          type: 'orders.unregistered_secret_event' as EventType,
+          origin: {
+            kind: 'module',
+            module: { moduleKey: 'module.orders' as ModuleKey },
+            moduleRevisionId: 'mod_rev_orders_v1' as ModuleRevisionId,
+          },
+          occurredAt: '2026-08-22T10:00:00.000Z',
+          recordedAt: '2026-08-22T10:00:00.100Z',
+          payload: {},
+        });
+      },
+      (err: any) => err instanceof UndeclaredEventTypeError,
+    );
+  });
+
+  // ==========================================================================
+  // 2. BLOCKER L: TEMPORALIDADE CANÔNICA UTC (L-1 .. L-3)
+  // ==========================================================================
+
+  it('L-1: Validador isValidCanonicalUtcTimestamp aceita estritamente instantes UTC terminados em Z', () => {
+    // Válidos
+    assert.equal(isValidCanonicalUtcTimestamp('2026-08-22T10:00:00Z'), true);
+    assert.equal(isValidCanonicalUtcTimestamp('2026-08-22T10:00:00.0Z'), true);
+    assert.equal(isValidCanonicalUtcTimestamp('2026-08-22T10:00:00.00Z'), true);
+    assert.equal(isValidCanonicalUtcTimestamp('2026-08-22T10:00:00.000Z'), true);
+    assert.equal(isValidCanonicalUtcTimestamp('2026-08-22T10:00:00.123Z'), true);
+    assert.equal(isValidCanonicalUtcTimestamp('2026-12-31T23:59:59.999Z'), true);
+
+    // Rejeitados: sem Z
+    assert.equal(isValidCanonicalUtcTimestamp('2026-08-22T10:00:00'), false);
+    assert.equal(isValidCanonicalUtcTimestamp('2026-08-22T10:00:00.000'), false);
+
+    // Rejeitados: offsets numéricos
+    assert.equal(isValidCanonicalUtcTimestamp('2026-08-22T10:00:00+03:00'), false);
+    assert.equal(isValidCanonicalUtcTimestamp('2026-08-22T10:00:00-03:00'), false);
+    assert.equal(isValidCanonicalUtcTimestamp('2026-08-22T10:00:00+00:00'), false);
+
+    // Rejeitados: formatos não ISO / datas sem tempo
+    assert.equal(isValidCanonicalUtcTimestamp('2026-08-22'), false);
+    assert.equal(isValidCanonicalUtcTimestamp('08/22/2026'), false);
+    assert.equal(isValidCanonicalUtcTimestamp('2026-08-22 10:00:00Z'), false);
+
+    // Rejeitados: whitespace periférico
+    assert.equal(isValidCanonicalUtcTimestamp(' 2026-08-22T10:00:00Z'), false);
+    assert.equal(isValidCanonicalUtcTimestamp('2026-08-22T10:00:00Z '), false);
+
+    // Rejeitados: fração excessiva (> 3 dígitos)
+    assert.equal(isValidCanonicalUtcTimestamp('2026-08-22T10:00:00.1234Z'), false);
+
+    // Rejeitados: datas impossíveis no calendário
+    assert.equal(isValidCanonicalUtcTimestamp('2026-02-30T10:00:00Z'), false); // 30 de fevereiro
+    assert.equal(isValidCanonicalUtcTimestamp('2026-04-31T10:00:00Z'), false); // 31 de abril
+    assert.equal(isValidCanonicalUtcTimestamp('2026-08-22T25:00:00Z'), false); // hora 25
+    assert.equal(isValidCanonicalUtcTimestamp('2026-08-22T10:60:00Z'), false); // minuto 60
+    assert.equal(isValidCanonicalUtcTimestamp('2026-08-22T10:00:60Z'), false); // segundo 60
+  });
+
+  it('L-2: Evento com occurredAt ou recordedAt fora do padrão canônico UTC é rejeitado no publish', async () => {
+    const makeEvent = (occurredAt: string, recordedAt: string): NexEventEnvelope => ({
+      eventId: 'evt_time_test' as EventId,
+      eventClass: 'system',
+      type: 'system.ping' as EventType,
+      origin: { kind: 'system', component: 'timekeeper' },
+      occurredAt,
+      recordedAt,
+      payload: {},
+    });
+
+    // Offset +03:00 em occurredAt -> rejeita
+    await assert.rejects(
+      async () => hub.publish(makeEvent('2026-08-22T10:00:00+03:00', '2026-08-22T10:00:00.000Z')),
+      (err: any) => err instanceof InvalidEventEnvelopeError && err.fieldName === 'occurredAt',
+    );
+
+    // Data sem hora em recordedAt -> rejeita
+    await assert.rejects(
+      async () => hub.publish(makeEvent('2026-08-22T10:00:00.000Z', '2026-08-22')),
+      (err: any) => err instanceof InvalidEventEnvelopeError && err.fieldName === 'recordedAt',
+    );
+
+    // 30 de fevereiro em occurredAt -> rejeita
+    await assert.rejects(
+      async () => hub.publish(makeEvent('2026-02-30T10:00:00Z', '2026-08-22T10:00:00.000Z')),
+      (err: any) => err instanceof InvalidEventEnvelopeError && err.fieldName === 'occurredAt',
+    );
+  });
+
+  // ==========================================================================
+  // 3. BLOCKER R: JOURNAL APPEND-ONLY SEM CLEAR (R-1)
+  // ==========================================================================
+
+  it('R-1: ModuleEventHub não expõe clearForTests() e o Journal é estritamente append-only', async () => {
+    const testHub = createModuleEventHub();
+    let subscriberCalls = 0;
+
+    testHub.subscribe({
+      subscriberId: 'sub_r1' as SubscriberId,
+      handler: () => {
+        subscriberCalls++;
+      },
+    });
+
+    const event: NexEventEnvelope = {
+      eventId: 'evt_r1_unique' as EventId,
+      eventClass: 'system',
+      type: 'system.boot' as EventType,
+      origin: { kind: 'system', component: 'kernel' },
+      occurredAt: '2026-08-22T10:00:00.000Z',
+      recordedAt: '2026-08-22T10:00:00.010Z',
+      payload: { boot: 1 },
+    };
+
+    // 1. Publica evento X
+    await testHub.publish(event);
+    assert.equal(testHub.getJournalSize(), 1);
+    assert.equal(subscriberCalls, 1);
+
+    // 2. Prova: API pública não expõe clearForTests
+    assert.equal((testHub as any).clearForTests, undefined);
+
+    // 3. Tentar publicar EventId X novamente é rejeitado como DuplicateEventId
+    await assert.rejects(
+      async () => {
+        await testHub.publish(event);
+      },
+      (err: any) => {
+        assert.ok(err instanceof DuplicateEventIdError);
+        assert.equal(err.eventId, 'evt_r1_unique');
+        return true;
+      },
+    );
+
+    // 4. Journal permanece com exatamente 1 entrada e subscriber não recebeu 2ª entrega
+    assert.equal(testHub.getJournalSize(), 1);
+    assert.equal(subscriberCalls, 1);
+  });
+
+  // ==========================================================================
+  // 4. EVENT VALIDATION & ENVELOPE (EV-1 .. EV-11)
   // ==========================================================================
 
   it('EV-1: Domain event legítimo com revisão e tipo declarados publica com sucesso', async () => {
@@ -156,7 +450,6 @@ describe('NEX+ Module Event Hub & Envelope (0.86A)', () => {
   });
 
   it('EV-4: Domain event cuja revisão pertence a outro ModuleKey é rejeitado com ModuleKeyMismatchError', async () => {
-    // Registra módulo inventory
     registry.registerModuleRevision({
       moduleKey: 'module.inventory' as ModuleKey,
       moduleRevisionId: 'mod_rev_inv_v1' as ModuleRevisionId,
@@ -174,8 +467,8 @@ describe('NEX+ Module Event Hub & Envelope (0.86A)', () => {
       type: 'orders.order_created' as EventType,
       origin: {
         kind: 'module',
-        module: { moduleKey: 'module.orders' as ModuleKey }, // Alega orders
-        moduleRevisionId: 'mod_rev_inv_v1' as ModuleRevisionId, // Mas usa rev de inventory
+        module: { moduleKey: 'module.orders' as ModuleKey },
+        moduleRevisionId: 'mod_rev_inv_v1' as ModuleRevisionId,
       },
       occurredAt: '2026-08-22T10:00:00.000Z',
       recordedAt: '2026-08-22T10:00:00.100Z',
@@ -199,7 +492,7 @@ describe('NEX+ Module Event Hub & Envelope (0.86A)', () => {
     const event: NexEventEnvelope = {
       eventId: 'evt_err_03' as EventId,
       eventClass: 'domain',
-      type: 'orders.order_secret_mutated' as EventType, // Tipo não declarado
+      type: 'orders.order_secret_mutated' as EventType,
       origin: {
         kind: 'module',
         module: { moduleKey: 'module.orders' as ModuleKey },
@@ -271,7 +564,7 @@ describe('NEX+ Module Event Hub & Envelope (0.86A)', () => {
       origin: { kind: 'system', component: 'ping_service' },
       occurredAt: '2026-08-22T10:00:00.000Z',
       recordedAt: '2026-08-22T10:00:00.010Z',
-      causationId: 'evt_loop_01' as EventId, // Loop causal
+      causationId: 'evt_loop_01' as EventId,
       payload: { ping: 1 },
     };
 
@@ -424,7 +717,7 @@ describe('NEX+ Module Event Hub & Envelope (0.86A)', () => {
   });
 
   // ==========================================================================
-  // 2. SUBSCRIPTIONS & DELIVERY (SUB-1 .. SUB-5)
+  // 5. SUBSCRIPTIONS & DELIVERY (SUB-1 .. SUB-5)
   // ==========================================================================
 
   it('SUB-1: Múltiplos subscribers compatíveis recebem o evento publicado', async () => {
@@ -632,6 +925,6 @@ describe('NEX+ Module Event Hub & Envelope (0.86A)', () => {
     };
 
     await hub.publish(event2);
-    assert.equal(count, 1); // Permanece 1
+    assert.equal(count, 1);
   });
 });
