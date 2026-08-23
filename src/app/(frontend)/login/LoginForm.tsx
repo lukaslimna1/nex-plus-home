@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import styles from "./login.module.css";
 import { NexWordmark } from "./NexWordmark";
 import { loginAction } from "@/auth/actions";
@@ -271,17 +272,12 @@ export function LoginForm() {
 
                 {/* Opções */}
                 <div className={styles.optionsRow}>
-                  <a
-                    href="#esqueci-senha"
-                    className={`${styles.forgotLink} ${styles.disabledControl}`}
-                    title="Disponível em uma etapa futura."
-                    aria-disabled="true"
-                    onClick={(e) => {
-                      e.preventDefault();
-                    }}
+                  <Link
+                    href="/forgot-password"
+                    className={styles.forgotLink}
                   >
                     Esqueci minha senha?
-                  </a>
+                  </Link>
                 </div>
 
                 {/* Botão Entrar */}

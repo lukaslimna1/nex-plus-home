@@ -144,4 +144,89 @@ test.describe('NEX+ Multiusuário · E2E Authentication Flow (0.8A Isolated Harn
       await expect(page).toHaveURL(/\/login/);
     }
   });
+
+  test('E13. /login contém link para /forgot-password e /forgot-password renderiza corretamente', async ({ page }) => {
+    await page.goto('/login');
+    const forgotLink = page.locator('a:has-text("Esqueci minha senha?")');
+    await expect(forgotLink).toBeVisible();
+    await expect(forgotLink).toHaveAttribute('href', '/forgot-password');
+
+    await forgotLink.click();
+    await expect(page).toHaveURL(/\/forgot-password/);
+    await expect(page.locator('input#email')).toBeVisible();
+    await expect(page.locator('button[type="submit"]')).toBeVisible();
+  });
+
+  test('E14. /forgot-password com e-mail inexistente exibe mensagem neutra sem vazar conta', async ({ page }) => {
+    await page.goto('/forgot-password');
+    await page.fill('input#email', 'naoexiste@nex-test.invalid');
+    await page.click('button[type="submit"]');
+
+    await expect(page.locator('text=Solicitação Enviada')).toBeVisible();
+    await expect(page.locator('text=Se existir uma conta associada')).toBeVisible();
+  });
+
+  test('E15-E17. Ciclo completo: forgot-password -> reset-password -> token consumido -> login com nova senha', async ({ page }) => {
+    const payload = await getPayload({ config: configPromise });
+
+    // 1. Solicitar recuperação para o usuário existente
+    await page.goto('/forgot-password');
+    await page.fill('input#email', testEmail);
+    await page.click('button[type="submit"]');
+
+    await expect(page.locator('text=Solicitação Enviada')).toBeVisible();
+
+    // 2. Obter token gerado pelo Payload no banco descartável
+    const userInDb = await payload.findByID({
+      collection: 'users',
+      id: testUserId,
+      overrideAccess: true,
+      showHiddenFields: true,
+    });
+
+    const resetToken = (userInDb as any).resetPasswordToken;
+    expect(resetToken).toBeDefined();
+    expect(typeof resetToken).toBe('string');
+    expect(resetToken.length).toBeGreaterThan(10);
+
+    // 3. Acessar /reset-password com token inválido/vazio
+    await page.goto('/reset-password');
+    await expect(page.locator('text=Link Inválido')).toBeVisible();
+
+    // 4. Acessar /reset-password com token válido
+    await page.goto(`/reset-password?token=${resetToken}`);
+    await expect(page.locator('input#password')).toBeVisible();
+    await expect(page.locator('input#confirmPassword')).toBeVisible();
+
+    // 5. Redefinir senha com sucesso
+    const newPassword = `New_${crypto.randomBytes(16).toString('hex')}!Aa1`;
+    await page.fill('input#password', newPassword);
+    await page.fill('input#confirmPassword', newPassword);
+    await page.click('button[type="submit"]');
+
+    await expect(page.locator('text=Senha Alterada')).toBeVisible();
+
+    // 6. Testar anti-reuso: Acessar novamente a mesma URL com o token já consumido
+    await page.goto(`/reset-password?token=${resetToken}`);
+    await page.fill('input#password', 'AnotherPass123!');
+    await page.fill('input#confirmPassword', 'AnotherPass123!');
+    await page.click('button[type="submit"]');
+
+    const resetAlert = page.getByRole('alert').filter({ hasText: 'inválido ou já expirou' });
+    await expect(resetAlert).toBeVisible();
+
+    // 7. Login com a senha antiga falha
+    await page.goto('/login');
+    await page.fill('input#email', testEmail);
+    await page.fill('input#password', testPassword);
+    await page.click('button[type="submit"]');
+    const loginAlert = page.getByRole('alert').filter({ hasText: 'E-mail ou senha inválidos.' });
+    await expect(loginAlert).toBeVisible();
+
+    // 8. Login com a nova senha tem sucesso e entra em /home
+    await page.fill('input#password', newPassword);
+    await page.click('button[type="submit"]');
+    await expect(page).toHaveURL(/\/home/);
+    await expect(page.locator(`text=${testDisplayName}`)).toBeVisible();
+  });
 });

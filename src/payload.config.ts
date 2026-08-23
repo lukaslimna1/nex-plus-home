@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url'
 import { Admins } from './collections/Admins'
 import { Users } from './collections/Users'
 import { getEdgeServerConfig } from './auth/edge-config'
+import { googleAppsScriptEmailAdapter } from './email/google-apps-script-email-adapter'
 
 const filename = fileURLToPath(import.meta.url)
 const dirname = path.dirname(filename)
@@ -29,6 +30,7 @@ export default buildConfig({
   },
   collections: [Admins, Users],
   secret: getRequiredEnv('PAYLOAD_SECRET'),
+  email: googleAppsScriptEmailAdapter(),
   ...(edgeConfig.serverURL ? { serverURL: edgeConfig.serverURL } : {}),
   ...(edgeConfig.csrf ? { csrf: edgeConfig.csrf } : {}),
   ...(edgeConfig.cors ? { cors: edgeConfig.cors } : {}),

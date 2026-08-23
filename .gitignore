@@ -12,6 +12,7 @@ dist/
 .payload/
 .cache/
 next-env.d.ts
+*.tsbuildinfo
 
 # Logs
 logs

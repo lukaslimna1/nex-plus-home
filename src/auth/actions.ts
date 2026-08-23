@@ -8,6 +8,7 @@
 
 'use server';
 
+import { getPayload } from 'payload';
 import { login, logout } from '@payloadcms/next/auth';
 import configPromise from '@/payload.config';
 import {
@@ -18,6 +19,18 @@ import {
 
 export interface LoginActionResult {
   readonly success: boolean;
+  readonly error?: string;
+}
+
+export interface ForgotPasswordActionResult {
+  readonly success: boolean;
+  readonly message: string;
+  readonly error?: string;
+}
+
+export interface ResetPasswordActionResult {
+  readonly success: boolean;
+  readonly message?: string;
   readonly error?: string;
 }
 
@@ -70,6 +83,124 @@ export async function loginAction(
     return {
       success: false,
       error: 'E-mail ou senha inválidos.',
+    };
+  }
+}
+
+/**
+ * Server Action para solicitação de redefinição de senha (Forgot Password).
+ * Proteção total contra enumeração de contas (resposta neutra constante).
+ */
+export async function forgotPasswordAction(
+  data: { email?: string } | FormData,
+): Promise<ForgotPasswordActionResult> {
+  let email = '';
+
+  if (data instanceof FormData) {
+    email = String(data.get('email') || '');
+  } else if (data && typeof data === 'object') {
+    email = String(data.email || '');
+  }
+
+  const cleanEmail = normalizeEmail(email);
+
+  if (!cleanEmail || !cleanEmail.includes('@')) {
+    return {
+      success: false,
+      message: '',
+      error: 'Por favor, informe um endereço de e-mail válido.',
+    };
+  }
+
+  const neutralSuccessMessage =
+    'Se existir uma conta associada a este e-mail, você receberá as instruções para redefinir sua senha.';
+
+  try {
+    const payload = await getPayload({ config: configPromise });
+    await payload.forgotPassword({
+      collection: 'users',
+      data: {
+        email: cleanEmail,
+      },
+    });
+
+    return {
+      success: true,
+      message: neutralSuccessMessage,
+    };
+  } catch {
+    // Retorno neutro mesmo em caso de erro interno para evitar enumeração
+    return {
+      success: true,
+      message: neutralSuccessMessage,
+    };
+  }
+}
+
+/**
+ * Server Action para conclusão da redefinição de senha (Reset Password com token).
+ */
+export async function resetPasswordAction(
+  data:
+    | { token?: string; password?: string; confirmPassword?: string }
+    | FormData,
+): Promise<ResetPasswordActionResult> {
+  let token = '';
+  let password = '';
+  let confirmPassword = '';
+
+  if (data instanceof FormData) {
+    token = String(data.get('token') || '');
+    password = String(data.get('password') || '');
+    confirmPassword = String(data.get('confirmPassword') || '');
+  } else if (data && typeof data === 'object') {
+    token = String(data.token || '');
+    password = String(data.password || '');
+    confirmPassword = String(data.confirmPassword || '');
+  }
+
+  token = token.trim();
+
+  if (!token) {
+    return {
+      success: false,
+      error: 'Token de recuperação ausente ou inválido. Solicite um novo link de recuperação.',
+    };
+  }
+
+  if (!password || password.length < 8) {
+    return {
+      success: false,
+      error: 'A nova senha deve possuir pelo menos 8 caracteres.',
+    };
+  }
+
+  if (password !== confirmPassword) {
+    return {
+      success: false,
+      error: 'As senhas informadas não coincidem.',
+    };
+  }
+
+  try {
+    const payload = await getPayload({ config: configPromise });
+    await payload.resetPassword({
+      collection: 'users',
+      data: {
+        token,
+        password,
+      },
+      overrideAccess: true,
+    });
+
+    return {
+      success: true,
+      message: 'Sua senha foi redefinida com sucesso. Você já pode entrar com sua nova senha.',
+    };
+  } catch {
+    return {
+      success: false,
+      error: 'O link de recuperação é inválido ou já expirou. Solicite um novo link.',
     };
   }
 }
