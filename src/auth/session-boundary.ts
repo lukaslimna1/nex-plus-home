@@ -1,15 +1,16 @@
 /**
  * NEX+ · Auth Layer
- * Server-Side Session Boundary (Fail-Closed) — Escopo 0.86B-1 (Hardening)
+ * Server-Side Session Boundary (Fail-Closed) — Escopo 0.86B-1 (Hardening Final)
  *
  * Princípios Fundamentais:
  * 1. Existe APENAS UM entrypoint confiável para produzir AuthenticatedSessionContext material:
  *    request server-side → headers() → getPayload({ config }) → payload.auth({ headers }) → user → HumanActor + SessionRef.
- * 2. Impossibilidade de Bypass: callers não conseguem fabricar contextos fornecendo user, _sid, payload, headers ou secret.
- * 3. Rejeição explícita de identidades 'admins' para ações de App User material.
- * 4. Honestidade Semântica (INV-CTX-AUTH-10): quando payload.auth() retorna user: null (por ausência de token, token inválido, expirado ou revogado), o boundary classifica honestamente como 'not_authenticated' sem suposições diagnósticas infundadas.
- * 5. Falhas de infraestrutura (banco indisponível, crash interno) propagam status 'error' / AuthInternalError.
- * 6. _sid, JWT, cookies e user.sessions permanecem confinados na fronteira e não vazam no DTO.
+ * 2. Impossibilidade Absoluta de Bypass: callers não conseguem fabricar contextos fornecendo user, _sid, payload, headers ou secret.
+ * 3. Zero Seams Públicas ou Deep-Importáveis: nenhum helper intermediário é exportado.
+ * 4. Rejeição explícita de identidades 'admins' para ações de App User material.
+ * 5. Honestidade Semântica (INV-CTX-AUTH-10): quando payload.auth() retorna user: null (por ausência de token, token inválido, expirado ou revogado), o boundary classifica honestamente como 'not_authenticated' sem suposições diagnósticas infundadas.
+ * 6. Falhas de infraestrutura (banco indisponível, crash interno) propagam status 'error' / AuthInternalError.
+ * 7. _sid, JWT, cookies e user.sessions permanecem confinados na fronteira e não vazam no DTO.
  */
 
 import 'server-only';
@@ -54,17 +55,14 @@ export class AuthInternalError extends Error {
 }
 
 // ============================================================================
-// 2. HELPER INTERNO DE CONVERSÃO DO RESULTADO AUTENTICADO
+// 2. HELPER PRIVADO DE PROCESSAMENTO DO RESULTADO AUTENTICADO
 // ============================================================================
 
 /**
- * Converte o resultado autenticado do Payload em AuthenticatedSessionContext.
- * Helper interno do módulo (utilizado internamente e exposto apenas para testes unitários do módulo).
+ * Processa privadamente o resultado autenticado do Payload e constrói o AuthenticatedSessionContext.
+ * Função estritamente privada deste módulo — jamais exportada.
  */
-export function deriveSessionContextFromPayloadUser(
-  user: unknown,
-  secretOverride?: string,
-): SessionResolutionResult {
+function processPayloadAuthUser(user: unknown): SessionResolutionResult {
   if (!user || typeof user !== 'object') {
     return Object.freeze({
       status: 'unauthenticated',
@@ -111,7 +109,6 @@ export function deriveSessionContextFromPayloadUser(
       collection: 'users',
       userId,
       sid,
-      secret: secretOverride,
     });
 
     const actor: HumanActor = Object.freeze({
@@ -186,7 +183,7 @@ export async function resolveAuthenticatedSessionContext(): Promise<SessionResol
       });
     }
 
-    return deriveSessionContextFromPayloadUser(authResult?.user);
+    return processPayloadAuthUser(authResult?.user);
   } catch (outerError: any) {
     return Object.freeze({
       status: 'error',
