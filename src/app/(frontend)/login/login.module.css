@@ -1,16 +1,25 @@
-/* NEX+ Home — Login Page Styles (Arkana Theme) */
+/* NEX+ Home — Login Page Styles (Arkana Theme) · Fluid Responsive Viewport */
+
+.container,
+.container *,
+.container *::before,
+.container *::after {
+  box-sizing: border-box;
+}
 
 .container {
   min-height: 100vh;
+  min-height: 100dvh;
   width: 100%;
+  max-width: 100vw;
   background-color: #07070e;
   color: #ffffff;
   display: flex;
   align-items: center;
   justify-content: center;
   position: relative;
-  overflow: hidden;
-  padding: 24px;
+  overflow-x: hidden;
+  padding: clamp(14px, 2.5vh, 32px) clamp(16px, 3vw, 40px);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
@@ -20,6 +29,8 @@
   inset: 0;
   pointer-events: none;
   z-index: 0;
+  overflow: hidden;
+  contain: strict;
 }
 
 .glowBottomLeft {
@@ -102,16 +113,16 @@
   box-shadow: 0 0 6px 1px rgba(99, 102, 241, 0.5);
 }
 
-/* Conteúdo principal em duas colunas */
+/* Conteúdo principal em duas colunas adaptativas */
 .mainWrapper {
   position: relative;
   z-index: 1;
   width: 100%;
   max-width: 1140px;
   display: grid;
-  grid-template-columns: 1.15fr 0.85fr;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
   align-items: center;
-  gap: 64px;
+  gap: clamp(20px, 4vw, 56px);
   margin: auto;
 }
 
@@ -120,45 +131,48 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  padding-left: 16px;
+  padding-left: clamp(0px, 1.5vw, 16px);
+  min-width: 0;
 }
 
 .logoRow {
   display: inline-flex;
   align-items: center;
-  margin-bottom: 20px;
+  margin-bottom: clamp(10px, 1.8vh, 18px);
   width: 100%;
+  max-width: clamp(280px, 30vw, 480px);
 }
 
 .wordmarkSvg {
   width: 100%;
-  max-width: 480px;
+  max-width: 100%;
   height: auto;
   display: block;
 }
 
 .brandTagline {
-  font-size: 1.45rem;
+  font-size: clamp(1.1rem, 1.5vw, 1.45rem);
   font-weight: 400;
   color: #e2e8f0;
   letter-spacing: 0.03em;
-  margin: 0 0 28px 0;
+  margin: 0 0 clamp(12px, 2vh, 24px) 0;
+  line-height: 1.25;
 }
 
 .gradientDivider {
-  width: 90px;
+  width: clamp(60px, 7vw, 90px);
   height: 3px;
   border-radius: 999px;
   background: linear-gradient(90deg, #ec4899 0%, #f97316 100%);
-  margin-bottom: 28px;
+  margin-bottom: clamp(12px, 2vh, 24px);
   box-shadow: 0 0 12px rgba(236, 72, 153, 0.4);
 }
 
 .brandDescription {
-  font-size: 0.95rem;
+  font-size: clamp(0.85rem, 1vw, 0.95rem);
   font-weight: 400;
   color: #94a3b8;
-  line-height: 1.6;
+  line-height: 1.55;
   margin: 0;
   max-width: 380px;
 }
@@ -167,13 +181,15 @@
 .cardSection {
   display: flex;
   justify-content: center;
+  width: 100%;
+  min-width: 0;
 }
 
 .loginCardWrapper {
   position: relative;
   width: 100%;
   max-width: 440px;
-  border-radius: 28px;
+  border-radius: clamp(20px, 2.5vw, 28px);
   padding: 1.5px;
   background: linear-gradient(
     135deg,
@@ -192,31 +208,33 @@
   background: rgba(12, 13, 24, 0.85);
   backdrop-filter: blur(28px);
   -webkit-backdrop-filter: blur(28px);
-  border-radius: 26.5px;
-  padding: 44px 38px 36px 38px;
+  border-radius: clamp(18.5px, 2.4vw, 26.5px);
+  padding: clamp(24px, 3.5vh, 40px) clamp(20px, 2.6vw, 36px) clamp(20px, 3vh, 32px) clamp(20px, 2.6vw, 36px);
   display: flex;
   flex-direction: column;
 }
 
 .cardTitle {
-  font-size: 1.95rem;
+  font-size: clamp(1.45rem, 2vw, 1.95rem);
   font-weight: 700;
   color: #ffffff;
-  margin: 0 0 6px 0;
+  margin: 0 0 clamp(4px, 0.6vh, 6px) 0;
   letter-spacing: -0.02em;
+  line-height: 1.2;
 }
 
 .cardSubtitle {
-  font-size: 0.92rem;
+  font-size: clamp(0.82rem, 0.95vw, 0.92rem);
   color: #94a3b8;
-  margin: 0 0 28px 0;
+  margin: 0 0 clamp(14px, 2vh, 24px) 0;
   font-weight: 400;
+  line-height: 1.35;
 }
 
 .form {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: clamp(10px, 1.4vh, 16px);
 }
 
 /* Campos de entrada */
@@ -226,7 +244,7 @@
   align-items: center;
   background: rgba(18, 20, 36, 0.75);
   border: 1px solid rgba(99, 102, 241, 0.22);
-  border-radius: 14px;
+  border-radius: clamp(10px, 1.2vw, 14px);
   transition: all 0.2s ease;
 }
 
@@ -243,7 +261,7 @@
 
 .inputIconLeft {
   position: absolute;
-  left: 16px;
+  left: clamp(12px, 1.5vw, 16px);
   color: #94a3b8;
   display: flex;
   align-items: center;
@@ -253,23 +271,23 @@
 
 .inputField {
   width: 100%;
-  height: 52px;
+  height: clamp(42px, 4.8vh, 50px);
   background: transparent;
   border: none;
-  padding: 0 46px 0 48px;
+  padding: 0 clamp(38px, 4.5vw, 46px) 0 clamp(40px, 4.5vw, 48px);
   color: #f8fafc;
-  font-size: 0.95rem;
+  font-size: clamp(0.88rem, 0.95vw, 0.95rem);
   outline: none;
 }
 
 .inputField::placeholder {
   color: #64748b;
-  font-size: 0.95rem;
+  font-size: clamp(0.88rem, 0.95vw, 0.95rem);
 }
 
 .passwordToggle {
   position: absolute;
-  right: 14px;
+  right: clamp(10px, 1.2vw, 14px);
   background: transparent;
   border: none;
   color: #94a3b8;
@@ -297,26 +315,30 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 4px;
-  margin-bottom: 6px;
-  font-size: 0.88rem;
+  margin-top: clamp(2px, 0.4vh, 4px);
+  margin-bottom: clamp(2px, 0.5vh, 6px);
+  font-size: clamp(0.8rem, 0.9vw, 0.88rem);
+  gap: 8px;
 }
 
 .rememberLabel {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
+  gap: clamp(6px, 0.8vw, 9px);
   color: #cbd5e1;
   cursor: pointer;
   user-select: none;
-  font-size: 0.88rem;
+  font-size: inherit;
+  white-space: nowrap;
 }
 
 .customCheckbox {
   appearance: none;
   -webkit-appearance: none;
-  width: 18px;
-  height: 18px;
+  width: 17px;
+  height: 17px;
+  min-width: 17px;
+  min-height: 17px;
   border: 1.5px solid rgba(148, 163, 184, 0.4);
   border-radius: 5px;
   background: rgba(18, 20, 36, 0.8);
@@ -353,8 +375,9 @@
 .forgotLink {
   color: #60a5fa;
   text-decoration: none;
-  font-size: 0.88rem;
+  font-size: inherit;
   transition: color 0.15s ease;
+  white-space: nowrap;
 }
 
 .forgotLink:hover {
@@ -370,13 +393,13 @@
 
 /* Botão Entrar */
 .submitButton {
-  margin-top: 10px;
-  height: 52px;
+  margin-top: clamp(6px, 1vh, 10px);
+  height: clamp(44px, 4.8vh, 50px);
   border: none;
-  border-radius: 14px;
+  border-radius: clamp(10px, 1.2vw, 14px);
   background: linear-gradient(90deg, #4f46e5 0%, #9333ea 50%, #db2777 100%);
   color: #ffffff;
-  font-size: 1rem;
+  font-size: clamp(0.92rem, 1vw, 1rem);
   font-weight: 600;
   cursor: pointer;
   display: flex;
@@ -413,13 +436,13 @@
   background: rgba(239, 68, 68, 0.12);
   border: 1px solid rgba(239, 68, 68, 0.35);
   color: #fca5a5;
-  padding: 10px 14px;
+  padding: 8px 12px;
   border-radius: 10px;
-  font-size: 0.86rem;
+  font-size: 0.84rem;
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .disabledControl {
@@ -435,7 +458,7 @@
 .cardDivider {
   height: 1px;
   background: rgba(255, 255, 255, 0.08);
-  margin: 28px 0 20px 0;
+  margin: clamp(14px, 2vh, 24px) 0 clamp(10px, 1.6vh, 18px) 0;
 }
 
 .restrictedFooter {
@@ -444,21 +467,28 @@
   justify-content: center;
   gap: 8px;
   color: #94a3b8;
-  font-size: 0.82rem;
+  font-size: clamp(0.74rem, 0.85vw, 0.82rem);
+  text-align: center;
+  line-height: 1.3;
 }
 
 .shieldIcon {
   color: #818cf8;
   display: flex;
   align-items: center;
+  flex-shrink: 0;
 }
 
-/* Responsividade */
-@media (max-width: 960px) {
+/* ===================================================
+   Responsividade: Breakpoints de Largura e Altura
+   =================================================== */
+
+/* Transição de Layout para Telas Estreitas (Tablets e Mobiles) */
+@media (max-width: 900px) {
   .mainWrapper {
     grid-template-columns: 1fr;
-    gap: 40px;
-    max-width: 480px;
+    gap: clamp(18px, 2.5vh, 32px);
+    max-width: 440px;
   }
 
   .brandSection {
@@ -467,8 +497,24 @@
     padding-left: 0;
   }
 
+  .logoRow {
+    justify-content: center;
+    max-width: min(320px, 75vw);
+    margin-bottom: clamp(8px, 1.4vh, 14px);
+  }
+
+  .brandTagline {
+    font-size: clamp(1.05rem, 3.2vw, 1.28rem);
+    margin-bottom: clamp(8px, 1.4vh, 16px);
+  }
+
+  .gradientDivider {
+    margin-bottom: clamp(8px, 1.4vh, 16px);
+  }
+
   .brandDescription {
     max-width: 100%;
+    font-size: clamp(0.82rem, 2.3vw, 0.88rem);
   }
 
   .loginCardWrapper {
@@ -476,28 +522,94 @@
   }
 }
 
+/* Telas Mobile Pequenas */
 @media (max-width: 480px) {
   .container {
-    padding: 16px;
-  }
-
-  .logoNEX {
-    font-size: 3.2rem;
-  }
-
-  .logoPlus {
-    font-size: 3rem;
-  }
-
-  .brandTagline {
-    font-size: 1.25rem;
+    padding: clamp(12px, 2vh, 20px) 14px;
   }
 
   .loginCard {
-    padding: 32px 24px 28px 24px;
+    padding: 22px 18px 18px 18px;
+  }
+
+  .optionsRow {
+    flex-wrap: wrap;
+    gap: 6px;
   }
 }
 
+/* Telas com Altura Reduzida (Notebooks 768p/720p ou Janelas Baixas) */
+@media (max-height: 740px) {
+  .container {
+    padding-top: clamp(8px, 1.5vh, 16px);
+    padding-bottom: clamp(8px, 1.5vh, 16px);
+  }
+
+  .brandTagline {
+    margin-bottom: 10px;
+  }
+
+  .gradientDivider {
+    margin-bottom: 10px;
+  }
+
+  .cardSubtitle {
+    margin-bottom: 14px;
+  }
+
+  .cardDivider {
+    margin: 14px 0 10px 0;
+  }
+
+  .form {
+    gap: 10px;
+  }
+}
+
+/* Telas com Altura Muito Baixa (< 620px) */
+@media (max-height: 620px) {
+  .container {
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+
+  .brandDescription {
+    display: none;
+  }
+
+  .logoRow {
+    max-width: 240px;
+    margin-bottom: 6px;
+  }
+
+  .brandTagline {
+    font-size: 1rem;
+    margin-bottom: 6px;
+  }
+
+  .gradientDivider {
+    margin-bottom: 6px;
+  }
+
+  .loginCard {
+    padding: 16px 20px 14px 20px;
+  }
+
+  .cardTitle {
+    font-size: 1.35rem;
+    margin-bottom: 2px;
+  }
+
+  .cardSubtitle {
+    margin-bottom: 10px;
+  }
+
+  .cardDivider {
+    margin: 10px 0 8px 0;
+  }
+}
+
+/* Redução de Movimento */
 @media (prefers-reduced-motion: reduce) {
   .inputGroup,
   .submitButton,
