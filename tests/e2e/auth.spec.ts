@@ -7,6 +7,7 @@ test.describe('NEX+ Multiusuário · E2E Authentication Flow (0.8A Isolated Harn
   let testUserId: string;
   const testEmail = `e2e-${Date.now()}@nex-test.invalid`;
   const testPassword = `E2E_${crypto.randomBytes(16).toString('hex')}!Aa1`;
+  let currentTestPassword = testPassword;
   const testDisplayName = 'Sócio E2E Teste';
 
   test.beforeAll(async () => {
@@ -200,6 +201,7 @@ test.describe('NEX+ Multiusuário · E2E Authentication Flow (0.8A Isolated Harn
 
     // 5. Redefinir senha com sucesso
     const newPassword = `New_${crypto.randomBytes(16).toString('hex')}!Aa1`;
+    currentTestPassword = newPassword;
     await page.fill('input#password', newPassword);
     await page.fill('input#confirmPassword', newPassword);
     await page.click('button[type="submit"]');
@@ -224,9 +226,27 @@ test.describe('NEX+ Multiusuário · E2E Authentication Flow (0.8A Isolated Harn
     await expect(loginAlert).toBeVisible();
 
     // 8. Login com a nova senha tem sucesso e entra em /home
-    await page.fill('input#password', newPassword);
+    await page.fill('input#password', currentTestPassword);
     await page.click('button[type="submit"]');
     await expect(page).toHaveURL(/\/home/);
     await expect(page.locator(`text=${testDisplayName}`)).toBeVisible();
+  });
+
+  test('E18. Sincronização multi-aba: comando de logout emitido em uma aba redireciona as demais para /login', async ({ page }) => {
+    // 1. Logar na aplicação com a senha atual
+    await page.goto('/login');
+    await page.fill('input#email', testEmail);
+    await page.fill('input#password', currentTestPassword);
+    await page.click('button[type="submit"]');
+    await expect(page).toHaveURL(/\/home/);
+
+    // 2. Disparar mensagem de LOGOUT via BroadcastChannel (como se fosse de outra aba)
+    await page.evaluate(() => {
+      const channel = new BroadcastChannel('nex_auth_activity');
+      channel.postMessage({ type: 'LOGOUT', timestamp: Date.now(), reason: 'other_tab_logout' });
+    });
+
+    // 3. A página deve detectar a mensagem e redirecionar imediatamente para /login
+    await expect(page).toHaveURL(/\/login/);
   });
 });

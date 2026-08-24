@@ -9,7 +9,7 @@
 'use server';
 
 import { getPayload } from 'payload';
-import { login, logout } from '@payloadcms/next/auth';
+import { login, logout, refresh } from '@payloadcms/next/auth';
 import configPromise from '@/payload.config';
 import {
   normalizeEmail,
@@ -218,6 +218,35 @@ export async function logoutAction(): Promise<LogoutActionResult> {
     return {
       success: false,
       error: 'Não foi possível encerrar a sessão.',
+    };
+  }
+}
+
+export interface RefreshSessionActionResult {
+  readonly success: boolean;
+  readonly error?: string;
+}
+
+/**
+ * Server Action para renovação transparente da sessão (Sliding Session).
+ * Atualiza o cookie HTTP-only payload-token e o timestamp da sessão no banco de dados.
+ */
+export async function refreshSessionAction(): Promise<RefreshSessionActionResult> {
+  try {
+    const result = await refresh({
+      config: configPromise,
+    });
+    if (result && result.success) {
+      return { success: true };
+    }
+    return {
+      success: false,
+      error: 'Não foi possível renovar a sessão.',
+    };
+  } catch {
+    return {
+      success: false,
+      error: 'Sessão expirada ou não autenticada.',
     };
   }
 }
