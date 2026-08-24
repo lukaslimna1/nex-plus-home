@@ -28,6 +28,7 @@ import {
   validateInputRecord,
   validateRecordInputDraft,
   sanitizeActor,
+  sanitizeContextSubjectRef,
   sanitizeInputPart,
   sanitizeSourceEventIdentity,
 } from './invariants';
@@ -114,7 +115,7 @@ export class InputRecordService {
         if (!isAuthorized) {
           throw new InputRecordAuthorizationError(
             'read',
-            existing.inputId,
+            undefined,
             'Unauthorized to access existing duplicate input record.'
           );
         }
@@ -177,7 +178,9 @@ export class InputRecordService {
       actor: sanitizeActor(context.actor),
       ...(context.userId ? { userId: context.userId } : {}),
       ...(context.sessionRef ? { sessionRef: context.sessionRef } : {}),
-      ...(context.contextSubjectRef ? { contextSubjectRef: context.contextSubjectRef } : {}),
+      ...(context.contextSubjectRef
+        ? { contextSubjectRef: sanitizeContextSubjectRef(context.contextSubjectRef) }
+        : {}),
       ...(draft.sourceRefId ? { sourceRefId: draft.sourceRefId } : {}),
       ...(canonicalSourceEventIdentity ? { sourceEventIdentity: canonicalSourceEventIdentity } : {}),
       ...(draft.occurredAt ? { occurredAt: draft.occurredAt } : {}),
@@ -213,7 +216,7 @@ export class InputRecordService {
           if (!isAuthorized) {
             throw new InputRecordAuthorizationError(
               'read',
-              existing.inputId,
+              undefined,
               'Unauthorized to access existing duplicate input record.'
             );
           }

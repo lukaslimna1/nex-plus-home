@@ -26,6 +26,7 @@ import type {
 import {
   validateIngressContentId,
   validateIngressContentRecord,
+  sanitizeContextSubjectRef,
 } from './invariants';
 import {
   IngressAuthorizationError,
@@ -108,13 +109,17 @@ export class IngressContentService {
     if (!options.inspector || typeof options.inspector.inspect !== 'function') {
       throw new Error('IngressContentService requires a valid IngressContentInspector instance (fail-closed).');
     }
+    const maxSampleBytes = options.maxSampleBytes ?? DEFAULT_SAMPLE_LIMIT_BYTES;
+    if (!Number.isSafeInteger(maxSampleBytes) || maxSampleBytes <= 0) {
+      throw new Error('IngressContentService requires maxSampleBytes to be a positive safe integer.');
+    }
 
     this.blobStore = options.blobStore;
     this.contentStore = options.contentStore;
     this.authorizer = options.authorizer;
     this.inspector = options.inspector;
     this.storageBackend = options.storageBackend ?? 'local_fs';
-    this.maxSampleBytes = options.maxSampleBytes ?? DEFAULT_SAMPLE_LIMIT_BYTES;
+    this.maxSampleBytes = maxSampleBytes;
     this.nowProvider = options.nowProvider ?? (() => new Date().toISOString());
   }
 
@@ -186,7 +191,9 @@ export class IngressContentService {
       actor: Object.freeze({ ...context.actor }),
       ...(context.userId ? { userId: context.userId } : {}),
       ...(context.sessionRef ? { sessionRef: context.sessionRef } : {}),
-      ...(context.contextSubjectRef ? { contextSubjectRef: context.contextSubjectRef } : {}),
+      ...(context.contextSubjectRef
+        ? { contextSubjectRef: sanitizeContextSubjectRef(context.contextSubjectRef) }
+        : {}),
       ...(params.sourceRefId ? { sourceRefId: params.sourceRefId } : {}),
       ...(params.declaredMimeType ? { declaredMimeType: params.declaredMimeType.trim() } : {}),
       verifiedMimeType: inspection.verifiedMimeType.trim(),
@@ -259,11 +266,7 @@ export class IngressContentService {
     );
 
     if (!verifyResult.valid) {
-      throw new IngressIntegrityError(
-        contentId,
-        record.storageKey,
-        verifyResult.error ?? 'Integrity verification failed against stored SHA-256 and byteSize.'
-      );
+      throw new IngressIntegrityError(contentId);
     }
 
     const data = await this.blobStore.getBlob(record.storageKey, record.sha256);
@@ -286,11 +289,7 @@ export class IngressContentService {
     );
 
     if (!verifyResult.valid) {
-      throw new IngressIntegrityError(
-        contentId,
-        record.storageKey,
-        verifyResult.error ?? 'Integrity verification failed against stored SHA-256 and byteSize.'
-      );
+      throw new IngressIntegrityError(contentId);
     }
 
     const stream = await this.blobStore.getBlobStream(record.storageKey, record.sha256);

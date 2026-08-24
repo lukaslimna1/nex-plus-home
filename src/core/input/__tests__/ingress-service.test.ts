@@ -197,6 +197,33 @@ describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle · B3-R1)
     assert.deepEqual(Object.keys(result.ref), ['contentId']);
   });
 
+  it('1A. copia defensivamente e congela contextSubjectRef do OperationalContext', async () => {
+    const blobStore = new InMemoryBlobStore();
+    const contentStore = new InMemoryIngressContentStore();
+    const authorizer: IngressAccessAuthorizer = { async authorize() { return true; } };
+    const inspector: IngressContentInspector = {
+      async inspect() {
+        return { accepted: true, verifiedMimeType: 'text/plain' };
+      },
+    };
+    const service = new IngressContentService({ blobStore, contentStore, authorizer, inspector });
+    const mutableContext: OperationalContext = {
+      ...lucasContext,
+      contextSubjectRef: {
+        subjectType: 'brand' as ContextSubjectType,
+        subjectId: 'alterstate' as ContextSubjectId,
+      },
+    };
+
+    const { record } = await service.ingestContent({ data: Buffer.from('conteúdo') }, mutableContext);
+
+    (mutableContext.contextSubjectRef as any).subjectId = 'mutated_after_record';
+
+    assert.equal(record.contextSubjectRef?.subjectId, 'alterstate');
+    assert.ok(Object.isFrozen(record.contextSubjectRef));
+    assert.notEqual(record.contextSubjectRef, mutableContext.contextSubjectRef);
+  });
+
   it('2. rejeita ingestão se authorizer negar create', async () => {
     const blobStore = new InMemoryBlobStore();
     const contentStore = new InMemoryIngressContentStore();
@@ -440,8 +467,70 @@ describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle · B3-R1)
       (err: any) => {
         assert.ok(err instanceof IngressIntegrityError);
         assert.equal(err.contentId, ref.contentId);
+        assert.equal(err.reasonCode, 'integrity_verification_failed');
+        assert.equal('storageKey' in err, false);
+        assert.equal('reason' in err, false);
+        const publicError = `${err.message} ${JSON.stringify(err)}`;
+        assert.equal(publicError.includes('sha256/'), false);
+        assert.equal(publicError.includes('storageKey'), false);
+        assert.equal(publicError.includes('path'), false);
         return true;
       }
+    );
+
+    await assert.rejects(
+      () => service.getContentStream(ref.contentId, lucasContext),
+      (err: any) => {
+        assert.ok(err instanceof IngressIntegrityError);
+        const publicError = `${err.message} ${JSON.stringify(err)}`;
+        assert.equal(publicError.includes('sha256/'), false);
+        assert.equal(publicError.includes('storageKey'), false);
+        assert.equal(publicError.includes('path'), false);
+        return true;
+      }
+    );
+  });
+
+  it('8A. rejeita maxSampleBytes inválido e preserva o default/valor válido', async () => {
+    const invalidValues = [NaN, Infinity, -Infinity, 0, -1, 1.5];
+    for (const maxSampleBytes of invalidValues) {
+      assert.throws(
+        () =>
+          new IngressContentService({
+            blobStore: new InMemoryBlobStore(),
+            contentStore: new InMemoryIngressContentStore(),
+            authorizer: { async authorize() { return true; } },
+            inspector: { async inspect() { return { accepted: true, verifiedMimeType: 'text/plain' }; } },
+            maxSampleBytes,
+          }),
+        /maxSampleBytes to be a positive safe integer/
+      );
+    }
+
+    let defaultSampleLength = 0;
+    const defaultService = new IngressContentService({
+      blobStore: new InMemoryBlobStore(),
+      contentStore: new InMemoryIngressContentStore(),
+      authorizer: { async authorize() { return true; } },
+      inspector: {
+        async inspect({ sampleBuffer }) {
+          defaultSampleLength = sampleBuffer?.length ?? 0;
+          return { accepted: true, verifiedMimeType: 'application/octet-stream' };
+        },
+      },
+    });
+    await defaultService.ingestContent({ data: Buffer.alloc(70 * 1024, 'X') }, lucasContext);
+    assert.equal(defaultSampleLength, 64 * 1024);
+
+    assert.doesNotThrow(
+      () =>
+        new IngressContentService({
+          blobStore: new InMemoryBlobStore(),
+          contentStore: new InMemoryIngressContentStore(),
+          authorizer: { async authorize() { return true; } },
+          inspector: { async inspect() { return { accepted: true, verifiedMimeType: 'text/plain' }; } },
+          maxSampleBytes: 1024,
+        })
     );
   });
 

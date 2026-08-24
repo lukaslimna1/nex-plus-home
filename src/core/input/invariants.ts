@@ -27,6 +27,7 @@ import type {
   IngressContentRecord,
   RecordInputDraft,
 } from './contracts';
+import type { ContextSubjectRef } from '../context/contracts';
 import { InputInvariantViolationError } from './errors';
 
 // ============================================================================
@@ -75,6 +76,18 @@ export function validateIngressContentId(id: unknown): asserts id is IngressCont
       `IngressContentId must be a non-empty string, got '${String(id)}'.`
     );
   }
+}
+
+/**
+ * Reconstrói e congela o sujeito contextual recebido de um OperationalContext.
+ * O B3 não pode depender de o caller ter congelado previamente esse objeto.
+ */
+export function sanitizeContextSubjectRef(ref: ContextSubjectRef): ContextSubjectRef {
+  validateContextSubjectRef(ref);
+  return Object.freeze({
+    subjectType: ref.subjectType,
+    subjectId: ref.subjectId,
+  });
 }
 
 // ============================================================================

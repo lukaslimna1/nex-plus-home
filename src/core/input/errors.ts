@@ -98,15 +98,13 @@ export class InputRecordNotFoundError extends Error {
 
 export class IngressIntegrityError extends Error {
   readonly contentId: string;
-  readonly storageKey: string;
-  readonly reason: string;
+  readonly reasonCode: 'integrity_verification_failed';
 
-  constructor(contentId: string, storageKey: string, reason: string) {
-    super(`Ingress content integrity failure for '${contentId}' (storageKey: '${storageKey}'): ${reason}`);
+  constructor(contentId: string) {
+    super(`Ingress content integrity verification failed for '${contentId}'.`);
     this.name = 'IngressIntegrityError';
     this.contentId = contentId;
-    this.storageKey = storageKey;
-    this.reason = reason;
+    this.reasonCode = 'integrity_verification_failed';
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }

@@ -193,6 +193,36 @@ describe('0.86B-3 · InputRecordService (Multimodal Envelopes & Authority · B3-
     assert.equal(record.parts[1].kind, 'resource_ref');
   });
 
+  it('1A. copia defensivamente e congela contextSubjectRef do OperationalContext', async () => {
+    const inputStore = new InMemoryInputRecordStore();
+    const contentStore = new InMemoryIngressContentStore();
+    const service = new InputRecordService({
+      inputStore,
+      contentStore,
+      authorizer: permissiveIngressAuthorizer,
+      inputAuthorizer: userScopedInputAuthorizer,
+    });
+
+    const mutableContext: OperationalContext = {
+      ...lucasContext,
+      contextSubjectRef: {
+        subjectType: 'brand' as ContextSubjectType,
+        subjectId: 'alterstate' as ContextSubjectId,
+      },
+    };
+
+    const { record } = await service.recordInput(
+      { parts: [{ kind: 'text', text: 'Entrada com sujeito contextual' }] },
+      mutableContext
+    );
+
+    (mutableContext.contextSubjectRef as any).subjectId = 'mutated_after_record';
+
+    assert.equal(record.contextSubjectRef?.subjectId, 'alterstate');
+    assert.ok(Object.isFrozen(record.contextSubjectRef));
+    assert.notEqual(record.contextSubjectRef, mutableContext.contextSubjectRef);
+  });
+
   it('2. imutabilidade profunda: mutação posterior no draft, parts ou sourceEventIdentity não altera o InputRecord nem o store', async () => {
     const inputStore = new InMemoryInputRecordStore();
     const contentStore = new InMemoryIngressContentStore();
@@ -395,7 +425,8 @@ describe('0.86B-3 · InputRecordService (Multimodal Envelopes & Authority · B3-
       (err: any) => {
         assert.ok(err instanceof InputRecordAuthorizationError);
         assert.equal(err.operation, 'read');
-        assert.equal(err.inputId, lucasRecord.inputId);
+        assert.equal(err.inputId, undefined);
+        assert.equal(err.message.includes(lucasRecord.inputId), false);
         return true;
       }
     );
