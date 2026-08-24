@@ -134,7 +134,7 @@ test.describe('NEX+ Multiusuário · E2E Authentication Flow (0.8A Isolated Harn
     await expect(page).toHaveURL(/\/login/);
   });
 
-  test('E12-MultiSession. Multi-session: Logout no Dispositivo A encerra apenas a sessão A e preserva a sessão B', async ({ browser }) => {
+  test('E12-MultiSession. Multi-session: Logout no Dispositivo A encerra apenas a sessão A, preserva a sessão B e invalida cookie antigo de A no servidor', async ({ browser }) => {
     // 1. Criar dois contextos de navegador totalmente isolados (simulando 2 dispositivos: Dispositivo A e Dispositivo B)
     const contextA = await browser.newContext();
     const contextB = await browser.newContext();
@@ -150,7 +150,12 @@ test.describe('NEX+ Multiusuário · E2E Authentication Flow (0.8A Isolated Harn
     await expect(pageA).toHaveURL(/\/home/);
     await expect(pageA.locator(`text=${testDisplayName}`)).toBeVisible();
 
-    // 3. Logar no Dispositivo B com a mesma conta
+    // 3. Capturar em memória o cookie de sessão de A antes do logout (sem logar seu valor)
+    const cookiesA = await contextA.cookies();
+    const oldAuthCookieA = cookiesA.find((c) => c.name === 'payload-token');
+    expect(oldAuthCookieA).toBeDefined();
+
+    // 4. Logar no Dispositivo B com a mesma conta
     await pageB.goto('/login');
     await pageB.fill('input#email', testEmail);
     await pageB.fill('input#password', testPassword);
@@ -158,7 +163,7 @@ test.describe('NEX+ Multiusuário · E2E Authentication Flow (0.8A Isolated Harn
     await expect(pageB).toHaveURL(/\/home/);
     await expect(pageB.locator(`text=${testDisplayName}`)).toBeVisible();
 
-    // 4. Executar logout exclusivamente no Dispositivo A
+    // 5. Executar logout exclusivamente no Dispositivo A
     const userCardA = pageA.locator(`button[title*="${testDisplayName}"]`);
     await userCardA.click();
     const logoutBtnA = pageA.locator('button:has-text("Sair")');
@@ -166,14 +171,25 @@ test.describe('NEX+ Multiusuário · E2E Authentication Flow (0.8A Isolated Harn
     await logoutBtnA.click();
     await expect(pageA).toHaveURL(/\/login/);
 
-    // 5. Verificar que Dispositivo A está desconectado
+    // 6. Verificar que Dispositivo A está desconectado
     await pageA.goto('/home');
     await expect(pageA).toHaveURL(/\/login/);
 
-    // 6. Provar que o Dispositivo B CONTINUA AUTENTICADO e acessa /home normalmente
+    // 7. Provar que o Dispositivo B CONTINUA AUTENTICADO e acessa /home normalmente
     await pageB.reload();
     await expect(pageB).toHaveURL(/\/home/);
     await expect(pageB.locator(`text=${testDisplayName}`)).toBeVisible();
+
+    // 8. Prova de revogação server-side da Sessão A:
+    // Criar um terceiro contexto limpo (Context C), injetar o cookie antigo capturado de A e tentar acessar /home
+    if (oldAuthCookieA) {
+      const contextC = await browser.newContext();
+      const pageC = await contextC.newPage();
+      await contextC.addCookies([oldAuthCookieA]);
+      await pageC.goto('/home');
+      await expect(pageC).toHaveURL(/\/login/);
+      await contextC.close();
+    }
 
     await contextA.close();
     await contextB.close();

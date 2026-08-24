@@ -3,6 +3,11 @@ import { defineConfig, devices } from '@playwright/test';
 const port = process.env.PORT || '3108';
 const baseURL = `http://127.0.0.1:${port}`;
 
+// Trava de segurança: Playwright NUNCA pode executar em cima de .next de produção
+if (process.env.NEXT_DIST_DIR === '.next') {
+  throw new Error('[SECURITY_GUARD] Playwright recusou execução: distDir não pode ser .next de produção.');
+}
+
 export default defineConfig({
   testDir: './tests/e2e',
   timeout: 30000,
@@ -28,7 +33,7 @@ export default defineConfig({
     reuseExistingServer: false,
     timeout: 30000,
     env: {
-      NEXT_DIST_DIR: process.env.NEXT_DIST_DIR || '.next-e2e-auth',
+      NEX_BUILD_MODE: 'e2e',
       DATABASE_URL: process.env.DATABASE_URL || '',
       PAYLOAD_SECRET: process.env.PAYLOAD_SECRET || '',
       NODE_ENV: 'production',

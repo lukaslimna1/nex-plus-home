@@ -18,6 +18,50 @@ if (-not (Test-Path $envFilePath)) {
     exit 1
 }
 
+# 0. Aquisição de Lock Exclusivo Atômico (Fail-Closed)
+$e2eLockFile = Join-Path $RepoRoot ".next-e2e-auth.lock"
+$lockStream = $null
+try {
+    $lockStream = [System.IO.File]::Open($e2eLockFile, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    $lockInfo = @{
+        pid = $PID
+        timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        type = "e2e:auth:isolated"
+    } | ConvertTo-Json
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($lockInfo)
+    $lockStream.Write($bytes, 0, $bytes.Length)
+    $lockStream.Flush()
+} catch [System.IO.IOException] {
+    $isStale = $false
+    if (Test-Path $e2eLockFile) {
+        try {
+            $existingLock = Get-Content -Raw $e2eLockFile | ConvertFrom-Json
+            if ($existingLock.pid) {
+                $proc = Get-Process -Id $existingLock.pid -ErrorAction SilentlyContinue
+                if (-not $proc) {
+                    $isStale = $true
+                }
+            }
+        } catch {}
+    }
+    if ($isStale) {
+        Write-Host "[harness] Lockfile órfão detectado em .next-e2e-auth.lock. Limpando lock stale..." -ForegroundColor Yellow
+        Remove-Item -Path $e2eLockFile -Force -ErrorAction SilentlyContinue
+        $lockStream = [System.IO.File]::Open($e2eLockFile, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        $lockInfo = @{
+            pid = $PID
+            timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+            type = "e2e:auth:isolated"
+        } | ConvertTo-Json
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($lockInfo)
+        $lockStream.Write($bytes, 0, $bytes.Length)
+        $lockStream.Flush()
+    } else {
+        Write-Host "[SECURITY_FAIL] ERRO DE CONCORRÊNCIA: Outra instância de teste E2E isolado já está em execução (lock ativo em $e2eLockFile). Abortando." -ForegroundColor Red
+        exit 1
+    }
+}
+
 # 1. Preflight PostgreSQL CLI Tools
 $pgPaths = @("C:\Program Files\PostgreSQL\18\bin", "C:\Program Files\PostgreSQL\17\bin", "C:\Program Files\PostgreSQL\16\bin")
 foreach ($p in $pgPaths) {
@@ -110,7 +154,8 @@ try {
     $env:PORT = "3108"
     $env:PAYLOAD_PUBLIC_SERVER_URL = ""
     $env:PAYLOAD_TRUSTED_ORIGINS = ""
-    $env:NEXT_DIST_DIR = ".next-e2e-auth"
+    $env:NEX_BUILD_MODE = "e2e"
+    Remove-Item env:NEXT_DIST_DIR -ErrorAction SilentlyContinue
 
     # 5. Executar Migrations UP no banco descartável
     Write-Host "`n[2/7] Executando migrations (UP) no banco descartável..." -ForegroundColor Yellow
@@ -157,8 +202,7 @@ try {
     Write-Host "Schema reconvergido com sucesso após rollback e re-UP." -ForegroundColor Green
 
     # 8. Build da Aplicação Next.js com distDir isolado (.next-e2e-auth)
-    $initialTsconfigContent = Get-Content -Raw (Join-Path $RepoRoot "tsconfig.json")
-    Write-Host "`n[5/7] Executando build de produção Next.js isolado em .next-e2e-auth..." -ForegroundColor Yellow
+    Write-Host "`n[5/7] Executando build de produção Next.js isolado em .next-e2e-auth (NEX_BUILD_MODE=e2e)..." -ForegroundColor Yellow
     & npx next build
     if ($LASTEXITCODE -ne 0) { throw "Falha no build de produção isolado do Next.js" }
 
@@ -191,9 +235,18 @@ finally {
         Write-Host "Diretório de build isolado '$e2eDistPath' removido com sucesso." -ForegroundColor Green
     }
 
-    # Restaurar tsconfig.json original caso Next.js tenha adicionado includes efêmeros
-    if ($initialTsconfigContent) {
-        Set-Content -Path (Join-Path $RepoRoot "tsconfig.json") -Value $initialTsconfigContent -NoNewline
+    # 11. Liberação do Lock Exclusivo
+    if ($lockStream) {
+        $lockStream.Close()
+        $lockStream.Dispose()
+    }
+    if (Test-Path $e2eLockFile) {
+        try {
+            $existingLock = Get-Content -Raw $e2eLockFile -ErrorAction SilentlyContinue | ConvertFrom-Json
+            if ($existingLock.pid -eq $PID) {
+                Remove-Item -Path $e2eLockFile -Force -ErrorAction SilentlyContinue
+            }
+        } catch {}
     }
 
     # Restauração das variáveis de ambiente de borda
@@ -208,6 +261,7 @@ finally {
         Remove-Item env:\PAYLOAD_TRUSTED_ORIGINS -ErrorAction SilentlyContinue
     }
     Remove-Item env:NEXT_DIST_DIR -ErrorAction SilentlyContinue
+    Remove-Item env:NEX_BUILD_MODE -ErrorAction SilentlyContinue
 }
 
 exit $exitCode

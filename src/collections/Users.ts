@@ -5,6 +5,11 @@ import {
 } from '../email/templates/reset-password-email';
 
 const isAdmin: Access = ({ req: { user } }) => Boolean(user?.collection === 'admins');
+const isSelfOrAdmin: Access = ({ req: { user }, id }) => {
+  if (!user) return true;
+  if (user.collection === 'admins') return true;
+  return user.id === id;
+};
 const edgeConfig = getEdgeServerConfig();
 
 export const Users: CollectionConfig = {
@@ -12,8 +17,8 @@ export const Users: CollectionConfig = {
   access: {
     admin: ({ req: { user } }) => Boolean(user?.collection === 'admins'),
     create: isAdmin,
-    read: isAdmin,
-    update: isAdmin,
+    read: isSelfOrAdmin,
+    update: isSelfOrAdmin,
     delete: isAdmin,
     unlock: isAdmin,
   },
@@ -52,6 +57,33 @@ export const Users: CollectionConfig = {
       name: 'displayName',
       type: 'text',
       required: true,
+    },
+    {
+      name: 'sessions',
+      type: 'array',
+      access: {
+        read: () => true,
+        update: () => true,
+      },
+      admin: {
+        disabled: true,
+      },
+      fields: [
+        {
+          name: 'id',
+          type: 'text',
+          required: true,
+        },
+        {
+          name: 'createdAt',
+          type: 'date',
+        },
+        {
+          name: 'expiresAt',
+          type: 'date',
+          required: true,
+        },
+      ],
     },
   ],
 };
