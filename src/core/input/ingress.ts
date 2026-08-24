@@ -1,13 +1,14 @@
 /**
  * NEX+ · Ingress Content Service & Trust Boundary
- * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3)
+ * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3 · Rodada B3-R1)
  *
  * Responsabilidades:
  * 1. Materialização física de blobs com hashing em streaming e staging seguro.
- * 2. Inspeção server-side obrigatória via IngressContentInspector (fail-closed sem inspector válido).
- * 3. Autorização obrigatória via IngressAccessAuthorizer (fail-closed, sem permissão implícita por contentId).
- * 4. Registro append-only de metadados em IngressContentStore.
- * 5. Leitura e streaming autorizados com verificação ativa de integridade e expiração.
+ * 2. Inspeção server-side obrigatória via IngressContentInspector com leitura de amostra limitada em RAM.
+ * 3. Falha fechada (fail-closed) caso o inspetor ou a amostra não possam ser obtidos.
+ * 4. Autorização obrigatória via IngressAccessAuthorizer (fail-closed, sem permissão implícita por contentId).
+ * 5. Registro append-only de metadados em IngressContentStore.
+ * 6. Leitura e streaming autorizados com verificação ativa de integridade e expiração.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -35,12 +36,53 @@ import {
 } from './errors';
 import type { IngressContentStore } from './persistence/contracts';
 
+const DEFAULT_SAMPLE_LIMIT_BYTES = 64 * 1024; // 64 KiB
+
+/**
+ * Helper interno para ler de forma segura e limitada em RAM
+ * uma amostra inicial de bytes a partir de um ReadableStream.
+ */
+async function readStreamSample(
+  stream: NodeJS.ReadableStream,
+  maxSampleBytes: number = DEFAULT_SAMPLE_LIMIT_BYTES
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+
+  try {
+    for await (const chunk of stream) {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (totalBytes + buf.length >= maxSampleBytes) {
+        const needed = maxSampleBytes - totalBytes;
+        if (needed > 0) {
+          chunks.push(buf.subarray(0, needed));
+          totalBytes += needed;
+        }
+        if (typeof (stream as any).destroy === 'function') {
+          (stream as any).destroy();
+        }
+        break;
+      }
+      chunks.push(buf);
+      totalBytes += buf.length;
+    }
+  } catch (err) {
+    if (typeof (stream as any).destroy === 'function') {
+      (stream as any).destroy();
+    }
+    throw err;
+  }
+
+  return Buffer.concat(chunks);
+}
+
 export interface IngressContentServiceOptions {
   readonly blobStore: BlobStore;
   readonly contentStore: IngressContentStore;
   readonly authorizer: IngressAccessAuthorizer;
   readonly inspector: IngressContentInspector;
   readonly storageBackend?: string; // Padrão: 'local_fs'
+  readonly maxSampleBytes?: number; // Padrão: 64 KiB
   readonly nowProvider?: () => string;
 }
 
@@ -50,6 +92,7 @@ export class IngressContentService {
   private readonly authorizer: IngressAccessAuthorizer;
   private readonly inspector: IngressContentInspector;
   private readonly storageBackend: string;
+  private readonly maxSampleBytes: number;
   private readonly nowProvider: () => string;
 
   constructor(options: IngressContentServiceOptions) {
@@ -71,6 +114,7 @@ export class IngressContentService {
     this.authorizer = options.authorizer;
     this.inspector = options.inspector;
     this.storageBackend = options.storageBackend ?? 'local_fs';
+    this.maxSampleBytes = options.maxSampleBytes ?? DEFAULT_SAMPLE_LIMIT_BYTES;
     this.nowProvider = options.nowProvider ?? (() => new Date().toISOString());
   }
 
@@ -79,9 +123,10 @@ export class IngressContentService {
    * 1. Valida OperationalContext confiável.
    * 2. Autoriza operação 'create'.
    * 3. Grava no BlobStore (staging, streaming hash SHA-256).
-   * 4. Executa inspeção server-side (determina verifiedMimeType ou rejeita).
-   * 5. Se rejeitado, interrompe sem criar registro canônico.
-   * 6. Se aceito, persiste IngressContentRecord append-only.
+   * 4. Obtém amostra limitada em RAM via streaming (fail-closed se indisponível).
+   * 5. Executa inspeção server-side (determina verifiedMimeType ou rejeita).
+   * 6. Se rejeitado, interrompe sem criar registro canônico.
+   * 7. Se aceito, persiste IngressContentRecord append-only.
    */
   async ingestContent(
     params: IngestContentParams,
@@ -106,15 +151,19 @@ export class IngressContentService {
       maxBytes: params.maxBytes,
     });
 
-    // 2. Inspecionar conteúdo server-side
-    // Tenta ler uma amostra inicial do buffer para o inspector se aplicável
-    let sampleBuffer: Buffer | undefined;
+    // 2. Obter amostra limitada em RAM a partir de stream (FAIL CLOSED se falhar)
+    let sampleBuffer: Buffer;
     try {
-      sampleBuffer = await this.blobStore.getBlob(putResult.storageKey, putResult.sha256);
-    } catch {
-      // Se getBlob falhar, a inspeção prosseguirá com metadata
+      const stream = await this.blobStore.getBlobStream(putResult.storageKey, putResult.sha256);
+      sampleBuffer = await readStreamSample(stream, this.maxSampleBytes);
+    } catch (err: any) {
+      throw new IngressContentInspectionError(
+        `Failed to obtain verified content sample for inspection: ${err.message}`,
+        params.declaredMimeType
+      );
     }
 
+    // 3. Inspecionar conteúdo server-side com sampleBuffer limitado
     const inspection = await this.inspector.inspect({
       declaredMimeType: params.declaredMimeType,
       byteSize: putResult.byteSize,
@@ -131,7 +180,7 @@ export class IngressContentService {
 
     const receivedAt = this.nowProvider();
 
-    // 3. Montar IngressContentRecord derivando autoridade estritamente do OperationalContext
+    // 4. Montar IngressContentRecord derivando autoridade estritamente do OperationalContext
     const record: IngressContentRecord = Object.freeze({
       contentId,
       actor: Object.freeze({ ...context.actor }),

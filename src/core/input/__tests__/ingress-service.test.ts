@@ -1,6 +1,6 @@
 /**
  * NEX+ · Testes Unitários e Adversariais do IngressContentService
- * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3)
+ * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3 · Rodada B3-R1)
  *
  * Provas:
  * 1. Autorização obrigatória no 'create' e 'read' (fail-closed sem authorizer).
@@ -11,6 +11,7 @@
  * 6. Mesmo conteúdo físico (mesmo SHA) gera contentIds lógicos distintos sem colapso.
  * 7. IngressContentRef público contém apenas contentId (sem storageKey/sha256).
  * 8. Verificação criptográfica ativa detecta corrupção e lança IngressIntegrityError.
+ * 9. Inspeção streaming limita amostra em RAM sem materializar o blob inteiro.
  */
 
 import { describe, it } from 'node:test';
@@ -31,7 +32,6 @@ import {
   IngressAuthorizationError,
   IngressContentInspectionError,
   IngressContentExpiredError,
-  IngressContentNotFoundError,
   IngressIntegrityError,
 } from '../errors';
 import type { IngressContentStore } from '../persistence/contracts';
@@ -130,7 +130,7 @@ class InMemoryIngressContentStore implements IngressContentStore {
   }
 }
 
-describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle)', () => {
+describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle · B3-R1)', () => {
   const sessionRefLucas = '1111111111111111111111111111111111111111111111111111111111111111' as SessionRef;
   const sessionRefJoao = '2222222222222222222222222222222222222222222222222222222222222222' as SessionRef;
 
@@ -273,7 +273,6 @@ describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle)', () => 
     const blobStore = new InMemoryBlobStore();
     const contentStore = new InMemoryIngressContentStore();
 
-    // Authorizer estrito: somente o próprio usuário criador pode ler seu conteúdo
     const userScopedAuthorizer: IngressAccessAuthorizer = {
       async authorize({ operation, context, content }) {
         if (operation === 'create') return true;
@@ -348,7 +347,7 @@ describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle)', () => 
     const { ref } = await service.ingestContent(
       {
         data: Buffer.from('documento temporário'),
-        expiresAt: '2026-08-24T22:00:00.000Z', // Expira em 1h
+        expiresAt: '2026-08-24T22:00:00.000Z',
       },
       lucasContext
     );
@@ -398,12 +397,10 @@ describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle)', () => 
     const res1 = await service.ingestContent({ data: identicalBytes }, lucasContext);
     const res2 = await service.ingestContent({ data: identicalBytes }, joaoContext);
 
-    // Identidades lógicas distintas
     assert.notEqual(res1.ref.contentId, res2.ref.contentId);
     assert.equal(res1.record.userId, 'usr_lucas');
     assert.equal(res2.record.userId, 'usr_joao');
 
-    // Mesmo SHA-256 e mesma chave de storage físico subjacente
     assert.equal(res1.record.sha256, res2.record.sha256);
     assert.equal(res1.record.storageKey, res2.record.storageKey);
   });
@@ -436,7 +433,6 @@ describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle)', () => 
       lucasContext
     );
 
-    // Simula corrupção de disco no storage key físico
     blobStore.blobs.set(record.storageKey, Buffer.from('conteúdo corrompido'));
 
     await assert.rejects(
@@ -447,5 +443,55 @@ describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle)', () => 
         return true;
       }
     );
+  });
+
+  it('8. inspeção com stream lê apenas amostra limitada em RAM sem carregar blob inteiro', async () => {
+    const blobStore = new InMemoryBlobStore();
+    const contentStore = new InMemoryIngressContentStore();
+
+    let capturedSampleLength = 0;
+    let capturedByteSize = 0;
+    let capturedSha256 = '';
+
+    const authorizer: IngressAccessAuthorizer = {
+      async authorize() {
+        return true;
+      },
+    };
+
+    const inspector: IngressContentInspector = {
+      async inspect({ byteSize, sha256, sampleBuffer }) {
+        capturedSampleLength = sampleBuffer ? sampleBuffer.length : 0;
+        capturedByteSize = byteSize;
+        capturedSha256 = sha256;
+        return {
+          accepted: true,
+          verifiedMimeType: 'application/octet-stream',
+        };
+      },
+    };
+
+    // Configura limite de amostra de 1024 bytes (1 KiB)
+    const service = new IngressContentService({
+      blobStore,
+      contentStore,
+      authorizer,
+      inspector,
+      maxSampleBytes: 1024,
+    });
+
+    // Cria blob de 100 KiB
+    const largeBlob = Buffer.alloc(100 * 1024, 'X');
+    const expectedSha256 = createHash('sha256').update(largeBlob).digest('hex');
+
+    const result = await service.ingestContent({ data: largeBlob }, lucasContext);
+
+    // Amostra capturada deve ser limitada a 1024 bytes
+    assert.equal(capturedSampleLength, 1024);
+    // Metadados representam o arquivo completo
+    assert.equal(capturedByteSize, 100 * 1024);
+    assert.equal(capturedSha256, expectedSha256);
+    assert.equal(result.record.byteSize, 100 * 1024);
+    assert.equal(result.record.sha256, expectedSha256);
   });
 });

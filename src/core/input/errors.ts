@@ -30,6 +30,22 @@ export class IngressAuthorizationError extends Error {
   }
 }
 
+export class InputRecordAuthorizationError extends Error {
+  readonly operation: string;
+  readonly inputId?: string;
+
+  constructor(operation: string, inputId?: string, message?: string) {
+    super(
+      message ??
+        `Unauthorized input record operation '${operation}'${inputId ? ` for input '${inputId}'` : ''}.`
+    );
+    this.name = 'InputRecordAuthorizationError';
+    this.operation = operation;
+    this.inputId = inputId;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 export class IngressContentInspectionError extends Error {
   readonly declaredMimeType?: string;
   readonly reason: string;

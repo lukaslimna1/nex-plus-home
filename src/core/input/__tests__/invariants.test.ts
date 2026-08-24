@@ -1,6 +1,6 @@
 /**
  * NEX+ · Testes Unitários e Adversariais de Invariantes de Input & Ingress Content
- * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3)
+ * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3 · Rodada B3-R1)
  *
  * Cobertura de Invariantes:
  * A. Multipart ordenado com todas as variantes canônicas.
@@ -10,16 +10,19 @@
  * E. source_ref como InputPart rejeitado.
  * F. Allowlist estrita de Actor e validação de SessionRef/userId.
  * G. Rejeição de contextSubjectRef: null (deve ser ausente/undefined para pessoal).
- * H. Validação de formato (SHA-256 64 hex, timestamps UTC ISO 8601 com 'Z').
+ * H. Validação de formato e temporalidade canônica compartilhada (UTC ISO 8601 com 'Z').
+ * I. Rejeição de whitespace externo em SourceEventIdentity (" source", "source ", " id", "id ").
+ * J. Imutabilidade profunda com cópia defensiva estruturada por variante.
  */
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import type { HumanActor, MaxActor, SystemActor } from '../../observations/contracts';
+import type { HumanActor } from '../../observations/contracts';
 import type { SessionRef } from '../../../auth/session-ref.types';
 import type { ContextSubjectRef, ContextSubjectType, ContextSubjectId } from '../../context/contracts';
 import type { ModuleKey, ResourceType, ResourceId, EventId } from '../../modules/contracts';
+import { isCanonicalUtcInstant } from '../../context/invariants';
 import type {
   InputRecordId,
   IngressContentId,
@@ -32,16 +35,17 @@ import {
   validateInputRecordId,
   validateIngressContentId,
   validateSourceEventIdentity,
+  sanitizeSourceEventIdentity,
   validateIngressContentRef,
   validateResourceRef,
   validateInputPart,
+  sanitizeInputPart,
   validateActor,
   validateInputRecord,
   validateIngressContentRecord,
-  validateRecordInputDraft,
 } from '../invariants';
 
-describe('0.86B-3 · Invariantes de Input & Ingress Content (Runtime Strictness)', () => {
+describe('0.86B-3 · Invariantes de Input & Ingress Content (Runtime Strictness · B3-R1)', () => {
   const VALID_SESSION_REF = '1111111111111111111111111111111111111111111111111111111111111111' as SessionRef;
   const VALID_SHA256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
 
@@ -70,7 +74,7 @@ describe('0.86B-3 · Invariantes de Input & Ingress Content (Runtime Strictness)
   });
 
   // ==========================================================================
-  // 2. SOURCE EVENT IDENTITY
+  // 2. SOURCE EVENT IDENTITY & CANONICALIDADE ESTRITA
   // ==========================================================================
 
   it('valida SourceEventIdentity com source e id sem chaves extras', () => {
@@ -86,9 +90,37 @@ describe('0.86B-3 · Invariantes de Input & Ingress Content (Runtime Strictness)
       (err: any) => err.violationType === 'INVALID_SOURCE_EVENT_IDENTITY'
     );
     assert.throws(
-      () => validateSourceEventIdentity({ source: 'stripe', id: '   ' }),
+      () => validateSourceEventIdentity({ source: 'stripe', id: '' }),
       (err: any) => err.violationType === 'INVALID_SOURCE_EVENT_IDENTITY'
     );
+  });
+
+  it('rejeita deterministamente SourceEventIdentity com whitespace externo (" source", "source ", " id", "id ")', () => {
+    assert.throws(
+      () => validateSourceEventIdentity({ source: ' stripe', id: 'evt_1' }),
+      (err: any) => err.violationType === 'INVALID_SOURCE_EVENT_IDENTITY'
+    );
+    assert.throws(
+      () => validateSourceEventIdentity({ source: 'stripe ', id: 'evt_1' }),
+      (err: any) => err.violationType === 'INVALID_SOURCE_EVENT_IDENTITY'
+    );
+    assert.throws(
+      () => validateSourceEventIdentity({ source: 'stripe', id: ' evt_1' }),
+      (err: any) => err.violationType === 'INVALID_SOURCE_EVENT_IDENTITY'
+    );
+    assert.throws(
+      () => validateSourceEventIdentity({ source: 'stripe', id: 'evt_1 ' }),
+      (err: any) => err.violationType === 'INVALID_SOURCE_EVENT_IDENTITY'
+    );
+  });
+
+  it('sanitizeSourceEventIdentity reconstrói e congela profundamente o objeto', () => {
+    const original = { source: 'slack', id: 'msg_100' };
+    const sanitized = sanitizeSourceEventIdentity(original);
+
+    assert.deepEqual(sanitized, { source: 'slack', id: 'msg_100' });
+    assert.ok(Object.isFrozen(sanitized));
+    assert.notEqual(sanitized, original);
   });
 
   // ==========================================================================
@@ -99,7 +131,6 @@ describe('0.86B-3 · Invariantes de Input & Ingress Content (Runtime Strictness)
     const valid = { contentId: 'ing_123' as IngressContentId };
     assert.doesNotThrow(() => validateIngressContentRef(valid));
 
-    // Rejeita storageKey ou sha256 vazados no ref público
     assert.throws(
       () => validateIngressContentRef({ contentId: 'ing_123', storageKey: 'secret/path' }),
       (err: any) => err.violationType === 'UNEXPECTED_PROPERTY'
@@ -134,7 +165,7 @@ describe('0.86B-3 · Invariantes de Input & Ingress Content (Runtime Strictness)
   });
 
   // ==========================================================================
-  // 5. INPUT PART (DISCRIMINATED UNION ESTRITA)
+  // 5. INPUT PART (DISCRIMINATED UNION & DEEP SANITIZE)
   // ==========================================================================
 
   it('A. aceita todas as 5 variantes canônicas de InputPart com shape estrito', () => {
@@ -158,6 +189,28 @@ describe('0.86B-3 · Invariantes de Input & Ingress Content (Runtime Strictness)
     assert.doesNotThrow(() => validateInputPart(evidencePart));
   });
 
+  it('sanitizeInputPart reconstrói e congela profundamente cada variante preservando texto original', () => {
+    const rawText: InputPart = { kind: 'text', text: '  Texto com espaços preservados  ' };
+    const sanitizedText = sanitizeInputPart(rawText);
+    assert.equal(sanitizedText.kind, 'text');
+    assert.equal((sanitizedText as any).text, '  Texto com espaços preservados  '); // Não trimado
+    assert.ok(Object.isFrozen(sanitizedText));
+
+    const rawResource: InputPart = {
+      kind: 'resource_ref',
+      resource: {
+        ownerModule: { moduleKey: 'radar' as ModuleKey },
+        resourceType: 'item' as ResourceType,
+        resourceId: '123' as ResourceId,
+      },
+    };
+    const sanitizedResource = sanitizeInputPart(rawResource);
+    assert.ok(Object.isFrozen(sanitizedResource));
+    assert.ok(Object.isFrozen((sanitizedResource as any).resource));
+    assert.ok(Object.isFrozen((sanitizedResource as any).resource.ownerModule));
+    assert.notEqual(sanitizedResource, rawResource);
+  });
+
   it('B. rejeita texto vazio ou whitespace na variante text', () => {
     assert.throws(
       () => validateInputPart({ kind: 'text', text: '' }),
@@ -170,13 +223,11 @@ describe('0.86B-3 · Invariantes de Input & Ingress Content (Runtime Strictness)
   });
 
   it('C. rejeita variantes híbridas de InputPart', () => {
-    // text + eventId
     assert.throws(
       () => validateInputPart({ kind: 'text', text: 'Olá', eventId: 'evt_1' }),
       (err: any) => err.violationType === 'UNEXPECTED_PROPERTY'
     );
 
-    // content_ref + storageKey
     assert.throws(
       () =>
         validateInputPart({
@@ -187,7 +238,6 @@ describe('0.86B-3 · Invariantes de Input & Ingress Content (Runtime Strictness)
       (err: any) => err.violationType === 'UNEXPECTED_PROPERTY'
     );
 
-    // resource_ref + evidenceArtifactId
     assert.throws(
       () =>
         validateInputPart({
@@ -234,8 +284,21 @@ describe('0.86B-3 · Invariantes de Input & Ingress Content (Runtime Strictness)
   });
 
   // ==========================================================================
-  // 7. INPUT RECORD (ENVELOPE CANÔNICO)
+  // 7. INPUT RECORD (ENVELOPE CANÔNICO & TEMPORALIDADE COMPARTILHADA)
   // ==========================================================================
+
+  it('valida temporalidade canônica compartilhada (ISO 8601 UTC com Z)', () => {
+    // Aceita formatos canônicos válidos no Core
+    assert.equal(isCanonicalUtcInstant('2026-08-24T21:00:00Z'), true);
+    assert.equal(isCanonicalUtcInstant('2026-08-24T21:00:00.1Z'), true);
+    assert.equal(isCanonicalUtcInstant('2026-08-24T21:00:00.12Z'), true);
+    assert.equal(isCanonicalUtcInstant('2026-08-24T21:00:00.123Z'), true);
+
+    // Rejeita offsets, sem Z ou datas inválidas
+    assert.equal(isCanonicalUtcInstant('2026-08-24T21:00:00-03:00'), false);
+    assert.equal(isCanonicalUtcInstant('2026-08-24T21:00:00'), false);
+    assert.equal(isCanonicalUtcInstant('data_invalida'), false);
+  });
 
   it('valida InputRecord completo e multipart', () => {
     const record: InputRecord = {
@@ -358,7 +421,7 @@ describe('0.86B-3 · Invariantes de Input & Ingress Content (Runtime Strictness)
       storageBackend: 'local_fs',
       storageKey: `sha256/e3/b0/${VALID_SHA256}`,
       receivedAt: '2026-08-24T21:00:00.000Z',
-      expiresAt: '2026-08-24T20:00:00.000Z', // 1 hora ANTES de receivedAt
+      expiresAt: '2026-08-24T20:00:00.000Z',
     };
 
     assert.throws(

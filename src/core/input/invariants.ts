@@ -5,13 +5,18 @@
  * Princípios:
  * 1. Allowlist runtime fechada em todas as variantes e objetos canônicos.
  * 2. Rejeição imediata de chaves extras, híbridos, vazios e base64.
- * 3. Validação estrita de formato (SHA-256 64 hex, timestamps UTC ISO 8601 com 'Z').
+ * 3. Validação estrita de formato (SHA-256 64 hex, timestamps UTC ISO 8601 com 'Z' compartilhados com o Core).
  * 4. Validação de coerência de autoridade (SessionRef -> userId, HumanActor.humanId === userId).
+ * 5. Imutabilidade profunda com cópia defensiva estruturada por variante.
  */
 
 import type { Actor, HumanActor, MaxActor, SystemActor, IntegrationActor } from '../observations/contracts';
 import { isValidSessionRef } from '../../auth/session-ref.types';
-import { validateContextSubjectRef } from '../context/invariants';
+import {
+  isCanonicalUtcInstant,
+  isNonEmptyString,
+  validateContextSubjectRef,
+} from '../context/invariants';
 import type {
   InputRecordId,
   IngressContentId,
@@ -28,23 +33,8 @@ import { InputInvariantViolationError } from './errors';
 // 1. UTILITÁRIOS INTERNOS DE VALIDAÇÃO
 // ============================================================================
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === 'string' && value.trim().length > 0;
-}
-
 function isValidSha256(value: unknown): value is string {
   return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
-}
-
-function isCanonicalUtcInstant(value: unknown): value is string {
-  if (typeof value !== 'string' || !value.endsWith('Z')) {
-    return false;
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return false;
-  }
-  return date.toISOString() === value;
 }
 
 function assertExactKeys(
@@ -88,7 +78,7 @@ export function validateIngressContentId(id: unknown): asserts id is IngressCont
 }
 
 // ============================================================================
-// 3. VALIDAÇÃO DE SOURCE EVENT IDENTITY
+// 3. VALIDAÇÃO E SANITIZAÇÃO DE SOURCE EVENT IDENTITY
 // ============================================================================
 
 export function validateSourceEventIdentity(identity: unknown): asserts identity is SourceEventIdentity {
@@ -101,19 +91,41 @@ export function validateSourceEventIdentity(identity: unknown): asserts identity
   const candidate = identity as Record<string, unknown>;
   assertExactKeys(candidate, ['source', 'id'], 'SourceEventIdentity');
 
-  if (!isNonEmptyString(candidate.source)) {
+  if (typeof candidate.source !== 'string' || candidate.source.length === 0) {
     throw new InputInvariantViolationError(
       'INVALID_SOURCE_EVENT_IDENTITY',
       'SourceEventIdentity.source must be a non-empty string.'
     );
   }
 
-  if (!isNonEmptyString(candidate.id)) {
+  if (candidate.source.trim() !== candidate.source) {
+    throw new InputInvariantViolationError(
+      'INVALID_SOURCE_EVENT_IDENTITY',
+      'SourceEventIdentity.source must not contain leading or trailing whitespace.'
+    );
+  }
+
+  if (typeof candidate.id !== 'string' || candidate.id.length === 0) {
     throw new InputInvariantViolationError(
       'INVALID_SOURCE_EVENT_IDENTITY',
       'SourceEventIdentity.id must be a non-empty string.'
     );
   }
+
+  if (candidate.id.trim() !== candidate.id) {
+    throw new InputInvariantViolationError(
+      'INVALID_SOURCE_EVENT_IDENTITY',
+      'SourceEventIdentity.id must not contain leading or trailing whitespace.'
+    );
+  }
+}
+
+export function sanitizeSourceEventIdentity(identity: SourceEventIdentity): SourceEventIdentity {
+  validateSourceEventIdentity(identity);
+  return Object.freeze({
+    source: identity.source,
+    id: identity.id,
+  });
 }
 
 // ============================================================================
@@ -177,7 +189,7 @@ export function validateResourceRef(resource: unknown): void {
 }
 
 // ============================================================================
-// 6. VALIDAÇÃO DE INPUT PART (DISCRIMINATED UNION ESTRITA)
+// 6. VALIDAÇÃO E SANITIZAÇÃO DE INPUT PART (DISCRIMINATED UNION ESTRITA)
 // ============================================================================
 
 export function validateInputPart(part: unknown): asserts part is InputPart {
@@ -255,6 +267,54 @@ export function validateInputPart(part: unknown): asserts part is InputPart {
         `Unknown InputPart kind '${String(candidate.kind)}'. Allowed kinds: 'text', 'content_ref', 'event_ref', 'resource_ref', 'evidence_ref'.`
       );
     }
+  }
+}
+
+/**
+ * Reconstrói e congela profundamente cada InputPart por variante.
+ * Preserva o texto original sem trimar conteúdo textual do usuário.
+ */
+export function sanitizeInputPart(part: InputPart): InputPart {
+  validateInputPart(part);
+
+  switch (part.kind) {
+    case 'text':
+      return Object.freeze({
+        kind: 'text',
+        text: part.text, // Preservar o texto original sem trim
+      });
+
+    case 'content_ref':
+      return Object.freeze({
+        kind: 'content_ref',
+        content: Object.freeze({
+          contentId: part.content.contentId,
+        }),
+      });
+
+    case 'event_ref':
+      return Object.freeze({
+        kind: 'event_ref',
+        eventId: part.eventId,
+      });
+
+    case 'resource_ref':
+      return Object.freeze({
+        kind: 'resource_ref',
+        resource: Object.freeze({
+          ownerModule: Object.freeze({
+            moduleKey: part.resource.ownerModule.moduleKey,
+          }),
+          resourceType: part.resource.resourceType,
+          resourceId: part.resource.resourceId,
+        }),
+      });
+
+    case 'evidence_ref':
+      return Object.freeze({
+        kind: 'evidence_ref',
+        evidenceArtifactId: part.evidenceArtifactId,
+      });
   }
 }
 

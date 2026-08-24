@@ -1,16 +1,17 @@
 /**
  * NEX+ · Testes Unitários e Adversariais do InputRecordService
- * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3)
+ * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3 · Rodada B3-R1)
  *
  * Provas:
- * 1. Derivação de autoridade estritamente a partir do OperationalContext do B2.
- * 2. InputRecord NÃO copia location, focus ou observedInteraction do OperationalContext.
- * 3. Preservação rigorosa da ordem e tipos de partes no multipart.
- * 4. content_ref exige conteúdo existente, não expirado e autorização attach_to_input.
- * 5. Reentrega com mesma SourceEventIdentity converge para o registro existente (deduplicated: true).
- * 6. Entradas idênticas sem SourceEventIdentity geram dois InputRecords legítimos distintos.
- * 7. Expiração posterior de IngressContent NÃO modifica o InputRecord histórico.
- * 8. event_ref, resource_ref e evidence_ref permanecem refs não-autoritativas.
+ * 1. InputRecord multipart canônico com preservação de ordem.
+ * 2. Imutabilidade profunda: mutação posterior no draft, nas parts ou no SourceEventIdentity não afeta o InputRecord nem o store.
+ * 3. Eixos de autoridade derivados estritamente do OperationalContext.
+ * 4. Não-cópia de location, focus, observedInteraction.
+ * 5. IngressAccessAuthorizer 'attach_to_input' obrigatório para content_ref.
+ * 6. InputRecordAccessAuthorizer 'read' obrigatório no getInputRecord (conhecer ID não concede leitura).
+ * 7. SourceEventIdentity não concede autoridade de leitura (se A registrar e B tentar replay com a mesma identidade, B é negado pelo authorizer e nada é exposto).
+ * 8. Replay legítimo com SourceEventIdentity converge para o InputRecord existente mesmo se o IngressContent original tiver expirado.
+ * 9. Dois inputs de texto idênticos sem SourceEventIdentity geram dois InputRecords distintos (sem deduplicação por conteúdo).
  */
 
 import { describe, it } from 'node:test';
@@ -22,23 +23,27 @@ import type {
   ContextSubjectRef,
   ContextSubjectType,
   ContextSubjectId,
-  OperationalLocation,
-  OperationalFocus,
-  ObservedInteractionContext,
   OperationalContext,
 } from '../../context/contracts';
-import type { ModuleKey, ResourceType, ResourceId, EventId } from '../../modules/contracts';
+import type {
+  ModuleKey,
+  ResourceType,
+  ResourceId,
+} from '../../modules/contracts';
 import type {
   InputRecordId,
   IngressContentId,
-  IngressContentRecord,
-  InputRecord,
+  SourceEventIdentity,
   InputPart,
+  InputRecord,
+  IngressContentRecord,
   RecordInputDraft,
   IngressAccessAuthorizer,
+  InputRecordAccessAuthorizer,
 } from '../contracts';
 import {
   IngressAuthorizationError,
+  InputRecordAuthorizationError,
   IngressContentExpiredError,
   IngressContentNotFoundError,
   InputRecordNotFoundError,
@@ -51,8 +56,18 @@ import { InputRecordService } from '../service';
 
 class InMemoryInputRecordStore implements InputRecordStore {
   readonly records = new Map<string, InputRecord>();
+  readonly bySourceEvent = new Map<string, InputRecord>();
 
   async saveInputRecord(record: InputRecord): Promise<InputRecord> {
+    if (record.sourceEventIdentity) {
+      const key = `${record.sourceEventIdentity.source}:::${record.sourceEventIdentity.id}`;
+      if (this.bySourceEvent.has(key)) {
+        const err: any = new Error('duplicate key value violates unique constraint');
+        err.code = '23505';
+        throw err;
+      }
+      this.bySourceEvent.set(key, record);
+    }
     this.records.set(record.inputId, record);
     return record;
   }
@@ -61,17 +76,9 @@ class InMemoryInputRecordStore implements InputRecordStore {
     return this.records.get(inputId) ?? null;
   }
 
-  async findBySourceEventIdentity(identity: { source: string; id: string }): Promise<InputRecord | null> {
-    for (const record of this.records.values()) {
-      if (
-        record.sourceEventIdentity &&
-        record.sourceEventIdentity.source === identity.source &&
-        record.sourceEventIdentity.id === identity.id
-      ) {
-        return record;
-      }
-    }
-    return null;
+  async findBySourceEventIdentity(identity: SourceEventIdentity): Promise<InputRecord | null> {
+    const key = `${identity.source}:::${identity.id}`;
+    return this.bySourceEvent.get(key) ?? null;
   }
 }
 
@@ -92,40 +99,28 @@ class InMemoryIngressContentStore implements IngressContentStore {
   }
 }
 
-describe('0.86B-3 · InputRecordService (Multimodal Boundaries & Authority)', () => {
+describe('0.86B-3 · InputRecordService (Multimodal Envelopes & Authority · B3-R1)', () => {
   const sessionRefLucas = '1111111111111111111111111111111111111111111111111111111111111111' as SessionRef;
   const sessionRefJoao = '2222222222222222222222222222222222222222222222222222222222222222' as SessionRef;
 
-  const brandAlterstate: ContextSubjectRef = {
-    subjectType: 'brand' as ContextSubjectType,
-    subjectId: 'alterstate' as ContextSubjectId,
-  };
-
-  const locFornecedores: OperationalLocation = {
-    module: { moduleKey: 'fornecedores' as ModuleKey },
-    trail: [],
-  };
-
-  const focusCompare: OperationalFocus = {
-    action: 'compare' as any,
-  };
-
-  const observedRadar: ObservedInteractionContext = {
-    origin: 'client_observed',
-    observedAt: '2026-08-24T21:00:00.000Z',
-    location: { module: { moduleKey: 'radar' as ModuleKey }, trail: [] },
-  };
-
-  const fullLucasContext: OperationalContext = {
+  const lucasContext: OperationalContext = {
     actor: { kind: 'human', humanId: 'usr_lucas' },
     userId: 'usr_lucas',
     sessionRef: sessionRefLucas,
-    contextSubjectRef: brandAlterstate,
-    location: locFornecedores,
-    focus: focusCompare,
-    observedInteraction: observedRadar,
+    contextSubjectRef: { subjectType: 'brand' as ContextSubjectType, subjectId: 'alterstate' as ContextSubjectId },
     channel: 'web_dashboard' as any,
-    correlationId: 'corr_xyz' as any,
+    correlationId: 'corr_req_123' as any,
+    location: {
+      module: { moduleKey: 'radar' as ModuleKey },
+      trail: [],
+    },
+    focus: {
+      action: 'view' as any,
+    },
+    observedInteraction: {
+      origin: 'client_observed',
+      observedAt: '2026-08-24T21:00:00.000Z',
+    },
   };
 
   const joaoContext: OperationalContext = {
@@ -134,343 +129,363 @@ describe('0.86B-3 · InputRecordService (Multimodal Boundaries & Authority)', ()
     sessionRef: sessionRefJoao,
   };
 
-  it('1. constrói InputRecord derivando autoridade do OperationalContext e NÃO copia location/focus/observedInteraction', async () => {
+  const permissiveIngressAuthorizer: IngressAccessAuthorizer = {
+    async authorize() {
+      return true;
+    },
+  };
+
+  const userScopedInputAuthorizer: InputRecordAccessAuthorizer = {
+    async authorize({ operation, context, record }) {
+      if (operation === 'read') {
+        return record.userId === context.userId;
+      }
+      return false;
+    },
+  };
+
+  it('1. cria InputRecord multipart derivando autoridade do context e omitindo location/focus', async () => {
     const inputStore = new InMemoryInputRecordStore();
     const contentStore = new InMemoryIngressContentStore();
-
-    const authorizer: IngressAccessAuthorizer = {
-      async authorize() {
-        return true;
-      },
-    };
 
     const service = new InputRecordService({
       inputStore,
       contentStore,
-      authorizer,
+      authorizer: permissiveIngressAuthorizer,
+      inputAuthorizer: userScopedInputAuthorizer,
     });
 
     const draft: RecordInputDraft = {
       parts: [
-        { kind: 'text', text: 'Favor comparar este produto com o radar' },
+        { kind: 'text', text: 'Analise o seguinte fornecedor:' },
         {
           kind: 'resource_ref',
           resource: {
             ownerModule: { moduleKey: 'fornecedores' as ModuleKey },
-            resourceType: 'product' as ResourceType,
-            resourceId: 'prod_123' as ResourceId,
+            resourceType: 'supplier_card' as ResourceType,
+            resourceId: 'sup_77' as ResourceId,
           },
         },
       ],
-      occurredAt: '2026-08-24T21:00:00.000Z',
     };
 
-    const result = await service.recordInput(draft, fullLucasContext);
+    const { record, deduplicated } = await service.recordInput(draft, lucasContext);
 
-    assert.equal(result.deduplicated, false);
-    assert.ok(result.record.inputId.startsWith('inp_'));
-    assert.equal(result.record.actor.kind, 'human');
-    assert.equal((result.record.actor as HumanActor).humanId, 'usr_lucas');
-    assert.equal(result.record.userId, 'usr_lucas');
-    assert.equal(result.record.sessionRef, sessionRefLucas);
-    assert.equal(result.record.contextSubjectRef?.subjectId, 'alterstate');
-    assert.equal(result.record.channel, 'web_dashboard');
-    assert.equal(result.record.correlationId, 'corr_xyz');
+    assert.equal(deduplicated, false);
+    assert.ok(record.inputId.startsWith('inp_'));
+    assert.equal(record.actor.kind, 'human');
+    assert.equal((record.actor as HumanActor).humanId, 'usr_lucas');
+    assert.equal(record.userId, 'usr_lucas');
+    assert.equal(record.sessionRef, sessionRefLucas);
+    assert.equal(record.contextSubjectRef?.subjectId, 'alterstate');
+    assert.equal(record.channel, 'web_dashboard');
+    assert.equal(record.correlationId, 'corr_req_123');
 
-    // Prova: location, focus e observedInteraction NÃO são copiados para o InputRecord
-    assert.equal((result.record as any).location, undefined);
-    assert.equal((result.record as any).focus, undefined);
-    assert.equal((result.record as any).observedInteraction, undefined);
+    // Garante que location, focus e observedInteraction NÃO foram copiados
+    assert.equal((record as any).location, undefined);
+    assert.equal((record as any).focus, undefined);
+    assert.equal((record as any).observedInteraction, undefined);
 
-    // Prova: 2 partes preservadas na ordem
-    assert.equal(result.record.parts.length, 2);
-    assert.equal(result.record.parts[0].kind, 'text');
-    assert.equal(result.record.parts[1].kind, 'resource_ref');
+    // Garante preservação exata da ordem das partes
+    assert.equal(record.parts.length, 2);
+    assert.equal(record.parts[0].kind, 'text');
+    assert.equal((record.parts[0] as any).text, 'Analise o seguinte fornecedor:');
+    assert.equal(record.parts[1].kind, 'resource_ref');
   });
 
-  it('2. registra multipart ordenado com imagem, documento, texto, evento e evidência', async () => {
+  it('2. imutabilidade profunda: mutação posterior no draft, parts ou sourceEventIdentity não altera o InputRecord nem o store', async () => {
     const inputStore = new InMemoryInputRecordStore();
     const contentStore = new InMemoryIngressContentStore();
 
-    // Salva 2 IngressContents legítimos no store
-    const contentPhoto: IngressContentRecord = {
-      contentId: 'ing_photo_1' as IngressContentId,
-      actor: { kind: 'human', humanId: 'usr_lucas' },
-      userId: 'usr_lucas',
-      verifiedMimeType: 'image/jpeg',
-      sha256: 'a'.repeat(64),
-      byteSize: 1024,
-      storageBackend: 'local_fs',
-      storageKey: 'sha256/aa/aa/' + 'a'.repeat(64),
-      receivedAt: '2026-08-24T21:00:00.000Z',
-    };
-    const contentPdf: IngressContentRecord = {
+    const contentRecord: IngressContentRecord = {
       contentId: 'ing_doc_1' as IngressContentId,
       actor: { kind: 'human', humanId: 'usr_lucas' },
-      userId: 'usr_lucas',
-      verifiedMimeType: 'application/pdf',
-      sha256: 'b'.repeat(64),
-      byteSize: 2048,
+      verifiedMimeType: 'image/png',
+      sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      byteSize: 100,
       storageBackend: 'local_fs',
-      storageKey: 'sha256/bb/bb/' + 'b'.repeat(64),
+      storageKey: 'sha256/e3/b0/doc',
       receivedAt: '2026-08-24T21:00:00.000Z',
     };
-    await contentStore.saveContent(contentPhoto);
-    await contentStore.saveContent(contentPdf);
-
-    const authorizer: IngressAccessAuthorizer = {
-      async authorize() {
-        return true;
-      },
-    };
+    await contentStore.saveContent(contentRecord);
 
     const service = new InputRecordService({
       inputStore,
       contentStore,
-      authorizer,
+      authorizer: permissiveIngressAuthorizer,
+      inputAuthorizer: userScopedInputAuthorizer,
     });
 
-    const parts: InputPart[] = [
-      { kind: 'text', text: 'Analise a foto da embalagem:' },
-      { kind: 'content_ref', content: { contentId: 'ing_photo_1' as IngressContentId } },
-      { kind: 'text', text: 'E o laudo técnico em PDF:' },
-      { kind: 'content_ref', content: { contentId: 'ing_doc_1' as IngressContentId } },
-      { kind: 'event_ref', eventId: 'evt_price_change' as EventId },
-      { kind: 'evidence_ref', evidenceArtifactId: 'art_receipt_1' as any },
-    ];
+    const textPartObj: any = { kind: 'text', text: 'Texto original' };
+    const contentPartObj: any = { kind: 'content_ref', content: { contentId: 'ing_doc_1' as IngressContentId } };
+    const resourcePartObj: any = {
+      kind: 'resource_ref',
+      resource: {
+        ownerModule: { moduleKey: 'radar' as ModuleKey },
+        resourceType: 'item' as ResourceType,
+        resourceId: 'item_1' as ResourceId,
+      },
+    };
+    const partsArray = [textPartObj, contentPartObj, resourcePartObj];
+    const sourceEventObj: any = { source: 'slack', id: 'msg_original' };
 
-    const result = await service.recordInput({ parts }, fullLucasContext);
+    const draft: RecordInputDraft = {
+      parts: partsArray,
+      sourceEventIdentity: sourceEventObj,
+    };
 
-    assert.equal(result.record.parts.length, 6);
-    assert.equal(result.record.parts[0].kind, 'text');
-    assert.equal(result.record.parts[1].kind, 'content_ref');
-    assert.equal(result.record.parts[2].kind, 'text');
-    assert.equal(result.record.parts[3].kind, 'content_ref');
-    assert.equal(result.record.parts[4].kind, 'event_ref');
-    assert.equal(result.record.parts[5].kind, 'evidence_ref');
+    const { record } = await service.recordInput(draft, lucasContext);
+
+    // Tentativa de mutação nos objetos originais do caller após recordInput
+    partsArray.push({ kind: 'text', text: 'Parte injetada pós record' });
+    textPartObj.text = 'Texto MODIFICADO pelo caller';
+    contentPartObj.content.contentId = 'ing_doc_MODIFICADO';
+    resourcePartObj.resource.resourceId = 'item_MODIFICADO';
+    resourcePartObj.resource.ownerModule.moduleKey = 'modulo_MODIFICADO';
+    sourceEventObj.id = 'msg_MODIFICADO';
+
+    // 1. Prova que o InputRecord retornado NÃO mudou
+    assert.equal(record.parts.length, 3);
+    assert.equal((record.parts[0] as any).text, 'Texto original');
+    assert.equal((record.parts[1] as any).content.contentId, 'ing_doc_1');
+    assert.equal((record.parts[2] as any).resource.resourceId, 'item_1');
+    assert.equal((record.parts[2] as any).resource.ownerModule.moduleKey, 'radar');
+    assert.equal(record.sourceEventIdentity?.id, 'msg_original');
+
+    // 2. Prova que o objeto retornado está profundamente congelado
+    assert.ok(Object.isFrozen(record.parts));
+    assert.ok(Object.isFrozen(record.parts[0]));
+    assert.ok(Object.isFrozen(record.parts[1]));
+    assert.ok(Object.isFrozen((record.parts[1] as any).content));
+    assert.ok(Object.isFrozen(record.parts[2]));
+    assert.ok(Object.isFrozen((record.parts[2] as any).resource));
+    assert.ok(Object.isFrozen((record.parts[2] as any).resource.ownerModule));
+    assert.ok(Object.isFrozen(record.sourceEventIdentity));
+
+    // 3. Prova que o registro mantido no store NÃO mudou
+    const stored = await inputStore.getInputRecord(record.inputId);
+    assert.ok(stored);
+    assert.equal(stored.parts.length, 3);
+    assert.equal((stored.parts[0] as any).text, 'Texto original');
+    assert.equal((stored.parts[1] as any).content.contentId, 'ing_doc_1');
+    assert.equal((stored.parts[2] as any).resource.resourceId, 'item_1');
+    assert.equal((stored.parts[2] as any).resource.ownerModule.moduleKey, 'radar');
+    assert.equal(stored.sourceEventIdentity?.id, 'msg_original');
   });
 
-  it('3. content_ref rejeita se conteúdo não existir, estiver expirado ou se authorizer negar attach_to_input', async () => {
+  it('3. rejeita anexação de content_ref se IngressAccessAuthorizer negar attach_to_input', async () => {
     const inputStore = new InMemoryInputRecordStore();
     const contentStore = new InMemoryIngressContentStore();
 
-    // Content pertencente a Lucas
-    const privateLucasContent: IngressContentRecord = {
-      contentId: 'ing_secret' as IngressContentId,
-      actor: { kind: 'human', humanId: 'usr_lucas' },
-      userId: 'usr_lucas',
+    const contentRecord: IngressContentRecord = {
+      contentId: 'ing_photo_1' as IngressContentId,
+      actor: { kind: 'human', humanId: 'usr_joao' }, // Pertence ao João
+      userId: 'usr_joao',
       verifiedMimeType: 'image/png',
-      sha256: 'c'.repeat(64),
-      byteSize: 500,
+      sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      byteSize: 200,
       storageBackend: 'local_fs',
-      storageKey: 'sha256/cc/cc/' + 'c'.repeat(64),
+      storageKey: 'sha256/e3/b0/photo',
       receivedAt: '2026-08-24T21:00:00.000Z',
     };
-    await contentStore.saveContent(privateLucasContent);
+    await contentStore.saveContent(contentRecord);
 
-    // Content expirado
-    const expiredContent: IngressContentRecord = {
-      contentId: 'ing_expired' as IngressContentId,
-      actor: { kind: 'human', humanId: 'usr_lucas' },
-      userId: 'usr_lucas',
-      verifiedMimeType: 'text/plain',
-      sha256: 'd'.repeat(64),
-      byteSize: 100,
-      storageBackend: 'local_fs',
-      storageKey: 'sha256/dd/dd/' + 'd'.repeat(64),
-      receivedAt: '2026-08-24T20:00:00.000Z',
-      expiresAt: '2026-08-24T20:30:00.000Z',
-    };
-    await contentStore.saveContent(expiredContent);
-
-    // Authorizer estrito: somente dono do arquivo pode anexar a seu input
-    const strictAuthorizer: IngressAccessAuthorizer = {
+    const scopedIngressAuthorizer: IngressAccessAuthorizer = {
       async authorize({ operation, context, content }) {
         if (operation === 'attach_to_input') {
           return content?.userId === context.userId;
         }
-        return true;
+        return false;
       },
     };
 
     const service = new InputRecordService({
       inputStore,
       contentStore,
-      authorizer: strictAuthorizer,
-      nowProvider: () => '2026-08-24T21:00:00.000Z',
+      authorizer: scopedIngressAuthorizer,
+      inputAuthorizer: userScopedInputAuthorizer,
     });
 
-    // 1. Falha se contentId não existe
-    await assert.rejects(
-      () =>
-        service.recordInput(
-          {
-            parts: [{ kind: 'content_ref', content: { contentId: 'ing_nonexistent' as IngressContentId } }],
-          },
-          fullLucasContext
-        ),
-      IngressContentNotFoundError
-    );
+    // Lucas tenta referenciar conteúdo de João em seu input
+    const draft: RecordInputDraft = {
+      parts: [
+        { kind: 'text', text: 'Veja o anexo:' },
+        { kind: 'content_ref', content: { contentId: 'ing_photo_1' as IngressContentId } },
+      ],
+    };
 
-    // 2. Falha se contentId expirou
     await assert.rejects(
-      () =>
-        service.recordInput(
-          {
-            parts: [{ kind: 'content_ref', content: { contentId: 'ing_expired' as IngressContentId } }],
-          },
-          fullLucasContext
-        ),
-      IngressContentExpiredError
-    );
-
-    // 3. João tenta anexar o arquivo privado de Lucas -> authorizer nega
-    await assert.rejects(
-      () =>
-        service.recordInput(
-          {
-            parts: [{ kind: 'content_ref', content: { contentId: 'ing_secret' as IngressContentId } }],
-          },
-          joaoContext
-        ),
+      () => service.recordInput(draft, lucasContext),
       (err: any) => {
         assert.ok(err instanceof IngressAuthorizationError);
         assert.equal(err.operation, 'attach_to_input');
-        assert.equal(err.contentId, 'ing_secret');
+        assert.equal(err.contentId, 'ing_photo_1');
         return true;
       }
     );
   });
 
-  it('4. reentrega da mesma SourceEventIdentity converge para o primeiro InputRecord (deduplicated: true)', async () => {
+  it('4. getInputRecord exige autorização de leitura: conhecer ID não autoriza acesso', async () => {
     const inputStore = new InMemoryInputRecordStore();
     const contentStore = new InMemoryIngressContentStore();
-
-    const authorizer: IngressAccessAuthorizer = {
-      async authorize() {
-        return true;
-      },
-    };
 
     const service = new InputRecordService({
       inputStore,
       contentStore,
-      authorizer,
+      authorizer: permissiveIngressAuthorizer,
+      inputAuthorizer: userScopedInputAuthorizer,
     });
 
-    const draft: RecordInputDraft = {
-      sourceEventIdentity: { source: 'webhook_github', id: 'delivery_abc_123' },
-      parts: [{ kind: 'text', text: 'Commit push event payload' }],
-    };
+    const { record } = await service.recordInput(
+      { parts: [{ kind: 'text', text: 'Mensagem privada do Lucas' }] },
+      lucasContext
+    );
 
-    // Primeira entrega
-    const res1 = await service.recordInput(draft, fullLucasContext);
-    assert.equal(res1.deduplicated, false);
-    const originalInputId = res1.record.inputId;
+    // Lucas consegue ler seu próprio InputRecord
+    const lucasRead = await service.getInputRecord(record.inputId, lucasContext);
+    assert.equal(lucasRead.inputId, record.inputId);
 
-    // Segunda entrega (reentrega do mesmo evento pelo webhook)
-    const res2 = await service.recordInput(draft, fullLucasContext);
-    assert.equal(res2.deduplicated, true);
-    assert.equal(res2.record.inputId, originalInputId);
-    assert.equal(res2.record.receivedAt, res1.record.receivedAt);
-
-    // Garante que só há 1 registro no store
-    assert.equal(inputStore.records.size, 1);
+    // João conhece o inputId, mas tem leitura negada
+    await assert.rejects(
+      () => service.getInputRecord(record.inputId, joaoContext),
+      (err: any) => {
+        assert.ok(err instanceof InputRecordAuthorizationError);
+        assert.equal(err.operation, 'read');
+        assert.equal(err.inputId, record.inputId);
+        return true;
+      }
+    );
   });
 
-  it('5. entradas com texto idêntico sem SourceEventIdentity geram dois InputRecords legítimos distintos', async () => {
+  it('5. SourceEventIdentity não concede autoridade: João tenta replay de ocorrência de Lucas e é bloqueado', async () => {
     const inputStore = new InMemoryInputRecordStore();
     const contentStore = new InMemoryIngressContentStore();
-
-    const authorizer: IngressAccessAuthorizer = {
-      async authorize() {
-        return true;
-      },
-    };
 
     const service = new InputRecordService({
       inputStore,
       contentStore,
-      authorizer,
+      authorizer: permissiveIngressAuthorizer,
+      inputAuthorizer: userScopedInputAuthorizer,
     });
 
-    const draft: RecordInputDraft = {
-      parts: [{ kind: 'text', text: 'Mensagem repetida do usuário' }],
-    };
+    const sourceIdentity: SourceEventIdentity = { source: 'webhook_stripe', id: 'evt_stripe_999' };
 
-    const res1 = await service.recordInput(draft, fullLucasContext);
-    const res2 = await service.recordInput(draft, fullLucasContext);
+    // 1. Lucas registra ocorrência externa legítima
+    const { record: lucasRecord, deduplicated: d1 } = await service.recordInput(
+      {
+        parts: [{ kind: 'text', text: 'Pagamento recebido de Lucas' }],
+        sourceEventIdentity: sourceIdentity,
+      },
+      lucasContext
+    );
+    assert.equal(d1, false);
 
-    assert.equal(res1.deduplicated, false);
-    assert.equal(res2.deduplicated, false);
-    assert.notEqual(res1.record.inputId, res2.record.inputId);
-    assert.equal(inputStore.records.size, 2);
+    // 2. João tenta submeter a mesma SourceEventIdentity
+    // Como a ocorrência já existe para Lucas e o authorizer nega leitura para João,
+    // o serviço deve falhar fechado com InputRecordAuthorizationError e NÃO devolver o registro de Lucas
+    await assert.rejects(
+      () =>
+        service.recordInput(
+          {
+            parts: [{ kind: 'text', text: 'Tentativa maliciosa de João' }],
+            sourceEventIdentity: sourceIdentity,
+          },
+          joaoContext
+        ),
+      (err: any) => {
+        assert.ok(err instanceof InputRecordAuthorizationError);
+        assert.equal(err.operation, 'read');
+        assert.equal(err.inputId, lucasRecord.inputId);
+        return true;
+      }
+    );
   });
 
-  it('6. expiração posterior do IngressContent NÃO modifica o InputRecord histórico', async () => {
+  it('6. Replay legítimo converge para InputRecord existente mesmo após expiração do IngressContent original', async () => {
     const inputStore = new InMemoryInputRecordStore();
     const contentStore = new InMemoryIngressContentStore();
 
     let currentTime = '2026-08-24T21:00:00.000Z';
 
-    const tempContent: IngressContentRecord = {
+    const contentRecord: IngressContentRecord = {
       contentId: 'ing_temp_doc' as IngressContentId,
       actor: { kind: 'human', humanId: 'usr_lucas' },
       userId: 'usr_lucas',
       verifiedMimeType: 'application/pdf',
-      sha256: 'e'.repeat(64),
-      byteSize: 1000,
+      sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      byteSize: 500,
       storageBackend: 'local_fs',
-      storageKey: 'sha256/ee/ee/' + 'e'.repeat(64),
+      storageKey: 'sha256/e3/b0/temp',
       receivedAt: '2026-08-24T21:00:00.000Z',
-      expiresAt: '2026-08-24T22:00:00.000Z', // Expira às 22h
+      expiresAt: '2026-08-24T21:30:00.000Z', // Expira às 21h30
     };
-    await contentStore.saveContent(tempContent);
-
-    const authorizer: IngressAccessAuthorizer = {
-      async authorize() {
-        return true;
-      },
-    };
+    await contentStore.saveContent(contentRecord);
 
     const service = new InputRecordService({
       inputStore,
       contentStore,
-      authorizer,
+      authorizer: permissiveIngressAuthorizer,
+      inputAuthorizer: userScopedInputAuthorizer,
       nowProvider: () => currentTime,
     });
 
-    // Às 21h: InputRecord criado com sucesso referenciando o arquivo
-    const { record } = await service.recordInput(
+    const sourceIdentity: SourceEventIdentity = { source: 'api_gateway', id: 'req_001' };
+
+    // 1. Registro original às 21h00 (conteúdo ativo)
+    const { record: original, deduplicated: d1 } = await service.recordInput(
       {
-        parts: [{ kind: 'content_ref', content: { contentId: 'ing_temp_doc' as IngressContentId } }],
+        parts: [
+          { kind: 'text', text: 'Documento anexado' },
+          { kind: 'content_ref', content: { contentId: 'ing_temp_doc' as IngressContentId } },
+        ],
+        sourceEventIdentity: sourceIdentity,
       },
-      fullLucasContext
+      lucasContext
+    );
+    assert.equal(d1, false);
+
+    // 2. Às 22h00 o conteúdo original está expirado
+    currentTime = '2026-08-24T22:00:00.000Z';
+
+    // 3. Reentrega legítima (replay com mesma SourceEventIdentity por Lucas)
+    // Deve convergir sem falhar por expiração do anexo
+    const { record: replayed, deduplicated: d2 } = await service.recordInput(
+      {
+        parts: [
+          { kind: 'text', text: 'Documento anexado (replay)' },
+          { kind: 'content_ref', content: { contentId: 'ing_temp_doc' as IngressContentId } },
+        ],
+        sourceEventIdentity: sourceIdentity,
+      },
+      lucasContext
     );
 
-    // Às 23h (após expiração do conteúdo):
-    currentTime = '2026-08-24T23:00:00.000Z';
-
-    // O InputRecord histórico continua intacto e recuperável
-    const fetched = await service.getInputRecord(record.inputId);
-    assert.equal(fetched.inputId, record.inputId);
-    assert.equal(fetched.parts[0].kind, 'content_ref');
-    assert.equal((fetched.parts[0] as any).content.contentId, 'ing_temp_doc');
+    assert.equal(d2, true);
+    assert.equal(replayed.inputId, original.inputId);
+    assert.equal(replayed.receivedAt, original.receivedAt);
   });
 
-  it('7. getInputRecord lança InputRecordNotFoundError se registro não existir', async () => {
+  it('7. dois inputs de texto idênticos sem SourceEventIdentity geram dois InputRecords distintos', async () => {
     const inputStore = new InMemoryInputRecordStore();
     const contentStore = new InMemoryIngressContentStore();
 
     const service = new InputRecordService({
       inputStore,
       contentStore,
-      authorizer: { async authorize() { return true; } },
+      authorizer: permissiveIngressAuthorizer,
+      inputAuthorizer: userScopedInputAuthorizer,
     });
 
-    await assert.rejects(
-      () => service.getInputRecord('inp_nonexistent' as InputRecordId),
-      InputRecordNotFoundError
-    );
+    const draft: RecordInputDraft = {
+      parts: [{ kind: 'text', text: 'Comando idêntico executado duas vezes' }],
+    };
+
+    const res1 = await service.recordInput(draft, lucasContext);
+    const res2 = await service.recordInput(draft, lucasContext);
+
+    assert.equal(res1.deduplicated, false);
+    assert.equal(res2.deduplicated, false);
+    assert.notEqual(res1.record.inputId, res2.record.inputId);
+    assert.equal(inputStore.records.size, 2);
   });
 });

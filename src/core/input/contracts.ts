@@ -182,7 +182,7 @@ export interface IngestContentParams {
 }
 
 // ============================================================================
-// 8. TRUST BOUNDARY: AUTHORIZER & INSPECTOR
+// 8. TRUST BOUNDARIES: AUTHORIZERS & INSPECTOR
 // ============================================================================
 
 export type IngressAccessOperation = 'create' | 'read' | 'attach_to_input';
@@ -193,6 +193,16 @@ export interface IngressAccessAuthorizer {
     readonly context: OperationalContext;
     readonly content?: IngressContentRecord;
     readonly contentId?: IngressContentId;
+  }): Promise<boolean>;
+}
+
+export type InputRecordAccessOperation = 'read';
+
+export interface InputRecordAccessAuthorizer {
+  authorize(params: {
+    readonly operation: InputRecordAccessOperation;
+    readonly context: OperationalContext;
+    readonly record: InputRecord;
   }): Promise<boolean>;
 }
 

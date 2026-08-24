@@ -366,8 +366,8 @@ export class PostgresInputRecordStore implements InputRecordStore {
     return this.executeInClient(async (client) => {
       const subjectType = record.contextSubjectRef ? record.contextSubjectRef.subjectType.trim() : null;
       const subjectId = record.contextSubjectRef ? record.contextSubjectRef.subjectId.trim() : null;
-      const sourceEventSource = record.sourceEventIdentity ? record.sourceEventIdentity.source.trim() : null;
-      const sourceEventId = record.sourceEventIdentity ? record.sourceEventIdentity.id.trim() : null;
+      const sourceEventSource = record.sourceEventIdentity ? record.sourceEventIdentity.source : null;
+      const sourceEventId = record.sourceEventIdentity ? record.sourceEventIdentity.id : null;
 
       const recordSql = `
         INSERT INTO nex_input_records (
