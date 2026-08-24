@@ -25,15 +25,25 @@ import {
   clearSessionContextSubject,
 } from '../session-state';
 import {
+  SessionOperationalStateInvariantError,
   SessionOperationalStateOwnershipMismatchError,
   SessionOperationalStateRevisionConflictError,
 } from '../errors';
 
 class InMemorySessionOperationalStateStore implements SessionOperationalStateStore {
-  private readonly store = new Map<string, SessionOperationalState>();
+  readonly store = new Map<string, SessionOperationalState>();
 
-  async getState(sessionRef: SessionRef): Promise<SessionOperationalState | null> {
-    return this.store.get(sessionRef) ?? null;
+  async getState(sessionRef: SessionRef, expectedUserId: string): Promise<SessionOperationalState | null> {
+    const existing = this.store.get(sessionRef);
+    if (!existing) return null;
+    if (existing.userId !== expectedUserId) {
+      throw new SessionOperationalStateOwnershipMismatchError({
+        sessionRef,
+        expectedUserId,
+        actualUserId: existing.userId,
+      });
+    }
+    return existing;
   }
 
   async ensureState(params: EnsureSessionOperationalStateParams): Promise<SessionOperationalState> {
@@ -99,74 +109,160 @@ class InMemorySessionOperationalStateStore implements SessionOperationalStateSto
   }
 }
 
-describe('0.86B-2 · Camada de Domínio SessionOperationalState', () => {
+describe('0.86B-2 · Session Operational State Domain Layer & Ownership Invariants', () => {
   const sessionRefA = 'a'.repeat(64) as SessionRef;
-  const authContextLucas: AuthenticatedSessionContext = {
-    actor: { kind: 'human', humanId: 'usr_lucas_1' },
+  const sessionRefB = 'b'.repeat(64) as SessionRef;
+
+  const mockSessionContextUser1: AuthenticatedSessionContext = {
+    actor: { kind: 'human', humanId: 'usr_lucas' },
     sessionRef: sessionRefA,
   };
 
-  const subjectAlterstate: ContextSubjectRef = {
-    subjectType: 'brand' as ContextSubjectType,
-    subjectId: 'alterstate' as ContextSubjectId,
+  const mockSessionContextUser2: AuthenticatedSessionContext = {
+    actor: { kind: 'human', humanId: 'usr_joao' },
+    sessionRef: sessionRefB,
   };
 
-  it('assegura estado inicial limpo (revision 1, contextSubjectRef undefined)', async () => {
+  it('ensureSessionOperationalState cria novo estado quando não existir', async () => {
     const store = new InMemorySessionOperationalStateStore();
-    const state = await ensureSessionOperationalState(authContextLucas, store);
+    const state = await ensureSessionOperationalState(mockSessionContextUser1, store);
 
     assert.equal(state.sessionRef, sessionRefA);
-    assert.equal(state.userId, 'usr_lucas_1');
+    assert.equal(state.userId, 'usr_lucas');
     assert.equal(state.revision, 1);
     assert.equal(state.contextSubjectRef, undefined);
   });
 
-  it('atualiza sujeito ativo e incrementa revisão', async () => {
+  it('ensureSessionOperationalState retorna estado existente de forma idempotente', async () => {
     const store = new InMemorySessionOperationalStateStore();
-    await ensureSessionOperationalState(authContextLucas, store);
+    const state1 = await ensureSessionOperationalState(mockSessionContextUser1, store);
+    const state2 = await ensureSessionOperationalState(mockSessionContextUser1, store);
+
+    assert.equal(state1, state2);
+  });
+
+  it('getSessionOperationalState consulta estado existente com verificação de ownership', async () => {
+    const store = new InMemorySessionOperationalStateStore();
+    await ensureSessionOperationalState(mockSessionContextUser1, store);
+
+    const state = await getSessionOperationalState(mockSessionContextUser1, store);
+    assert.ok(state !== null);
+    assert.equal(state.sessionRef, sessionRefA);
+    assert.equal(state.userId, 'usr_lucas');
+  });
+
+  it('getSessionOperationalState retorna null se estado não existir', async () => {
+    const store = new InMemorySessionOperationalStateStore();
+    const state = await getSessionOperationalState(mockSessionContextUser1, store);
+    assert.equal(state, null);
+  });
+
+  it('getSessionOperationalState lança erro se fake store retornar estado de outro usuário (Blocker 1 Prova A)', async () => {
+    // Fake store que simula responder estado com userId de user2 quando user1 consulta
+    const fakeStore: SessionOperationalStateStore = {
+      async getState(sessionRef, expectedUserId) {
+        return Object.freeze({
+          sessionRef,
+          userId: 'usr_outra_pessoa', // Mismatch intencional
+          revision: 1,
+          createdAt: '2026-08-24T19:00:00.000Z',
+          updatedAt: '2026-08-24T19:00:00.000Z',
+        });
+      },
+      async ensureState() { throw new Error('not used'); },
+      async setContextSubject() { throw new Error('not used'); },
+    };
+
+    await assert.rejects(
+      () => getSessionOperationalState(mockSessionContextUser1, fakeStore),
+      SessionOperationalStateOwnershipMismatchError
+    );
+  });
+
+  it('getSessionOperationalState rejeita estado contendo campos extras (ex: jwt) retornado por store corrompido', async () => {
+    const corruptStore: SessionOperationalStateStore = {
+      async getState(sessionRef, expectedUserId) {
+        return Object.freeze({
+          sessionRef,
+          userId: expectedUserId,
+          revision: 1,
+          createdAt: '2026-08-24T19:00:00.000Z',
+          updatedAt: '2026-08-24T19:00:00.000Z',
+          jwt: 'leaked_jwt_token',
+        }) as any;
+      },
+      async ensureState() { throw new Error('not used'); },
+      async setContextSubject() { throw new Error('not used'); },
+    };
+
+    await assert.rejects(
+      () => getSessionOperationalState(mockSessionContextUser1, corruptStore),
+      (err: any) => err.violationType === 'UNEXPECTED_PROPERTY'
+    );
+  });
+
+  it('setSessionContextSubject atualiza sujeito de Marca e incrementa revision', async () => {
+    const store = new InMemorySessionOperationalStateStore();
+    await ensureSessionOperationalState(mockSessionContextUser1, store);
+
+    const subject: ContextSubjectRef = {
+      subjectType: 'brand' as ContextSubjectType,
+      subjectId: 'alterstate' as ContextSubjectId,
+    };
 
     const updated = await setSessionContextSubject(
-      authContextLucas,
-      {
-        contextSubjectRef: subjectAlterstate,
-        expectedRevision: 1,
-      },
+      mockSessionContextUser1,
+      { contextSubjectRef: subject, expectedRevision: 1 },
       store
     );
 
     assert.equal(updated.revision, 2);
-    assert.deepEqual(updated.contextSubjectRef, subjectAlterstate);
+    assert.deepEqual(updated.contextSubjectRef, subject);
 
-    const current = await getSessionOperationalState(authContextLucas, store);
-    assert.deepEqual(current, updated);
-  });
-
-  it('limpa sujeito ativo retornando ao contexto pessoal', async () => {
-    const store = new InMemorySessionOperationalStateStore();
-    await ensureSessionOperationalState(authContextLucas, store);
-    await setSessionContextSubject(
-      authContextLucas,
-      { contextSubjectRef: subjectAlterstate, expectedRevision: 1 },
-      store
-    );
-
-    const cleared = await clearSessionContextSubject(authContextLucas, 2, store);
+    // clear retorna ao contexto pessoal e incrementa revision
+    const cleared = await clearSessionContextSubject(mockSessionContextUser1, 2, store);
     assert.equal(cleared.revision, 3);
     assert.equal(cleared.contextSubjectRef, undefined);
   });
 
-  it('rejeita atualização se a revisão esperada divergir (conflito de concorrência)', async () => {
+  it('rejeita mutação com expectedRevision desatualizado (concorrência otimista)', async () => {
     const store = new InMemorySessionOperationalStateStore();
-    await ensureSessionOperationalState(authContextLucas, store);
+    await ensureSessionOperationalState(mockSessionContextUser1, store);
+
+    const subject: ContextSubjectRef = {
+      subjectType: 'brand' as ContextSubjectType,
+      subjectId: 'alterstate' as ContextSubjectId,
+    };
 
     await assert.rejects(
       () =>
         setSessionContextSubject(
-          authContextLucas,
-          { contextSubjectRef: subjectAlterstate, expectedRevision: 99 },
+          mockSessionContextUser1,
+          { contextSubjectRef: subject, expectedRevision: 99 },
           store
         ),
       SessionOperationalStateRevisionConflictError
+    );
+  });
+
+  it('rejeita mutação de sessão alheia (divergência de userId)', async () => {
+    const store = new InMemorySessionOperationalStateStore();
+    await ensureSessionOperationalState(mockSessionContextUser1, store);
+
+    // Tentativa de user2 mutar sessionRef de user1
+    const evilContext: AuthenticatedSessionContext = {
+      actor: { kind: 'human', humanId: 'usr_joao' },
+      sessionRef: sessionRefA, // sessionRef do Lucas
+    };
+
+    await assert.rejects(
+      () =>
+        setSessionContextSubject(
+          evilContext,
+          { contextSubjectRef: null, expectedRevision: 1 },
+          store
+        ),
+      SessionOperationalStateOwnershipMismatchError
     );
   });
 });

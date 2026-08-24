@@ -3,7 +3,7 @@
  * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-2)
  *
  * Implementação isolada de persistência em PostgreSQL com concorrência otimista,
- * atomicidade na inicialização e diagnóstico de conflitos.
+ * atomicidade na inicialização, validação de ownership em todas as operações e diagnóstico de conflitos.
  */
 
 import { isValidSessionRef, type SessionRef } from '../../../auth/session-ref.types';
@@ -17,6 +17,7 @@ import {
   isCanonicalUtcInstant,
   isNonEmptyString,
   validateContextSubjectRef,
+  validateSessionOperationalState,
 } from '../invariants';
 import {
   SessionOperationalStateInvariantError,
@@ -89,6 +90,8 @@ function mapRowToSessionOperationalState(row: any): SessionOperationalState {
     updatedAt,
   };
 
+  validateSessionOperationalState(state);
+
   return Object.freeze(state);
 }
 
@@ -99,13 +102,22 @@ export class PgSessionOperationalStateStore implements SessionOperationalStateSt
     this.executor = executor;
   }
 
-  async getState(sessionRef: SessionRef): Promise<SessionOperationalState | null> {
+  async getState(sessionRef: SessionRef, expectedUserId: string): Promise<SessionOperationalState | null> {
     if (!isValidSessionRef(sessionRef)) {
       throw new SessionOperationalStateInvariantError(
         'INVALID_SESSION_REF',
         `Cannot retrieve state: '${String(sessionRef)}' is not a valid 64-char lowercase hexadecimal SessionRef.`
       );
     }
+
+    if (!isNonEmptyString(expectedUserId)) {
+      throw new SessionOperationalStateInvariantError(
+        'INVALID_USER_ID',
+        'Cannot retrieve state: expectedUserId must be a non-empty string.'
+      );
+    }
+
+    const normalizedExpectedUserId = expectedUserId.trim();
 
     const res = await this.executor.query(
       `SELECT session_ref, user_id, subject_type, subject_id, revision, created_at, updated_at
@@ -118,7 +130,18 @@ export class PgSessionOperationalStateStore implements SessionOperationalStateSt
       return null;
     }
 
-    return mapRowToSessionOperationalState(res.rows[0]);
+    const row = res.rows[0];
+
+    // Verificação estrita de ownership na leitura
+    if (row.user_id !== normalizedExpectedUserId) {
+      throw new SessionOperationalStateOwnershipMismatchError({
+        sessionRef,
+        expectedUserId: normalizedExpectedUserId,
+        actualUserId: row.user_id,
+      });
+    }
+
+    return mapRowToSessionOperationalState(row);
   }
 
   async ensureState(params: EnsureSessionOperationalStateParams): Promise<SessionOperationalState> {

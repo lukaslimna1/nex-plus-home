@@ -23,9 +23,11 @@ export interface SetContextSubjectParams {
 
 export interface SessionOperationalStateStore {
   /**
-   * Recupera o estado operacional persistido de uma sessão, ou null se inexistente.
+   * Recupera o estado operacional persistido de uma sessão garantindo ownership do usuário.
+   * Retorna null se inexistente.
+   * Lança SessionOperationalStateOwnershipMismatchError se o estado pertencer a outro usuário.
    */
-  getState(sessionRef: SessionRef): Promise<SessionOperationalState | null>;
+  getState(sessionRef: SessionRef, expectedUserId: string): Promise<SessionOperationalState | null>;
 
   /**
    * Garante a existência do estado operacional para a sessão de forma atômica e idempotente.

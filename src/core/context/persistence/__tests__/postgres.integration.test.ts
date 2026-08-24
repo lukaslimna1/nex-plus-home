@@ -6,7 +6,7 @@
  * 1. Prova A/B/C de isolamento entre sessões do mesmo usuário e entre usuários distintos.
  * 2. Concorrência otimista e incremento atômico de revisões.
  * 3. Detecção e falha estrita diante de conflito de revisão (stale revision).
- * 4. Proteção contra divergência de ownership (owner mismatch).
+ * 4. Proteção contra divergência de ownership (owner mismatch) em leitura (getState) e escrita (ensureState/setContextSubject).
  * 5. Criação concorrente atômica sem duplicação de linha (ON CONFLICT).
  * 6. Invariante SQL de par subject_type / subject_id.
  */
@@ -114,9 +114,9 @@ describe('0.86B-2 · Persistência PostgreSQL do Estado Operacional de Sessão',
     assert.equal(stateC1.contextSubjectRef, undefined);
 
     // 4. Prova de leitura isolada simultânea
-    const readA = await store.getState(sessionRefA);
-    const readB = await store.getState(sessionRefB);
-    const readC = await store.getState(sessionRefC);
+    const readA = await store.getState(sessionRefA, userLucas);
+    const readB = await store.getState(sessionRefB, userLucas);
+    const readC = await store.getState(sessionRefC, userJoao);
 
     assert.equal(readA?.contextSubjectRef?.subjectId, 'alterstate');
     assert.equal(readB?.contextSubjectRef?.subjectId, 'arkana');
@@ -133,8 +133,8 @@ describe('0.86B-2 · Persistência PostgreSQL do Estado Operacional de Sessão',
     assert.equal(stateA3.contextSubjectRef?.subjectId, 'nex_group');
 
     // Prova de que Session B e Session C permanecem INALTERADAS
-    const checkBAfterA = await store.getState(sessionRefB);
-    const checkCAfterA = await store.getState(sessionRefC);
+    const checkBAfterA = await store.getState(sessionRefB, userLucas);
+    const checkCAfterA = await store.getState(sessionRefC, userJoao);
     assert.equal(checkBAfterA?.contextSubjectRef?.subjectId, 'arkana');
     assert.equal(checkBAfterA?.revision, 2);
     assert.equal(checkCAfterA?.contextSubjectRef, undefined);
@@ -151,10 +151,28 @@ describe('0.86B-2 · Persistência PostgreSQL do Estado Operacional de Sessão',
     assert.equal(stateA4.contextSubjectRef, undefined);
 
     // Prova de que B continua Arkana e C continua pessoal
-    const checkBFinal = await store.getState(sessionRefB);
-    const checkCFinal = await store.getState(sessionRefC);
+    const checkBFinal = await store.getState(sessionRefB, userLucas);
+    const checkCFinal = await store.getState(sessionRefC, userJoao);
     assert.equal(checkBFinal?.contextSubjectRef?.subjectId, 'arkana');
     assert.equal(checkCFinal?.contextSubjectRef, undefined);
+  });
+
+  it('getState com ownership divergente no PostgreSQL lança SessionOperationalStateOwnershipMismatchError (Blocker 1 Prova B)', async () => {
+    // Session A pertence a userLucas. userJoao tenta ler com seu userId
+    await assert.rejects(
+      () => store.getState(sessionRefA, userJoao),
+      (err: any) => {
+        assert.ok(err instanceof SessionOperationalStateOwnershipMismatchError);
+        assert.equal(err.expectedUserId, userJoao);
+        assert.equal(err.actualUserId, userLucas);
+        return true;
+      }
+    );
+  });
+
+  it('getState para sessão inexistente retorna null (Blocker 1 Prova D)', async () => {
+    const nonexistent = await store.getState(sessionRefD, userLucas);
+    assert.equal(nonexistent, null);
   });
 
   it('rejeita mutação com stale revision (conflito de concorrência)', async () => {

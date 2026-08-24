@@ -3,6 +3,8 @@
  * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-2)
  *
  * Funções determinísticas puras (sem I/O, sem chamadas externas).
+ * Aplica validação estrita baseada em allowlists para impedir passagem de
+ * segredos materiais (tokens, senhas, cookies, JWT) e campos runtime arbitrários.
  */
 
 import type { Actor, ActorKind } from '../observations/contracts';
@@ -56,30 +58,160 @@ export function isCanonicalUtcInstant(val: unknown): val is string {
   return true;
 }
 
+/**
+ * Helper estrito de validação de chaves por allowlist (Zero Arbitrary/Secret Leak).
+ */
+export function assertExactKeys(
+  obj: Record<string, unknown>,
+  allowedKeys: readonly string[],
+  errorType: 'OperationalContext' | 'SessionOperationalState',
+  contextDescription: string
+): void {
+  const allowedSet = new Set(allowedKeys);
+  for (const key of Object.keys(obj)) {
+    if (!allowedSet.has(key)) {
+      if (errorType === 'SessionOperationalState') {
+        throw new SessionOperationalStateInvariantError(
+          'UNEXPECTED_PROPERTY',
+          `${contextDescription} contains forbidden/unexpected property '${key}'.`
+        );
+      }
+      throw new OperationalContextInvariantError(
+        'UNEXPECTED_PROPERTY',
+        `${contextDescription} contains forbidden/unexpected property '${key}'.`
+      );
+    }
+  }
+}
+
 // ============================================================================
-// 2. VALIDAÇÃO DE ATORES
+// 2. VALIDAÇÃO DE ATORES (ALLOWLIST ESTREITA POR VARIANTE CANÔNICA 0.85)
 // ============================================================================
 
 const ALLOWED_ACTOR_KINDS = new Set<ActorKind>(['human', 'max', 'system', 'integration']);
 
-export function isActor(val: unknown): val is Actor {
-  if (!val || typeof val !== 'object') return false;
+export function validateActor(val: unknown): asserts val is Actor {
+  if (!val || typeof val !== 'object') {
+    throw new OperationalContextInvariantError(
+      'INVALID_ACTOR',
+      'Actor must be a non-null object.'
+    );
+  }
 
   const candidate = val as Record<string, unknown>;
-  if (typeof candidate.kind !== 'string') return false;
-  if (!ALLOWED_ACTOR_KINDS.has(candidate.kind as ActorKind)) return false;
+  if (typeof candidate.kind !== 'string') {
+    throw new OperationalContextInvariantError(
+      'INVALID_ACTOR_KIND',
+      'Actor.kind must be a string.'
+    );
+  }
+
+  if (!ALLOWED_ACTOR_KINDS.has(candidate.kind as ActorKind)) {
+    throw new OperationalContextInvariantError(
+      'INVALID_ACTOR_KIND',
+      `Actor.kind '${String(candidate.kind)}' is not an allowed Actor variant.`
+    );
+  }
 
   switch (candidate.kind) {
     case 'human':
-      return isNonEmptyString(candidate.humanId);
+      assertExactKeys(
+        candidate,
+        ['kind', 'humanId', 'role', 'authorityRef'],
+        'OperationalContext',
+        'HumanActor'
+      );
+      if (!isNonEmptyString(candidate.humanId)) {
+        throw new OperationalContextInvariantError(
+          'INVALID_ACTOR_HUMAN_ID',
+          'HumanActor.humanId must be a non-empty string.'
+        );
+      }
+      if (candidate.role !== undefined && !isNonEmptyString(candidate.role)) {
+        throw new OperationalContextInvariantError(
+          'INVALID_ACTOR_ROLE',
+          'HumanActor.role when provided must be a non-empty string.'
+        );
+      }
+      if (candidate.authorityRef !== undefined && !isNonEmptyString(candidate.authorityRef)) {
+        throw new OperationalContextInvariantError(
+          'INVALID_ACTOR_AUTHORITY_REF',
+          'HumanActor.authorityRef when provided must be a non-empty string.'
+        );
+      }
+      break;
+
     case 'max':
-      return isNonEmptyString(candidate.maxVersion);
+      assertExactKeys(
+        candidate,
+        ['kind', 'maxVersion', 'sessionRef'],
+        'OperationalContext',
+        'MaxActor'
+      );
+      if (!isNonEmptyString(candidate.maxVersion)) {
+        throw new OperationalContextInvariantError(
+          'INVALID_ACTOR_MAX_VERSION',
+          'MaxActor.maxVersion must be a non-empty string.'
+        );
+      }
+      if (candidate.sessionRef !== undefined && !isNonEmptyString(candidate.sessionRef)) {
+        throw new OperationalContextInvariantError(
+          'INVALID_ACTOR_SESSION_REF',
+          'MaxActor.sessionRef when provided must be a non-empty string.'
+        );
+      }
+      break;
+
     case 'system':
-      return isNonEmptyString(candidate.component);
+      assertExactKeys(
+        candidate,
+        ['kind', 'component', 'version'],
+        'OperationalContext',
+        'SystemActor'
+      );
+      if (!isNonEmptyString(candidate.component)) {
+        throw new OperationalContextInvariantError(
+          'INVALID_ACTOR_COMPONENT',
+          'SystemActor.component must be a non-empty string.'
+        );
+      }
+      if (candidate.version !== undefined && !isNonEmptyString(candidate.version)) {
+        throw new OperationalContextInvariantError(
+          'INVALID_ACTOR_VERSION',
+          'SystemActor.version when provided must be a non-empty string.'
+        );
+      }
+      break;
+
     case 'integration':
-      return isNonEmptyString(candidate.provider);
-    default:
-      return false;
+      assertExactKeys(
+        candidate,
+        ['kind', 'provider', 'integrationId'],
+        'OperationalContext',
+        'IntegrationActor'
+      );
+      if (!isNonEmptyString(candidate.provider)) {
+        throw new OperationalContextInvariantError(
+          'INVALID_ACTOR_PROVIDER',
+          'IntegrationActor.provider must be a non-empty string.'
+        );
+      }
+      if (candidate.integrationId !== undefined && !isNonEmptyString(candidate.integrationId)) {
+        throw new OperationalContextInvariantError(
+          'INVALID_ACTOR_INTEGRATION_ID',
+          'IntegrationActor.integrationId when provided must be a non-empty string.'
+        );
+      }
+      break;
+  }
+}
+
+export function isActor(val: unknown): val is Actor {
+  try {
+    validateActor(val);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -95,6 +227,12 @@ export function validateContextSubjectRef(ref: unknown): asserts ref is ContextS
     );
   }
   const candidate = ref as Record<string, unknown>;
+  assertExactKeys(
+    candidate,
+    ['subjectType', 'subjectId'],
+    'OperationalContext',
+    'ContextSubjectRef'
+  );
   if (!isNonEmptyString(candidate.subjectType)) {
     throw new OperationalContextInvariantError(
       'INVALID_SUBJECT_TYPE',
@@ -117,6 +255,12 @@ export function validateFlowRef(ref: unknown): asserts ref is FlowRef {
     );
   }
   const candidate = ref as Record<string, unknown>;
+  assertExactKeys(
+    candidate,
+    ['flowType', 'flowId'],
+    'OperationalContext',
+    'FlowRef'
+  );
   if (!isNonEmptyString(candidate.flowType)) {
     throw new OperationalContextInvariantError(
       'INVALID_FLOW_TYPE',
@@ -139,12 +283,28 @@ export function validateContextScopeRef(ref: unknown): asserts ref is ContextSco
     );
   }
   const candidate = ref as Record<string, unknown>;
-  if (!candidate.module || typeof candidate.module !== 'object' || !isNonEmptyString((candidate.module as any).moduleKey)) {
+  assertExactKeys(
+    candidate,
+    ['module', 'scopeType', 'scopeId'],
+    'OperationalContext',
+    'ContextScopeRef'
+  );
+
+  if (!candidate.module || typeof candidate.module !== 'object') {
+    throw new OperationalContextInvariantError(
+      'INVALID_SCOPE_MODULE',
+      'ContextScopeRef.module must be a valid ModuleRef object.'
+    );
+  }
+  const modCandidate = candidate.module as Record<string, unknown>;
+  assertExactKeys(modCandidate, ['moduleKey'], 'OperationalContext', 'ModuleRef');
+  if (!isNonEmptyString(modCandidate.moduleKey)) {
     throw new OperationalContextInvariantError(
       'INVALID_SCOPE_MODULE',
       'ContextScopeRef.module.moduleKey must be a non-empty string.'
     );
   }
+
   if (!isNonEmptyString(candidate.scopeType)) {
     throw new OperationalContextInvariantError(
       'INVALID_SCOPE_TYPE',
@@ -167,23 +327,45 @@ export function validateContextAnchorRef(ref: unknown): asserts ref is ContextAn
     );
   }
   const candidate = ref as Record<string, unknown>;
+
   if (candidate.kind === 'resource') {
+    assertExactKeys(
+      candidate,
+      ['kind', 'resource'],
+      'OperationalContext',
+      "ContextAnchorRef (kind='resource')"
+    );
+
     const res = candidate.resource as Record<string, unknown> | undefined;
-    if (
-      !res ||
-      typeof res !== 'object' ||
-      !res.ownerModule ||
-      typeof res.ownerModule !== 'object' ||
-      !isNonEmptyString((res.ownerModule as any).moduleKey) ||
-      !isNonEmptyString(res.resourceType) ||
-      !isNonEmptyString(res.resourceId)
-    ) {
+    if (!res || typeof res !== 'object') {
       throw new OperationalContextInvariantError(
         'INVALID_ANCHOR_RESOURCE_REF',
-        "ContextAnchorRef with kind 'resource' must contain a valid ResourceRef (ownerModule.moduleKey, resourceType, resourceId)."
+        "ContextAnchorRef with kind 'resource' must contain a valid ResourceRef object."
+      );
+    }
+    assertExactKeys(res, ['ownerModule', 'resourceType', 'resourceId'], 'OperationalContext', 'ResourceRef');
+
+    const mod = res.ownerModule as Record<string, unknown> | undefined;
+    if (!mod || typeof mod !== 'object') {
+      throw new OperationalContextInvariantError(
+        'INVALID_ANCHOR_RESOURCE_REF',
+        'ResourceRef.ownerModule must be a valid ModuleRef object.'
+      );
+    }
+    assertExactKeys(mod, ['moduleKey'], 'OperationalContext', 'ModuleRef');
+    if (!isNonEmptyString(mod.moduleKey) || !isNonEmptyString(res.resourceType) || !isNonEmptyString(res.resourceId)) {
+      throw new OperationalContextInvariantError(
+        'INVALID_ANCHOR_RESOURCE_REF',
+        "ResourceRef must contain valid non-empty ownerModule.moduleKey, resourceType, and resourceId."
       );
     }
   } else if (candidate.kind === 'scope') {
+    assertExactKeys(
+      candidate,
+      ['kind', 'scope'],
+      'OperationalContext',
+      "ContextAnchorRef (kind='scope')"
+    );
     validateContextScopeRef(candidate.scope);
   } else {
     throw new OperationalContextInvariantError(
@@ -201,12 +383,28 @@ export function validateOperationalLocation(loc: unknown): asserts loc is Operat
     );
   }
   const candidate = loc as Record<string, unknown>;
-  if (!candidate.module || typeof candidate.module !== 'object' || !isNonEmptyString((candidate.module as any).moduleKey)) {
+  assertExactKeys(
+    candidate,
+    ['module', 'trail'],
+    'OperationalContext',
+    'OperationalLocation'
+  );
+
+  if (!candidate.module || typeof candidate.module !== 'object') {
+    throw new OperationalContextInvariantError(
+      'INVALID_LOCATION_MODULE',
+      'OperationalLocation.module must be a valid ModuleRef object.'
+    );
+  }
+  const modCandidate = candidate.module as Record<string, unknown>;
+  assertExactKeys(modCandidate, ['moduleKey'], 'OperationalContext', 'ModuleRef');
+  if (!isNonEmptyString(modCandidate.moduleKey)) {
     throw new OperationalContextInvariantError(
       'INVALID_LOCATION_MODULE',
       'OperationalLocation.module.moduleKey must be a non-empty string.'
     );
   }
+
   if (!Array.isArray(candidate.trail)) {
     throw new OperationalContextInvariantError(
       'INVALID_LOCATION_TRAIL',
@@ -226,6 +424,12 @@ export function validateContextAspectRef(aspect: unknown): asserts aspect is Con
     );
   }
   const candidate = aspect as Record<string, unknown>;
+  assertExactKeys(
+    candidate,
+    ['target', 'aspectKey'],
+    'OperationalContext',
+    'ContextAspectRef'
+  );
   validateContextAnchorRef(candidate.target);
   if (!isNonEmptyString(candidate.aspectKey)) {
     throw new OperationalContextInvariantError(
@@ -243,6 +447,12 @@ export function validateOperationalFocus(focus: unknown): asserts focus is Opera
     );
   }
   const candidate = focus as Record<string, unknown>;
+  assertExactKeys(
+    candidate,
+    ['primaryTarget', 'relatedTargets', 'activeAspects', 'visibleAspects', 'action'],
+    'OperationalContext',
+    'OperationalFocus'
+  );
 
   if (candidate.primaryTarget !== undefined) {
     validateContextAnchorRef(candidate.primaryTarget);
@@ -302,6 +512,13 @@ export function validateObservedInteractionContext(
     );
   }
   const candidate = observed as Record<string, unknown>;
+  assertExactKeys(
+    candidate,
+    ['origin', 'observedAt', 'location', 'focus'],
+    'OperationalContext',
+    'ObservedInteractionContext'
+  );
+
   if (candidate.origin !== 'client_observed') {
     throw new OperationalContextInvariantError(
       'INVALID_OBSERVED_ORIGIN',
@@ -334,14 +551,26 @@ export function validateOperationalContext(ctx: unknown): asserts ctx is Operati
     );
   }
   const candidate = ctx as Record<string, unknown>;
+  assertExactKeys(
+    candidate,
+    [
+      'actor',
+      'userId',
+      'sessionRef',
+      'contextSubjectRef',
+      'location',
+      'focus',
+      'observedInteraction',
+      'flowRef',
+      'correlationId',
+      'channel',
+    ],
+    'OperationalContext',
+    'OperationalContext'
+  );
 
-  // 1. actor válido
-  if (!isActor(candidate.actor)) {
-    throw new OperationalContextInvariantError(
-      'INVALID_ACTOR',
-      'OperationalContext.actor must be a valid Actor.'
-    );
-  }
+  // 1. actor válido por allowlist estrita
+  validateActor(candidate.actor);
 
   // 2. Validação de sessionRef e userId
   if (candidate.sessionRef !== undefined) {
@@ -421,7 +650,7 @@ export function validateOperationalContext(ctx: unknown): asserts ctx is Operati
 }
 
 // ============================================================================
-// 5. VALIDAÇÃO DE SESSION OPERATIONAL STATE
+// 5. VALIDAÇÃO DE SESSION OPERATIONAL STATE (SHAPE MÍNIMO ESTRITO)
 // ============================================================================
 
 export function validateSessionOperationalState(state: unknown): asserts state is SessionOperationalState {
@@ -432,6 +661,14 @@ export function validateSessionOperationalState(state: unknown): asserts state i
     );
   }
   const candidate = state as Record<string, unknown>;
+
+  // Assert exact minimal keys — reject any extra property (jwt, cookie, module, focus, route, secret, etc.)
+  assertExactKeys(
+    candidate,
+    ['sessionRef', 'userId', 'contextSubjectRef', 'revision', 'createdAt', 'updatedAt'],
+    'SessionOperationalState',
+    'SessionOperationalState'
+  );
 
   if (!isValidSessionRef(candidate.sessionRef)) {
     throw new SessionOperationalStateInvariantError(

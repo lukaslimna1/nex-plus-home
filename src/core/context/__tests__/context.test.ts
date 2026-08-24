@@ -6,7 +6,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import type { HumanActor, MaxActor, SystemActor, IntegrationActor } from '../../observations/contracts';
+import type { HumanActor, MaxActor, SystemActor, IntegrationActor, Actor } from '../../observations/contracts';
 import type { SessionRef } from '../../../auth/session-ref.types';
 import type { ModuleRef, ResourceRef, CorrelationId } from '../../modules/contracts';
 import type {
@@ -29,6 +29,7 @@ import type {
   OperationVerb,
 } from '../contracts';
 import {
+  validateActor,
   validateContextSubjectRef,
   validateFlowRef,
   validateContextScopeRef,
@@ -49,6 +50,131 @@ import {
 const VALID_SESSION_REF_A = 'a'.repeat(64) as SessionRef;
 const VALID_SESSION_REF_B = 'b'.repeat(64) as SessionRef;
 
+describe('0.86B-2 · Actor Allowlist & Runtime Strictness (Blocker 2)', () => {
+  it('valida HumanActor canônico e aceita campos opcionais canônicos (role, authorityRef)', () => {
+    const minimalHuman: HumanActor = { kind: 'human', humanId: 'u1' };
+    assert.doesNotThrow(() => validateActor(minimalHuman));
+
+    const fullHuman: HumanActor = {
+      kind: 'human',
+      humanId: 'u1',
+      role: 'managing_partner',
+      authorityRef: 'auth_ref_123',
+    };
+    assert.doesNotThrow(() => validateActor(fullHuman));
+  });
+
+  it('rejeita HumanActor com token, jwt, secret, password ou campos arbitrários extras', () => {
+    const humanWithToken = {
+      kind: 'human',
+      humanId: 'u1',
+      token: 'SUPER_SECRET_TOKEN',
+    };
+    assert.throws(
+      () => validateActor(humanWithToken),
+      (err: any) => err.violationType === 'UNEXPECTED_PROPERTY'
+    );
+
+    const humanWithJwt = {
+      kind: 'human',
+      humanId: 'u1',
+      jwt: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
+    };
+    assert.throws(
+      () => validateActor(humanWithJwt),
+      (err: any) => err.violationType === 'UNEXPECTED_PROPERTY'
+    );
+
+    const humanWithArbitrary = {
+      kind: 'human',
+      humanId: 'u1',
+      metadata: { leaked: true },
+    };
+    assert.throws(
+      () => validateActor(humanWithArbitrary),
+      (err: any) => err.violationType === 'UNEXPECTED_PROPERTY'
+    );
+  });
+
+  it('valida MaxActor canônico com sessionRef opcional e rejeita campos extras', () => {
+    const minimalMax: MaxActor = { kind: 'max', maxVersion: '1.0.0' };
+    assert.doesNotThrow(() => validateActor(minimalMax));
+
+    const maxWithSession: MaxActor = {
+      kind: 'max',
+      maxVersion: '1.0.0',
+      sessionRef: 'internal_max_session_123',
+    };
+    assert.doesNotThrow(() => validateActor(maxWithSession));
+
+    const maxWithSecret = {
+      kind: 'max',
+      maxVersion: '1.0.0',
+      secret: 'API_KEY_SECRET',
+    };
+    assert.throws(
+      () => validateActor(maxWithSecret),
+      (err: any) => err.violationType === 'UNEXPECTED_PROPERTY'
+    );
+  });
+
+  it('valida SystemActor canônico com version opcional e rejeita jwt extra', () => {
+    const sysActor: SystemActor = {
+      kind: 'system',
+      component: 'reconciliation_engine',
+      version: '2.1.0',
+    };
+    assert.doesNotThrow(() => validateActor(sysActor));
+
+    const sysWithJwt = {
+      kind: 'system',
+      component: 'reconciliation_engine',
+      jwt: 'secret_jwt_data',
+    };
+    assert.throws(
+      () => validateActor(sysWithJwt),
+      (err: any) => err.violationType === 'UNEXPECTED_PROPERTY'
+    );
+  });
+
+  it('valida IntegrationActor canônico com integrationId opcional e rejeita password extra', () => {
+    const intActor: IntegrationActor = {
+      kind: 'integration',
+      provider: 'bling',
+      integrationId: 'bling_conn_456',
+    };
+    assert.doesNotThrow(() => validateActor(intActor));
+
+    const intWithPassword = {
+      kind: 'integration',
+      provider: 'bling',
+      password: 'mypassword',
+    };
+    assert.throws(
+      () => validateActor(intWithPassword),
+      (err: any) => err.violationType === 'UNEXPECTED_PROPERTY'
+    );
+  });
+
+  it('reconstrução defensiva na composição não propaga campos arbitrários nem segredos', () => {
+    const cleanHuman: HumanActor = {
+      kind: 'human',
+      humanId: 'usr_lucas',
+      role: 'admin',
+    };
+
+    const ctx = composeOperationalContext({
+      actor: cleanHuman,
+      userId: 'usr_lucas',
+      sessionRef: VALID_SESSION_REF_A,
+    });
+
+    assert.deepEqual(Object.keys(ctx.actor).sort(), ['authorityRef', 'humanId', 'kind', 'role'].filter(k => (ctx.actor as any)[k] !== undefined).sort());
+    assert.equal(ctx.actor.kind, 'human');
+    assert.equal(ctx.actor.humanId, 'usr_lucas');
+  });
+});
+
 describe('0.86B-2 · ContextSubjectRef & FlowRef Invariants', () => {
   it('valida ContextSubjectRef válido com subjectType extensível', () => {
     const subject: ContextSubjectRef = {
@@ -65,7 +191,7 @@ describe('0.86B-2 · ContextSubjectRef & FlowRef Invariants', () => {
     assert.doesNotThrow(() => validateContextSubjectRef(orgSubject));
   });
 
-  it('rejeita ContextSubjectRef com campos nulos, vazios ou inválidos', () => {
+  it('rejeita ContextSubjectRef com campos extras ou inválidos', () => {
     assert.throws(
       () => validateContextSubjectRef(null),
       OperationalContextInvariantError
@@ -78,9 +204,13 @@ describe('0.86B-2 · ContextSubjectRef & FlowRef Invariants', () => {
       () => validateContextSubjectRef({ subjectType: 'brand', subjectId: '   ' }),
       (err: any) => err.violationType === 'INVALID_SUBJECT_ID'
     );
+    assert.throws(
+      () => validateContextSubjectRef({ subjectType: 'brand', subjectId: 'alterstate', extra: 'data' } as any),
+      (err: any) => err.violationType === 'UNEXPECTED_PROPERTY'
+    );
   });
 
-  it('valida FlowRef válido e rejeita inválido', () => {
+  it('valida FlowRef válido e rejeita inválido ou com campos extras', () => {
     const validFlow: FlowRef = {
       flowType: 'supplier_onboarding' as FlowType,
       flowId: 'flow_123' as FlowId,
@@ -94,6 +224,10 @@ describe('0.86B-2 · ContextSubjectRef & FlowRef Invariants', () => {
     assert.throws(
       () => validateFlowRef({ flowType: 'flow', flowId: '' }),
       (err: any) => err.violationType === 'INVALID_FLOW_ID'
+    );
+    assert.throws(
+      () => validateFlowRef({ flowType: 'flow', flowId: '123', extraField: true } as any),
+      (err: any) => err.violationType === 'UNEXPECTED_PROPERTY'
     );
   });
 });
@@ -143,21 +277,45 @@ describe('0.86B-2 · ContextScopeRef, ContextAnchorRef & OperationalLocation', (
       },
     };
     assert.doesNotThrow(() => validateContextAnchorRef(scopeAnchor));
+  });
 
-    // Variante inválida
+  it('rejeita ContextAnchorRef híbrido (kind=resource com scopeRef ou kind=scope com resourceRef) (Gap 1)', () => {
+    // 1. kind=resource contendo scope
+    const hybridResource = {
+      kind: 'resource',
+      resource: {
+        ownerModule: moduleRef,
+        resourceType: 'supplier' as any,
+        resourceId: 'sup_x' as any,
+      },
+      scope: {
+        module: moduleRef,
+        scopeType: 'category' as any,
+        scopeId: 'boxes' as any,
+      },
+    };
     assert.throws(
-      () => validateContextAnchorRef({ kind: 'other', some: 'val' } as any),
-      (err: any) => err.violationType === 'INVALID_ANCHOR_KIND'
+      () => validateContextAnchorRef(hybridResource as any),
+      (err: any) => err.violationType === 'UNEXPECTED_PROPERTY'
     );
 
-    // Resource incompleto
+    // 2. kind=scope contendo resource
+    const hybridScope = {
+      kind: 'scope',
+      scope: {
+        module: moduleRef,
+        scopeType: 'category' as any,
+        scopeId: 'boxes' as any,
+      },
+      resource: {
+        ownerModule: moduleRef,
+        resourceType: 'supplier' as any,
+        resourceId: 'sup_x' as any,
+      },
+    };
     assert.throws(
-      () =>
-        validateContextAnchorRef({
-          kind: 'resource',
-          resource: { ownerModule: moduleRef, resourceType: '', resourceId: '1' },
-        } as any),
-      (err: any) => err.violationType === 'INVALID_ANCHOR_RESOURCE_REF'
+      () => validateContextAnchorRef(hybridScope as any),
+      (err: any) => err.violationType === 'UNEXPECTED_PROPERTY'
     );
   });
 
@@ -272,6 +430,98 @@ describe('0.86B-2 · ContextAspectRef, OperationalFocus & ObservedInteractionCon
   });
 });
 
+describe('0.86B-2 · Max Contextual (Gap 2)', () => {
+  it('comprova MaxActor + userId contextual humano + SessionRef contextual', () => {
+    const maxActor: MaxActor = {
+      kind: 'max',
+      maxVersion: '1.2.0',
+      sessionRef: 'internal_max_task_987',
+    };
+
+    const ctx = composeOperationalContext({
+      actor: maxActor,
+      userId: 'usr_lucas_contextual',
+      sessionRef: VALID_SESSION_REF_A,
+      contextSubjectRef: {
+        subjectType: 'brand' as ContextSubjectType,
+        subjectId: 'alterstate' as ContextSubjectId,
+      },
+    });
+
+    // 1. Ator permanece estritamente MAX
+    assert.equal(ctx.actor.kind, 'max');
+    assert.equal((ctx.actor as MaxActor).maxVersion, '1.2.0');
+    assert.equal((ctx.actor as MaxActor).sessionRef, 'internal_max_task_987');
+
+    // 2. Não vira HumanActor
+    assert.notEqual(ctx.actor.kind, 'human');
+
+    // 3. userId representa o contexto humano em que o MAX atua
+    assert.equal(ctx.userId, 'usr_lucas_contextual');
+
+    // 4. sessionRef representa a correlação/sessão contextual
+    assert.equal(ctx.sessionRef, VALID_SESSION_REF_A);
+  });
+});
+
+describe('0.86B-2 · Conflito Canonical Context × Client Observed (Gap 4)', () => {
+  const moduleA: ModuleRef = { moduleKey: 'fornecedores' as any };
+  const moduleB: ModuleRef = { moduleKey: 'radar' as any };
+
+  const anchorA: ContextAnchorRef = {
+    kind: 'resource',
+    resource: { ownerModule: moduleA, resourceType: 'supplier' as any, resourceId: 'sup_a' as any },
+  };
+  const anchorB: ContextAnchorRef = {
+    kind: 'resource',
+    resource: { ownerModule: moduleB, resourceType: 'item' as any, resourceId: 'item_b' as any },
+  };
+
+  const locA: OperationalLocation = { module: moduleA, trail: [anchorA] };
+  const locB: OperationalLocation = { module: moduleB, trail: [anchorB] };
+
+  const focusA: OperationalFocus = { primaryTarget: anchorA, action: 'view' as any };
+  const focusB: OperationalFocus = { primaryTarget: anchorB, action: 'edit' as any };
+
+  it('preserva contexto canônico A mesmo com observedInteraction B e mantém origin client_observed', () => {
+    const humanLucas: HumanActor = { kind: 'human', humanId: 'usr_lucas_123' };
+
+    const ctx = composeOperationalContext({
+      actor: humanLucas,
+      userId: 'usr_lucas_123',
+      sessionRef: VALID_SESSION_REF_A,
+      contextSubjectRef: { subjectType: 'brand' as ContextSubjectType, subjectId: 'alterstate' as ContextSubjectId },
+      location: locA,
+      focus: focusA,
+      observedInteraction: {
+        origin: 'client_observed',
+        observedAt: '2026-08-24T19:00:00.000Z',
+        location: locB,
+        focus: focusB,
+      },
+    });
+
+    // 1. Contexto canônico permanece A
+    assert.equal(ctx.location?.module.moduleKey, 'fornecedores');
+    assert.equal((ctx.location?.trail[0] as any).resource.resourceId, 'sup_a');
+    assert.equal((ctx.focus?.primaryTarget as any).resource.resourceId, 'sup_a');
+    assert.equal(ctx.focus?.action, 'view');
+
+    // 2. Contexto observado pelo cliente permanece B
+    assert.equal(ctx.observedInteraction?.origin, 'client_observed');
+    assert.equal(ctx.observedInteraction?.location?.module.moduleKey, 'radar');
+    assert.equal((ctx.observedInteraction?.location?.trail[0] as any).resource.resourceId, 'item_b');
+    assert.equal((ctx.observedInteraction?.focus?.primaryTarget as any).resource.resourceId, 'item_b');
+    assert.equal(ctx.observedInteraction?.focus?.action, 'edit');
+
+    // 3. Observed interaction NÃO sobrescreve identidade canônica
+    assert.equal((ctx.actor as HumanActor).humanId, 'usr_lucas_123');
+    assert.equal(ctx.userId, 'usr_lucas_123');
+    assert.equal(ctx.sessionRef, VALID_SESSION_REF_A);
+    assert.equal(ctx.contextSubjectRef?.subjectId, 'alterstate');
+  });
+});
+
 describe('0.86B-2 · OperationalContext Invariants & Composition', () => {
   const humanLucas: HumanActor = {
     kind: 'human',
@@ -356,7 +606,7 @@ describe('0.86B-2 · OperationalContext Invariants & Composition', () => {
     assert.equal(ctxInt.actor.kind, 'integration');
   });
 
-  it('garante imutabilidade e não mutação dos inputs', () => {
+  it('garante imutabilidade e não mutação dos inputs após a composição', () => {
     const rawLocation: OperationalLocation = {
       module: { moduleKey: 'fornecedores' as any },
       trail: [
@@ -515,7 +765,7 @@ describe('0.86B-2 · Prova do Exemplo-Guia (Lucas → Alterstate → Fornecedore
   });
 });
 
-describe('0.86B-2 · SessionOperationalState Invariants', () => {
+describe('0.86B-2 · SessionOperationalState Minimal Shape (Section 6)', () => {
   it('valida SessionOperationalState válido', () => {
     const state = {
       sessionRef: VALID_SESSION_REF_A,
@@ -540,6 +790,47 @@ describe('0.86B-2 · SessionOperationalState Invariants', () => {
       updatedAt: '2026-08-24T19:00:00.000Z',
     };
     assert.doesNotThrow(() => validateSessionOperationalState(state));
+  });
+
+  it('rejeita SessionOperationalState contendo jwt, cookie, token, secret, module ou propriedades extras', () => {
+    const stateWithJwt = {
+      sessionRef: VALID_SESSION_REF_A,
+      userId: 'usr_lucas_123',
+      revision: 1,
+      createdAt: '2026-08-24T19:00:00.000Z',
+      updatedAt: '2026-08-24T19:00:00.000Z',
+      jwt: 'secret_jwt',
+    };
+    assert.throws(
+      () => validateSessionOperationalState(stateWithJwt),
+      (err: any) => err.violationType === 'UNEXPECTED_PROPERTY'
+    );
+
+    const stateWithModule = {
+      sessionRef: VALID_SESSION_REF_A,
+      userId: 'usr_lucas_123',
+      revision: 1,
+      createdAt: '2026-08-24T19:00:00.000Z',
+      updatedAt: '2026-08-24T19:00:00.000Z',
+      module: 'fornecedores',
+    };
+    assert.throws(
+      () => validateSessionOperationalState(stateWithModule),
+      (err: any) => err.violationType === 'UNEXPECTED_PROPERTY'
+    );
+
+    const stateWithArbitrary = {
+      sessionRef: VALID_SESSION_REF_A,
+      userId: 'usr_lucas_123',
+      revision: 1,
+      createdAt: '2026-08-24T19:00:00.000Z',
+      updatedAt: '2026-08-24T19:00:00.000Z',
+      arbitraryField: 123,
+    };
+    assert.throws(
+      () => validateSessionOperationalState(stateWithArbitrary),
+      (err: any) => err.violationType === 'UNEXPECTED_PROPERTY'
+    );
   });
 
   it('rejeita SessionOperationalState com revision < 1 ou timestamps inválidos', () => {

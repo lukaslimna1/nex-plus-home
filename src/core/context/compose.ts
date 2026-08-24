@@ -4,6 +4,10 @@
  *
  * Função determinística pura para compor, validar e congelar a estrutura
  * imutável de OperationalContext.
+ *
+ * Aplica reconstrução defensiva explícita por variante de Actor e entidades
+ * estruturais, garantindo que nenhum campo arbitrário ou segredo material
+ * sobreviva na estrutura composta.
  */
 
 import type { Actor } from '../observations/contracts';
@@ -33,6 +37,40 @@ export interface ComposeOperationalContextParams {
   readonly flowRef?: FlowRef;
   readonly correlationId?: CorrelationId;
   readonly channel?: OperationalChannel;
+}
+
+/**
+ * Reconstrução defensiva e congelamento estrito de Actor por variante canônica.
+ * Nunca utiliza spread raso ({ ...actor }) como mecanismo de sanitização.
+ */
+function freezeActor(actor: Actor): Actor {
+  switch (actor.kind) {
+    case 'human':
+      return Object.freeze({
+        kind: 'human',
+        humanId: actor.humanId,
+        ...(actor.role !== undefined ? { role: actor.role } : {}),
+        ...(actor.authorityRef !== undefined ? { authorityRef: actor.authorityRef } : {}),
+      });
+    case 'max':
+      return Object.freeze({
+        kind: 'max',
+        maxVersion: actor.maxVersion,
+        ...(actor.sessionRef !== undefined ? { sessionRef: actor.sessionRef } : {}),
+      });
+    case 'system':
+      return Object.freeze({
+        kind: 'system',
+        component: actor.component,
+        ...(actor.version !== undefined ? { version: actor.version } : {}),
+      });
+    case 'integration':
+      return Object.freeze({
+        kind: 'integration',
+        provider: actor.provider,
+        ...(actor.integrationId !== undefined ? { integrationId: actor.integrationId } : {}),
+      });
+  }
 }
 
 function freezeAnchor(anchor: ContextAnchorRef): ContextAnchorRef {
@@ -104,11 +142,11 @@ function freezeObservedInteraction(
 export function composeOperationalContext(
   params: ComposeOperationalContextParams
 ): OperationalContext {
-  // 1. Validação estrita de invariantes
+  // 1. Validação estrita de invariantes e allowlists de chaves
   validateOperationalContext(params);
 
-  // 2. Cópia defensiva e congelamento estrutural
-  const frozenActor = Object.freeze({ ...params.actor });
+  // 2. Cópia defensiva explícita e congelamento estrutural
+  const frozenActor = freezeActor(params.actor);
   const frozenSubjectRef = params.contextSubjectRef
     ? Object.freeze({
         subjectType: params.contextSubjectRef.subjectType,
