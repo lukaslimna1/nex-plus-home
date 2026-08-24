@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import { getPayload } from 'payload';
 import configPromise from '../../src/payload.config';
 import crypto from 'node:crypto';
+import { decodeJwt } from 'jose';
 
 test.describe('NEX+ Multiusuário · E2E Authentication Flow (0.8A Isolated Harness)', () => {
   let testUserId: string;
@@ -154,6 +155,8 @@ test.describe('NEX+ Multiusuário · E2E Authentication Flow (0.8A Isolated Harn
     const cookiesA = await contextA.cookies();
     const oldAuthCookieA = cookiesA.find((c) => c.name === 'payload-token');
     expect(oldAuthCookieA).toBeDefined();
+    const sessionIdA = oldAuthCookieA ? decodeJwt(oldAuthCookieA.value).sid : undefined;
+    expect(typeof sessionIdA).toBe('string');
 
     // 4. Logar no Dispositivo B com a mesma conta
     await pageB.goto('/login');
@@ -162,6 +165,11 @@ test.describe('NEX+ Multiusuário · E2E Authentication Flow (0.8A Isolated Harn
     await pageB.click('button[type="submit"]');
     await expect(pageB).toHaveURL(/\/home/);
     await expect(pageB.locator(`text=${testDisplayName}`)).toBeVisible();
+    const cookiesB = await contextB.cookies();
+    const authCookieB = cookiesB.find((c) => c.name === 'payload-token');
+    const sessionIdB = authCookieB ? decodeJwt(authCookieB.value).sid : undefined;
+    expect(typeof sessionIdB).toBe('string');
+    expect(sessionIdB).not.toBe(sessionIdA);
 
     // 5. Executar logout exclusivamente no Dispositivo A
     const userCardA = pageA.locator(`button[title*="${testDisplayName}"]`);
@@ -174,6 +182,20 @@ test.describe('NEX+ Multiusuário · E2E Authentication Flow (0.8A Isolated Harn
     // 6. Verificar que Dispositivo A está desconectado
     await pageA.goto('/home');
     await expect(pageA).toHaveURL(/\/login/);
+
+    // Prova intermediária server-side: o Payload removeu o sid de A e preservou B.
+    const payload = await getPayload({ config: configPromise });
+    const userAfterLogout = await payload.findByID({
+      collection: 'users',
+      id: testUserId,
+      depth: 0,
+      overrideAccess: true,
+    });
+    const activeSessionIds = ((userAfterLogout as { sessions?: Array<{ id?: string }> }).sessions || [])
+      .map((session) => session.id)
+      .filter((id): id is string => typeof id === 'string');
+    expect(activeSessionIds.includes(sessionIdA as string)).toBe(false);
+    expect(activeSessionIds.includes(sessionIdB as string)).toBe(true);
 
     // 7. Provar que o Dispositivo B CONTINUA AUTENTICADO e acessa /home normalmente
     await pageB.reload();

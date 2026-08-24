@@ -10,7 +10,7 @@
 
 import { getPayload } from 'payload';
 import { login, logout, refresh } from '@payloadcms/next/auth';
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
 import configPromise from '@/payload.config';
 import {
   normalizeEmail,
@@ -22,6 +22,24 @@ import { forgotPasswordRateLimiter } from './rate-limiter';
 export interface LoginActionResult {
   readonly success: boolean;
   readonly error?: string;
+}
+
+type PayloadUserSession = {
+  id: string;
+  createdAt?: string | null;
+  expiresAt: string;
+};
+
+/** Retorna null quando o logout oficial já removeu o sid corrente. */
+export async function removeCurrentSessionIfPersisted(
+  sessions: readonly PayloadUserSession[] | null | undefined,
+  currentSid: string,
+): Promise<PayloadUserSession[] | null> {
+  if (!sessions?.some((session) => session.id === currentSid)) {
+    return null;
+  }
+
+  return sessions.filter((session) => session.id !== currentSid);
 }
 
 export interface ForgotPasswordActionResult {
@@ -222,6 +240,13 @@ export async function resetPasswordAction(
  */
 export async function logoutAction(): Promise<LogoutActionResult> {
   try {
+    const requestHeaders = new Headers(await headers());
+    const payload = await getPayload({ config: configPromise });
+    const authResult = await payload.auth({ headers: requestHeaders });
+    const currentUser = authResult.user as { id?: string; _sid?: string } | null | undefined;
+    const currentUserId = currentUser?.id;
+    const currentSid = currentUser?._sid;
+
     const result = await logout({
       config: configPromise,
     });
@@ -230,6 +255,45 @@ export async function logoutAction(): Promise<LogoutActionResult> {
       const cookieStore = await cookies();
       cookieStore.delete('payload-token');
     } catch {}
+
+    if (!result?.success) {
+      return handleLogoutResult(result);
+    }
+
+    if (currentUserId && currentSid) {
+      const latestUser = await payload.findByID({
+        collection: 'users',
+        id: currentUserId,
+        depth: 0,
+        overrideAccess: true,
+      });
+      const latestSessions = (latestUser.sessions || []) as PayloadUserSession[];
+
+      // Payload upstream #16061 / PR #16165: logout leaves the current sid persisted.
+      const sessionsWithoutCurrent = await removeCurrentSessionIfPersisted(latestSessions, currentSid);
+      if (sessionsWithoutCurrent) {
+        await payload.update({
+          collection: 'users',
+          id: currentUserId,
+          overrideAccess: true,
+          data: {
+            sessions: sessionsWithoutCurrent,
+          },
+        });
+
+        const confirmedUser = await payload.findByID({
+          collection: 'users',
+          id: currentUserId,
+          depth: 0,
+          overrideAccess: true,
+        });
+        const sidStillPersisted = ((confirmedUser.sessions || []) as PayloadUserSession[])
+          .some((session) => session.id === currentSid);
+        if (sidStillPersisted) {
+          return handleLogoutResult({ success: false });
+        }
+      }
+    }
 
     return handleLogoutResult(result);
   } catch {

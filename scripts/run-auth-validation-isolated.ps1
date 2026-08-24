@@ -18,49 +18,12 @@ if (-not (Test-Path $envFilePath)) {
     exit 1
 }
 
-# 0. Aquisição de Lock Exclusivo Atômico (Fail-Closed)
+# 0. Preparação do Lock Exclusivo Atômico (a aquisição ocorre após o preflight)
 $e2eLockFile = Join-Path $RepoRoot ".next-e2e-auth.lock"
 $lockStream = $null
-try {
-    $lockStream = [System.IO.File]::Open($e2eLockFile, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
-    $lockInfo = @{
-        pid = $PID
-        timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-        type = "e2e:auth:isolated"
-    } | ConvertTo-Json
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($lockInfo)
-    $lockStream.Write($bytes, 0, $bytes.Length)
-    $lockStream.Flush()
-} catch [System.IO.IOException] {
-    $isStale = $false
-    if (Test-Path $e2eLockFile) {
-        try {
-            $existingLock = Get-Content -Raw $e2eLockFile | ConvertFrom-Json
-            if ($existingLock.pid) {
-                $proc = Get-Process -Id $existingLock.pid -ErrorAction SilentlyContinue
-                if (-not $proc) {
-                    $isStale = $true
-                }
-            }
-        } catch {}
-    }
-    if ($isStale) {
-        Write-Host "[harness] Lockfile órfão detectado em .next-e2e-auth.lock. Limpando lock stale..." -ForegroundColor Yellow
-        Remove-Item -Path $e2eLockFile -Force -ErrorAction SilentlyContinue
-        $lockStream = [System.IO.File]::Open($e2eLockFile, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
-        $lockInfo = @{
-            pid = $PID
-            timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-            type = "e2e:auth:isolated"
-        } | ConvertTo-Json
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($lockInfo)
-        $lockStream.Write($bytes, 0, $bytes.Length)
-        $lockStream.Flush()
-    } else {
-        Write-Host "[SECURITY_FAIL] ERRO DE CONCORRÊNCIA: Outra instância de teste E2E isolado já está em execução (lock ativo em $e2eLockFile). Abortando." -ForegroundColor Red
-        exit 1
-    }
-}
+$lockOwnerToken = [guid]::NewGuid().ToString()
+$lockAcquired = $false
+$databaseCreated = $false
 
 # 1. Preflight PostgreSQL CLI Tools
 $pgPaths = @("C:\Program Files\PostgreSQL\18\bin", "C:\Program Files\PostgreSQL\17\bin", "C:\Program Files\PostgreSQL\16\bin")
@@ -81,9 +44,10 @@ $originalEdgeUrl = $env:PAYLOAD_PUBLIC_SERVER_URL
 $hadOriginalTrustedOrigins = [System.Environment]::GetEnvironmentVariables().ContainsKey("PAYLOAD_TRUSTED_ORIGINS")
 $originalTrustedOrigins = $env:PAYLOAD_TRUSTED_ORIGINS
 
-# Neutralizar imediatamente no processo do script para garantir modo local
-$env:PAYLOAD_PUBLIC_SERVER_URL = ""
-$env:PAYLOAD_TRUSTED_ORIGINS = ""
+# Origem única e explícita do E2E isolado; não depende do .env real.
+$e2eOrigin = "http://127.0.0.1:3108"
+$env:PAYLOAD_PUBLIC_SERVER_URL = $e2eOrigin
+$env:PAYLOAD_TRUSTED_ORIGINS = $e2eOrigin
 
 $envLines = Get-Content $envFilePath
 $dbUrlLine = $envLines | Where-Object { $_ -match '^DATABASE_URL=' }
@@ -113,7 +77,7 @@ if ($operationalHost -ne "127.0.0.1" -and $operationalHost -ne "localhost") {
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host " NEX+ · HARNESS DE VALIDAÇÃO ISOLADO (ESCOPO 0.8A / 0.8B-L)" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "Modo: LOCAL AUTH VALIDATION MODE (PAYLOAD_PUBLIC_SERVER_URL neutralizada deliberadamente)" -ForegroundColor Yellow
+Write-Host "Modo: LOCAL AUTH VALIDATION MODE (origem isolada: $e2eOrigin)" -ForegroundColor Yellow
 Write-Host "Host: $operationalHost | Porta: $operationalPort | Banco Operacional: $operationalDbName (PROTEGIDO)"
 
 # 3. Geração do nome do Database Descartável
@@ -134,10 +98,29 @@ $disposableDbUrl = "postgresql://${operationalUser}:${escapedPass}@${operational
 $exitCode = 0
 
 try {
+    # O lock é adquirido somente depois dos preflights read-only e antes de qualquer ação no banco/build.
+    # Não há remoção automática de lock existente: em caso ambíguo, falha fechada.
+    try {
+        $lockStream = [System.IO.File]::Open($e2eLockFile, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        $lockInfo = @{
+            pid = $PID
+            timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+            type = "e2e:auth:isolated"
+            token = $lockOwnerToken
+        } | ConvertTo-Json
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($lockInfo)
+        $lockStream.Write($bytes, 0, $bytes.Length)
+        $lockStream.Flush()
+        $lockAcquired = $true
+    } catch [System.IO.IOException] {
+        throw "[SECURITY_FAIL] ERRO DE CONCORRÊNCIA: outra instância de teste E2E isolado já está em execução (lock ativo em $e2eLockFile). Abortando."
+    }
+
     # 4. Criação do Database Descartável
     Write-Host "`n[1/7] Criando banco de dados descartável: $disposableDbName..." -ForegroundColor Yellow
     & createdb -h $operationalHost -p $operationalPort -U $operationalUser $disposableDbName
     if ($LASTEXITCODE -ne 0) { throw "Falha ao criar banco de dados descartável: $disposableDbName" }
+    $databaseCreated = $true
 
     # Verificação de segurança via query SQL direta
     $currentDb = (& psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT current_database();").Trim()
@@ -152,8 +135,8 @@ try {
     $env:NODE_ENV = "production"
     $env:NEX_E2E_ISOLATED = "1"
     $env:PORT = "3108"
-    $env:PAYLOAD_PUBLIC_SERVER_URL = ""
-    $env:PAYLOAD_TRUSTED_ORIGINS = ""
+    $env:PAYLOAD_PUBLIC_SERVER_URL = $e2eOrigin
+    $env:PAYLOAD_TRUSTED_ORIGINS = $e2eOrigin
     $env:NEX_BUILD_MODE = "e2e"
     Remove-Item env:NEXT_DIST_DIR -ErrorAction SilentlyContinue
 
@@ -219,7 +202,7 @@ catch {
 finally {
     # 10. Destruição segura e garantida do Database Descartável
     Write-Host "`n[7/7] Limpeza: destruindo banco de dados descartável e artefatos isolados..." -ForegroundColor Yellow
-    if ($disposableDbName -and $disposableDbName.StartsWith("nex_e2e_") -and $disposableDbName -ne $operationalDbName) {
+    if ($databaseCreated -and $disposableDbName -and $disposableDbName.StartsWith("nex_e2e_") -and $disposableDbName -ne $operationalDbName) {
         # Terminar conexões ativas no banco descartável antes de dropar
         & psql -h $operationalHost -p $operationalPort -U $operationalUser -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$disposableDbName' AND pid <> pg_backend_pid();" | Out-Null
         & dropdb -h $operationalHost -p $operationalPort -U $operationalUser $disposableDbName
@@ -230,7 +213,7 @@ finally {
 
     # Limpar diretório de build isolado do E2E
     $e2eDistPath = Join-Path $RepoRoot ".next-e2e-auth"
-    if (Test-Path $e2eDistPath) {
+    if ($lockAcquired -and (Test-Path $e2eDistPath)) {
         Remove-Item -Path $e2eDistPath -Recurse -Force -ErrorAction SilentlyContinue
         Write-Host "Diretório de build isolado '$e2eDistPath' removido com sucesso." -ForegroundColor Green
     }
@@ -240,10 +223,10 @@ finally {
         $lockStream.Close()
         $lockStream.Dispose()
     }
-    if (Test-Path $e2eLockFile) {
+    if ($lockAcquired -and (Test-Path $e2eLockFile)) {
         try {
             $existingLock = Get-Content -Raw $e2eLockFile -ErrorAction SilentlyContinue | ConvertFrom-Json
-            if ($existingLock.pid -eq $PID) {
+            if ($existingLock.pid -eq $PID -and $existingLock.token -eq $lockOwnerToken) {
                 Remove-Item -Path $e2eLockFile -Force -ErrorAction SilentlyContinue
             }
         } catch {}

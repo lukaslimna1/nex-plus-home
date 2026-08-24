@@ -7,9 +7,10 @@
  * Utiliza NEX_BUILD_MODE=verify com tsconfig.verify.json dedicado, mantendo o tsconfig.json intocado.
  */
 
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -18,68 +19,17 @@ const projectRoot = path.resolve(__dirname, '..');
 
 const isWindows = process.platform === 'win32';
 const nextBin = path.join(projectRoot, 'node_modules', '.bin', isWindows ? 'next.cmd' : 'next');
-
 const lockFile = path.join(projectRoot, '.next-verify.lock');
+const lockOwner = {
+  pid: process.pid,
+  timestamp: Date.now(),
+  type: 'build:verify',
+  token: crypto.randomUUID(),
+};
+
 let lockFd = null;
-
-try {
-  lockFd = fs.openSync(lockFile, 'wx');
-  const lockData = JSON.stringify(
-    {
-      pid: process.pid,
-      timestamp: Date.now(),
-      type: 'build:verify',
-    },
-    null,
-    2,
-  );
-  fs.writeFileSync(lockFd, lockData, 'utf8');
-} catch (err) {
-  if (err && err.code === 'EEXIST') {
-    let isStale = false;
-    try {
-      const existing = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
-      if (existing && existing.pid) {
-        try {
-          process.kill(existing.pid, 0);
-        } catch (killErr) {
-          if (killErr && killErr.code === 'ESRCH') {
-            isStale = true;
-          }
-        }
-      }
-    } catch {}
-
-    if (isStale) {
-      console.warn(`[build:verify] Lockfile órfão detectado (PID anterior não existe). Limpando lock stale...`);
-      try {
-        fs.unlinkSync(lockFile);
-      } catch {}
-      try {
-        lockFd = fs.openSync(lockFile, 'wx');
-        const lockData = JSON.stringify(
-          {
-            pid: process.pid,
-            timestamp: Date.now(),
-            type: 'build:verify',
-          },
-          null,
-          2,
-        );
-        fs.writeFileSync(lockFd, lockData, 'utf8');
-      } catch (retryErr) {
-        console.error(`[build:verify] Falha ao readquirir lock após limpar lock órfão. Abortando.`);
-        process.exit(1);
-      }
-    } else {
-      console.error(`[build:verify] ERRO DE CONCORRÊNCIA: Outro processo de verificação já está em execução (lock ativo em ${lockFile}). Abortando.`);
-      process.exit(1);
-    }
-  } else {
-    console.error(`[build:verify] Erro ao criar lockfile:`, err.message);
-    process.exit(1);
-  }
-}
+let child = null;
+let finished = false;
 
 function releaseLock() {
   if (lockFd !== null) {
@@ -88,28 +38,70 @@ function releaseLock() {
     } catch {}
     lockFd = null;
   }
+
   try {
-    if (fs.existsSync(lockFile)) {
-      const content = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
-      if (content && content.pid === process.pid) {
-        fs.unlinkSync(lockFile);
-      }
+    const content = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
+    if (content?.token === lockOwner.token) {
+      fs.unlinkSync(lockFile);
     }
   } catch {}
+}
+
+function acquireLock() {
+  try {
+    lockFd = fs.openSync(lockFile, 'wx');
+    fs.writeFileSync(lockFd, JSON.stringify(lockOwner, null, 2), 'utf8');
+  } catch (err) {
+    if (lockFd !== null) {
+      try {
+        fs.closeSync(lockFd);
+      } catch {}
+      lockFd = null;
+    }
+
+    if (err?.code === 'EEXIST') {
+      throw new Error(`[build:verify] ERRO DE CONCORRÊNCIA: lock ativo em ${lockFile}. Abortando.`);
+    }
+    throw new Error(`[build:verify] Erro ao criar lockfile: ${err?.message || err}`);
+  }
+}
+
+function terminateChild() {
+  if (!child?.pid || child.killed) return;
+
+  try {
+    if (isWindows) {
+      execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+    } else {
+      child.kill('SIGTERM');
+    }
+  } catch {}
+}
+
+function finish(code, message) {
+  if (finished) return;
+  finished = true;
+  releaseLock();
+  if (message) console.error(message);
+  process.exit(code);
+}
+
+try {
+  acquireLock();
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
 }
 
 const env = {
   ...process.env,
   NEX_BUILD_MODE: 'verify',
   NODE_ENV: 'production',
+  NEXT_DIST_DIR: '',
 };
 
-// Remover qualquer distDir manual para forçar a autoridade do NEX_BUILD_MODE
-delete env.NEXT_DIST_DIR;
+console.log('[build:verify] Iniciando build de verificação isolado (NEX_BUILD_MODE=verify, distDir=.next-verify)');
 
-console.log(`[build:verify] Iniciando build de verificação isolado (NEX_BUILD_MODE=verify, distDir=.next-verify)`);
-
-let child = null;
 try {
   child = spawn(nextBin, ['build'], {
     cwd: projectRoot,
@@ -118,31 +110,27 @@ try {
     shell: isWindows,
   });
 } catch (spawnErr) {
-  releaseLock();
-  console.error(`[build:verify] Falha ao iniciar processo de build:`, spawnErr);
-  process.exit(1);
+  finish(1, `[build:verify] Falha ao iniciar processo de build: ${spawnErr}`);
 }
 
-child.on('close', (code) => {
-  releaseLock();
-  if (code !== 0) {
-    console.error(`[build:verify] Build de verificação falhou com código ${code}`);
-    process.exit(code || 1);
-  }
-  console.log(`[build:verify] Build de verificação concluído com sucesso em .next-verify`);
-  process.exit(0);
+child.once('error', (err) => {
+  finish(1, `[build:verify] Falha ao iniciar processo de build: ${err}`);
 });
 
-function handleSignal(signal) {
-  if (child) {
-    try {
-      child.kill(signal);
-    } catch {}
+child.once('close', (code) => {
+  if (code !== 0) {
+    finish(code || 1, `[build:verify] Build de verificação falhou com código ${code}`);
   }
-  releaseLock();
-  process.exit(1);
+  finish(0, '[build:verify] Build de verificação concluído com sucesso em .next-verify');
+});
+
+function handleSignal() {
+  if (finished) return;
+  terminateChild();
+  setTimeout(() => {
+    if (!finished) finish(1, '[build:verify] Build interrompido; lock liberado após encerramento forçado.');
+  }, 1500).unref();
 }
 
-process.on('SIGINT', () => handleSignal('SIGINT'));
-process.on('SIGTERM', () => handleSignal('SIGTERM'));
-process.on('exit', () => releaseLock());
+process.on('SIGINT', handleSignal);
+process.on('SIGTERM', handleSignal);

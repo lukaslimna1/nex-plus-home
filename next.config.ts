@@ -6,7 +6,14 @@ import { fileURLToPath } from 'url'
 const filename = fileURLToPath(import.meta.url)
 const dirname = path.dirname(filename)
 
-const buildMode = process.env.NEX_BUILD_MODE || 'production';
+const requestedBuildMode = process.env.NEX_BUILD_MODE
+const allowedBuildModes = new Set(['production', 'verify', 'e2e'])
+
+if (requestedBuildMode && !allowedBuildModes.has(requestedBuildMode)) {
+  throw new Error(`Unsupported NEX_BUILD_MODE: ${requestedBuildMode}`)
+}
+
+const buildMode = requestedBuildMode || 'production'
 let distDir = '.next';
 let tsconfigPath = 'tsconfig.json';
 
