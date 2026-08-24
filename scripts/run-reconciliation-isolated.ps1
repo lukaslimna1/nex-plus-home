@@ -105,6 +105,8 @@ try {
     & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 3 WHERE name = '20260821_210000_observation_persistence';" | Out-Null
     & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 4 WHERE name = '20260821_220000_evidence_artifact_store';" | Out-Null
     & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 5 WHERE name = '20260821_230000_reconciliation_and_precedents';" | Out-Null
+    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 6 WHERE name = '20260824_190000_session_operational_state';" | Out-Null
+    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 7 WHERE name = '20260824_210000_input_record_and_ingress';" | Out-Null
 
     # Verificar tabelas 0.85D criadas pós-UP
     $tablesUpRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
@@ -123,8 +125,17 @@ try {
     }
     Write-Host "Todas as tabelas do 0.85D verificadas com sucesso pós-UP." -ForegroundColor Green
 
-    # 6. Testar Migration DOWN (Rollback exclusivo do 0.85D)
-    Write-Host "`n[3/5] Testando rollback de migration (DOWN do 0.85D) no banco descartável..." -ForegroundColor Yellow
+    # 6. Testar Migration DOWN (Rollback de 0.86B-3, 0.86B-2 e 0.85D)
+    Write-Host "`n[3/5] Testando rollback de migration (DOWN ordenado de 0.86B-3, 0.86B-2 e 0.85D) no banco descartável..." -ForegroundColor Yellow
+    Write-Host "Executando DOWN 1/3 (0.86B-3: input_record_and_ingress)..."
+    & npx payload migrate:down
+    if ($LASTEXITCODE -ne 0) { throw "Falha ao executar payload migrate:down para 0.86B-3 no banco descartável" }
+
+    Write-Host "Executando DOWN 2/3 (0.86B-2: session_operational_state)..."
+    & npx payload migrate:down
+    if ($LASTEXITCODE -ne 0) { throw "Falha ao executar payload migrate:down para 0.86B-2 no banco descartável" }
+
+    Write-Host "Executando DOWN 3/3 (0.85D: reconciliation_and_precedents)..."
     & npx payload migrate:down
     if ($LASTEXITCODE -ne 0) { throw "Falha ao executar payload migrate:down para 0.85D no banco descartável" }
 

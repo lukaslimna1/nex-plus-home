@@ -1,0 +1,250 @@
+/**
+ * NEX+ · Ingress Content Service & Trust Boundary
+ * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3)
+ *
+ * Responsabilidades:
+ * 1. Materialização física de blobs com hashing em streaming e staging seguro.
+ * 2. Inspeção server-side obrigatória via IngressContentInspector (fail-closed sem inspector válido).
+ * 3. Autorização obrigatória via IngressAccessAuthorizer (fail-closed, sem permissão implícita por contentId).
+ * 4. Registro append-only de metadados em IngressContentStore.
+ * 5. Leitura e streaming autorizados com verificação ativa de integridade e expiração.
+ */
+
+import { randomUUID } from 'node:crypto';
+import type { OperationalContext } from '../context/contracts';
+import { validateOperationalContext } from '../context/invariants';
+import type { BlobStore } from '../storage/blob-store';
+import type {
+  IngressContentId,
+  IngressContentRecord,
+  IngressContentRef,
+  IngestContentParams,
+  IngressAccessAuthorizer,
+  IngressContentInspector,
+} from './contracts';
+import {
+  validateIngressContentId,
+  validateIngressContentRecord,
+} from './invariants';
+import {
+  IngressAuthorizationError,
+  IngressContentInspectionError,
+  IngressContentExpiredError,
+  IngressContentNotFoundError,
+  IngressIntegrityError,
+} from './errors';
+import type { IngressContentStore } from './persistence/contracts';
+
+export interface IngressContentServiceOptions {
+  readonly blobStore: BlobStore;
+  readonly contentStore: IngressContentStore;
+  readonly authorizer: IngressAccessAuthorizer;
+  readonly inspector: IngressContentInspector;
+  readonly storageBackend?: string; // Padrão: 'local_fs'
+  readonly nowProvider?: () => string;
+}
+
+export class IngressContentService {
+  private readonly blobStore: BlobStore;
+  private readonly contentStore: IngressContentStore;
+  private readonly authorizer: IngressAccessAuthorizer;
+  private readonly inspector: IngressContentInspector;
+  private readonly storageBackend: string;
+  private readonly nowProvider: () => string;
+
+  constructor(options: IngressContentServiceOptions) {
+    if (!options.blobStore || typeof options.blobStore.putBlob !== 'function') {
+      throw new Error('IngressContentService requires a valid BlobStore instance.');
+    }
+    if (!options.contentStore || typeof options.contentStore.saveContent !== 'function') {
+      throw new Error('IngressContentService requires a valid IngressContentStore instance.');
+    }
+    if (!options.authorizer || typeof options.authorizer.authorize !== 'function') {
+      throw new Error('IngressContentService requires a valid IngressAccessAuthorizer instance (fail-closed).');
+    }
+    if (!options.inspector || typeof options.inspector.inspect !== 'function') {
+      throw new Error('IngressContentService requires a valid IngressContentInspector instance (fail-closed).');
+    }
+
+    this.blobStore = options.blobStore;
+    this.contentStore = options.contentStore;
+    this.authorizer = options.authorizer;
+    this.inspector = options.inspector;
+    this.storageBackend = options.storageBackend ?? 'local_fs';
+    this.nowProvider = options.nowProvider ?? (() => new Date().toISOString());
+  }
+
+  /**
+   * Ingesta um conteúdo binário/documental:
+   * 1. Valida OperationalContext confiável.
+   * 2. Autoriza operação 'create'.
+   * 3. Grava no BlobStore (staging, streaming hash SHA-256).
+   * 4. Executa inspeção server-side (determina verifiedMimeType ou rejeita).
+   * 5. Se rejeitado, interrompe sem criar registro canônico.
+   * 6. Se aceito, persiste IngressContentRecord append-only.
+   */
+  async ingestContent(
+    params: IngestContentParams,
+    context: OperationalContext
+  ): Promise<{ record: IngressContentRecord; ref: IngressContentRef }> {
+    validateOperationalContext(context);
+
+    const isAuthorized = await this.authorizer.authorize({
+      operation: 'create',
+      context,
+    });
+    if (!isAuthorized) {
+      throw new IngressAuthorizationError('create', undefined, 'Unauthorized to ingest content in current operational context.');
+    }
+
+    const contentId = (params.contentId ?? `ing_${randomUUID()}`) as IngressContentId;
+    validateIngressContentId(contentId);
+
+    // 1. Materializar no BlobStore
+    const putResult = await this.blobStore.putBlob(params.data, {
+      expectedSha256: params.expectedSha256,
+      maxBytes: params.maxBytes,
+    });
+
+    // 2. Inspecionar conteúdo server-side
+    // Tenta ler uma amostra inicial do buffer para o inspector se aplicável
+    let sampleBuffer: Buffer | undefined;
+    try {
+      sampleBuffer = await this.blobStore.getBlob(putResult.storageKey, putResult.sha256);
+    } catch {
+      // Se getBlob falhar, a inspeção prosseguirá com metadata
+    }
+
+    const inspection = await this.inspector.inspect({
+      declaredMimeType: params.declaredMimeType,
+      byteSize: putResult.byteSize,
+      sha256: putResult.sha256,
+      sampleBuffer,
+    });
+
+    if (!inspection.accepted || !inspection.verifiedMimeType) {
+      throw new IngressContentInspectionError(
+        inspection.rejectionReason ?? 'Content rejected by server-side inspector policy.',
+        params.declaredMimeType
+      );
+    }
+
+    const receivedAt = this.nowProvider();
+
+    // 3. Montar IngressContentRecord derivando autoridade estritamente do OperationalContext
+    const record: IngressContentRecord = Object.freeze({
+      contentId,
+      actor: Object.freeze({ ...context.actor }),
+      ...(context.userId ? { userId: context.userId } : {}),
+      ...(context.sessionRef ? { sessionRef: context.sessionRef } : {}),
+      ...(context.contextSubjectRef ? { contextSubjectRef: context.contextSubjectRef } : {}),
+      ...(params.sourceRefId ? { sourceRefId: params.sourceRefId } : {}),
+      ...(params.declaredMimeType ? { declaredMimeType: params.declaredMimeType.trim() } : {}),
+      verifiedMimeType: inspection.verifiedMimeType.trim(),
+      sha256: putResult.sha256,
+      byteSize: putResult.byteSize,
+      storageBackend: this.storageBackend,
+      storageKey: putResult.storageKey,
+      receivedAt,
+      ...(params.expiresAt ? { expiresAt: params.expiresAt } : {}),
+    });
+
+    validateIngressContentRecord(record);
+
+    const savedRecord = await this.contentStore.saveContent(record);
+    const ref: IngressContentRef = Object.freeze({ contentId: savedRecord.contentId });
+
+    return { record: savedRecord, ref };
+  }
+
+  /**
+   * Obtém o IngressContentRecord após verificar autorização e expiração.
+   */
+  async getRecord(
+    contentId: IngressContentId,
+    context: OperationalContext
+  ): Promise<IngressContentRecord> {
+    validateIngressContentId(contentId);
+    validateOperationalContext(context);
+
+    const record = await this.contentStore.getContent(contentId);
+    if (!record) {
+      throw new IngressContentNotFoundError(contentId);
+    }
+
+    // Verifica expiração temporal
+    if (record.expiresAt) {
+      const now = new Date(this.nowProvider()).getTime();
+      const expires = new Date(record.expiresAt).getTime();
+      if (now > expires) {
+        throw new IngressContentExpiredError(contentId, record.expiresAt);
+      }
+    }
+
+    const isAuthorized = await this.authorizer.authorize({
+      operation: 'read',
+      context,
+      content: record,
+      contentId,
+    });
+    if (!isAuthorized) {
+      throw new IngressAuthorizationError('read', contentId);
+    }
+
+    return record;
+  }
+
+  /**
+   * Lê o conteúdo binário do blob após verificar autorização, expiração e integridade criptográfica.
+   */
+  async getContent(
+    contentId: IngressContentId,
+    context: OperationalContext
+  ): Promise<{ record: IngressContentRecord; data: Buffer }> {
+    const record = await this.getRecord(contentId, context);
+
+    const verifyResult = await this.blobStore.verifyBlob(
+      record.storageKey,
+      record.sha256,
+      record.byteSize
+    );
+
+    if (!verifyResult.valid) {
+      throw new IngressIntegrityError(
+        contentId,
+        record.storageKey,
+        verifyResult.error ?? 'Integrity verification failed against stored SHA-256 and byteSize.'
+      );
+    }
+
+    const data = await this.blobStore.getBlob(record.storageKey, record.sha256);
+    return { record, data };
+  }
+
+  /**
+   * Obtém stream do blob após verificar autorização, expiração e integridade.
+   */
+  async getContentStream(
+    contentId: IngressContentId,
+    context: OperationalContext
+  ): Promise<{ record: IngressContentRecord; stream: NodeJS.ReadableStream }> {
+    const record = await this.getRecord(contentId, context);
+
+    const verifyResult = await this.blobStore.verifyBlob(
+      record.storageKey,
+      record.sha256,
+      record.byteSize
+    );
+
+    if (!verifyResult.valid) {
+      throw new IngressIntegrityError(
+        contentId,
+        record.storageKey,
+        verifyResult.error ?? 'Integrity verification failed against stored SHA-256 and byteSize.'
+      );
+    }
+
+    const stream = await this.blobStore.getBlobStream(record.storageKey, record.sha256);
+    return { record, stream };
+  }
+}
