@@ -157,6 +157,7 @@ try {
     Write-Host "Schema reconvergido com sucesso após rollback e re-UP." -ForegroundColor Green
 
     # 8. Build da Aplicação Next.js com distDir isolado (.next-e2e-auth)
+    $initialTsconfigContent = Get-Content -Raw (Join-Path $RepoRoot "tsconfig.json")
     Write-Host "`n[5/7] Executando build de produção Next.js isolado em .next-e2e-auth..." -ForegroundColor Yellow
     & npx next build
     if ($LASTEXITCODE -ne 0) { throw "Falha no build de produção isolado do Next.js" }
@@ -188,6 +189,11 @@ finally {
     if (Test-Path $e2eDistPath) {
         Remove-Item -Path $e2eDistPath -Recurse -Force -ErrorAction SilentlyContinue
         Write-Host "Diretório de build isolado '$e2eDistPath' removido com sucesso." -ForegroundColor Green
+    }
+
+    # Restaurar tsconfig.json original caso Next.js tenha adicionado includes efêmeros
+    if ($initialTsconfigContent) {
+        Set-Content -Path (Join-Path $RepoRoot "tsconfig.json") -Value $initialTsconfigContent -NoNewline
     }
 
     # Restauração das variáveis de ambiente de borda

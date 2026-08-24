@@ -49,6 +49,13 @@ export function UserMiniCard({ isCollapsed, user }: UserMiniCardProps) {
     try {
       const res = await logoutAction();
       if (res.success) {
+        try {
+          if (typeof globalThis.BroadcastChannel === 'function') {
+            const channel = new globalThis.BroadcastChannel("nex_auth_activity");
+            channel.postMessage({ type: "LOGOUT", timestamp: Date.now(), reason: "user_clicked_logout" });
+            channel.close();
+          }
+        } catch {}
         router.push("/login");
       } else {
         setLogoutError(res.error || "Não foi possível encerrar a sessão.");

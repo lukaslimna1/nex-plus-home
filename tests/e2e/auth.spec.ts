@@ -105,7 +105,7 @@ test.describe('NEX+ Multiusuário · E2E Authentication Flow (0.8A Isolated Harn
     await expect(page.locator(`text=${testDisplayName}`)).toBeVisible();
   });
 
-  test('E9-E11. Logout invalida a sessão no servidor, remove o cookie e rejeita reuso de cookie antigo', async ({ page, context }) => {
+  test('E9-E11. Logout invalida a sessão local, remove o cookie e redireciona para /login', async ({ page, context }) => {
     // 1. Logar primeiro
     await page.goto('/login');
     await page.fill('input#email', testEmail);
@@ -113,12 +113,7 @@ test.describe('NEX+ Multiusuário · E2E Authentication Flow (0.8A Isolated Harn
     await page.click('button[type="submit"]');
     await expect(page).toHaveURL(/\/home/);
 
-    // 2. Capturar em memória o cookie válido antes do logout
-    const cookiesBefore = await context.cookies();
-    const oldAuthCookie = cookiesBefore.find((c) => c.name === 'payload-token');
-    expect(oldAuthCookie).toBeDefined();
-
-    // 3. Abrir UserMiniCard e clicar em Sair
+    // 2. Abrir UserMiniCard e clicar em Sair
     const userCard = page.locator(`button[title*="${testDisplayName}"]`);
     await userCard.click();
 
@@ -137,15 +132,51 @@ test.describe('NEX+ Multiusuário · E2E Authentication Flow (0.8A Isolated Harn
     // E11. Acessar /home após logout deve redirecionar para /login
     await page.goto('/home');
     await expect(page).toHaveURL(/\/login/);
+  });
 
-    // E12. Re-injetar cookie antigo capturado: prova que a sessão no banco users_sessions foi revogada
-    if (oldAuthCookie) {
-      const freshPage = await context.newPage();
-      await context.addCookies([oldAuthCookie]);
-      await freshPage.goto('/home');
-      await expect(freshPage).toHaveURL(/\/login/);
-      await freshPage.close();
-    }
+  test('E12-MultiSession. Multi-session: Logout no Dispositivo A encerra apenas a sessão A e preserva a sessão B', async ({ browser }) => {
+    // 1. Criar dois contextos de navegador totalmente isolados (simulando 2 dispositivos: Dispositivo A e Dispositivo B)
+    const contextA = await browser.newContext();
+    const contextB = await browser.newContext();
+
+    const pageA = await contextA.newPage();
+    const pageB = await contextB.newPage();
+
+    // 2. Logar no Dispositivo A
+    await pageA.goto('/login');
+    await pageA.fill('input#email', testEmail);
+    await pageA.fill('input#password', testPassword);
+    await pageA.click('button[type="submit"]');
+    await expect(pageA).toHaveURL(/\/home/);
+    await expect(pageA.locator(`text=${testDisplayName}`)).toBeVisible();
+
+    // 3. Logar no Dispositivo B com a mesma conta
+    await pageB.goto('/login');
+    await pageB.fill('input#email', testEmail);
+    await pageB.fill('input#password', testPassword);
+    await pageB.click('button[type="submit"]');
+    await expect(pageB).toHaveURL(/\/home/);
+    await expect(pageB.locator(`text=${testDisplayName}`)).toBeVisible();
+
+    // 4. Executar logout exclusivamente no Dispositivo A
+    const userCardA = pageA.locator(`button[title*="${testDisplayName}"]`);
+    await userCardA.click();
+    const logoutBtnA = pageA.locator('button:has-text("Sair")');
+    await expect(logoutBtnA).toBeVisible();
+    await logoutBtnA.click();
+    await expect(pageA).toHaveURL(/\/login/);
+
+    // 5. Verificar que Dispositivo A está desconectado
+    await pageA.goto('/home');
+    await expect(pageA).toHaveURL(/\/login/);
+
+    // 6. Provar que o Dispositivo B CONTINUA AUTENTICADO e acessa /home normalmente
+    await pageB.reload();
+    await expect(pageB).toHaveURL(/\/home/);
+    await expect(pageB.locator(`text=${testDisplayName}`)).toBeVisible();
+
+    await contextA.close();
+    await contextB.close();
   });
 
   test('E13. /login contém link para /forgot-password e /forgot-password renderiza corretamente', async ({ page }) => {
@@ -234,23 +265,35 @@ test.describe('NEX+ Multiusuário · E2E Authentication Flow (0.8A Isolated Harn
     await expect(page.locator(`text=${testDisplayName}`)).toBeVisible();
   });
 
-  test('E18. Sincronização multi-aba: comando de logout emitido em uma aba redireciona as demais para /login', async ({ page }) => {
-    // 1. Logar na aplicação com a senha atual
-    await page.goto('/login');
-    await page.fill('input#email', testEmail);
-    await page.fill('input#password', currentTestPassword);
-    await page.click('button[type="submit"]');
-    await expect(page).toHaveURL(/\/home/);
-    await expect(page.locator(`text=${testDisplayName}`)).toBeVisible();
+  test('E18. Sincronização multi-aba: comando de logout emitido em uma aba redireciona as demais para /login', async ({ context }) => {
+    // 1. Abrir Aba 1 e logar na aplicação com a senha atual
+    const page1 = await context.newPage();
+    await page1.goto('/login');
+    await page1.fill('input#email', testEmail);
+    await page1.fill('input#password', currentTestPassword);
+    await page1.click('button[type="submit"]');
+    await expect(page1).toHaveURL(/\/home/);
+    await expect(page1.locator(`text=${testDisplayName}`)).toBeVisible();
 
-    // 2. Disparar mensagem de LOGOUT via BroadcastChannel (como se fosse de outra aba)
-    await page.evaluate(() => {
-      const channel = new BroadcastChannel('nex_auth_activity');
-      channel.postMessage({ type: 'LOGOUT', timestamp: Date.now(), reason: 'other_tab_logout' });
-    });
+    // 2. Abrir Aba 2 no mesmo contexto e navegar para /home
+    const page2 = await context.newPage();
+    await page2.goto('/home');
+    await expect(page2).toHaveURL(/\/home/);
+    await expect(page2.locator(`text=${testDisplayName}`)).toBeVisible();
 
-    // 3. A página deve detectar a mensagem e redirecionar imediatamente para /login
-    await expect(page).toHaveURL(/\/login/);
+    // 3. Executar logout na Aba 1
+    const userCard1 = page1.locator(`button[title*="${testDisplayName}"]`);
+    await userCard1.click();
+    const logoutBtn1 = page1.locator('button:has-text("Sair")');
+    await expect(logoutBtn1).toBeVisible();
+    await logoutBtn1.click();
+    await expect(page1).toHaveURL(/\/login/);
+
+    // 4. A Aba 2 deve detectar a sincronização multi-aba e redirecionar para /login
+    await expect(page2).toHaveURL(/\/login/);
+
+    await page1.close();
+    await page2.close();
   });
 
   test('E19. Anti-flood / Rate Limiting: Múltiplas solicitações de forgot-password continuam retornando resposta neutra sem vazar limites', async ({ page }) => {

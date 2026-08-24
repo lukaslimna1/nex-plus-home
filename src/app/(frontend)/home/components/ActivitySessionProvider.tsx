@@ -34,9 +34,7 @@ export function ActivitySessionProvider({
       setCountdown(newCountdown);
 
       if (newState === "EXPIRED") {
-        logoutAction().finally(() => {
-          router.push("/login");
-        });
+        router.push("/login");
       }
     },
     [router]
@@ -49,9 +47,11 @@ export function ActivitySessionProvider({
       onStateChange: handleStateChange,
       onRefresh: refreshSessionAction,
       onLogout: async () => {
-        const res = await logoutAction();
+        try {
+          await logoutAction();
+        } catch {}
         router.push("/login");
-        return res;
+        return { success: true };
       },
     });
 

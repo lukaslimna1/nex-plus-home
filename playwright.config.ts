@@ -28,7 +28,7 @@ export default defineConfig({
     reuseExistingServer: false,
     timeout: 30000,
     env: {
-      NEXT_DIST_DIR: process.env.NEXT_DIST_DIR || '.next',
+      NEXT_DIST_DIR: process.env.NEXT_DIST_DIR || '.next-e2e-auth',
       DATABASE_URL: process.env.DATABASE_URL || '',
       PAYLOAD_SECRET: process.env.PAYLOAD_SECRET || '',
       NODE_ENV: 'production',
