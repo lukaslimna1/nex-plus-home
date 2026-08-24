@@ -198,8 +198,8 @@ export class PgSessionOperationalStateStore implements SessionOperationalStateSt
     if (existingRow.user_id !== normalizedUserId) {
       throw new SessionOperationalStateOwnershipMismatchError({
         sessionRef,
-        expectedUserId: existingRow.user_id,
-        actualUserId: normalizedUserId,
+        expectedUserId: normalizedUserId,
+        actualUserId: existingRow.user_id,
       });
     }
 
@@ -273,8 +273,8 @@ export class PgSessionOperationalStateStore implements SessionOperationalStateSt
     if (existingRow.user_id !== normalizedUserId) {
       throw new SessionOperationalStateOwnershipMismatchError({
         sessionRef,
-        expectedUserId: existingRow.user_id,
-        actualUserId: normalizedUserId,
+        expectedUserId: normalizedUserId,
+        actualUserId: existingRow.user_id,
       });
     }
 

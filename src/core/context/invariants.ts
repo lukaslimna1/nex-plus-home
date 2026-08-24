@@ -609,6 +609,12 @@ export function validateOperationalContext(ctx: unknown): asserts ctx is Operati
 
   // 5. contextSubjectRef
   if (candidate.contextSubjectRef !== undefined) {
+    if (candidate.contextSubjectRef === null) {
+      throw new OperationalContextInvariantError(
+        'INVALID_CONTEXT_SUBJECT_REF',
+        'OperationalContext.contextSubjectRef must be either a valid ContextSubjectRef or undefined (null is not allowed in canonical context).'
+      );
+    }
     validateContextSubjectRef(candidate.contextSubjectRef);
   }
 
@@ -709,7 +715,13 @@ export function validateSessionOperationalState(state: unknown): asserts state i
     );
   }
 
-  if (candidate.contextSubjectRef !== undefined && candidate.contextSubjectRef !== null) {
+  if (candidate.contextSubjectRef !== undefined) {
+    if (candidate.contextSubjectRef === null) {
+      throw new SessionOperationalStateInvariantError(
+        'INVALID_CONTEXT_SUBJECT_REF',
+        'SessionOperationalState.contextSubjectRef must be either a valid ContextSubjectRef or undefined/absent (null is not allowed in canonical state).'
+      );
+    }
     validateContextSubjectRef(candidate.contextSubjectRef);
   }
 }

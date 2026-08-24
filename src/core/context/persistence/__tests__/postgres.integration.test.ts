@@ -206,8 +206,9 @@ describe('0.86B-2 · Persistência PostgreSQL do Estado Operacional de Sessão',
         }),
       (err: any) => {
         assert.ok(err instanceof SessionOperationalStateOwnershipMismatchError);
-        assert.equal(err.expectedUserId, userLucas);
-        assert.equal(err.actualUserId, userJoao);
+        assert.equal(err.sessionRef, sessionRefA);
+        assert.equal(err.expectedUserId, userJoao);
+        assert.equal(err.actualUserId, userLucas);
         return true;
       }
     );
@@ -217,6 +218,9 @@ describe('0.86B-2 · Persistência PostgreSQL do Estado Operacional de Sessão',
       () => store.ensureState({ sessionRef: sessionRefA, userId: userJoao }),
       (err: any) => {
         assert.ok(err instanceof SessionOperationalStateOwnershipMismatchError);
+        assert.equal(err.sessionRef, sessionRefA);
+        assert.equal(err.expectedUserId, userJoao);
+        assert.equal(err.actualUserId, userLucas);
         return true;
       }
     );

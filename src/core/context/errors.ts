@@ -42,7 +42,7 @@ export class SessionOperationalStateOwnershipMismatchError extends Error {
     actualUserId: string;
   }) {
     super(
-      `[SessionOperationalState] Ownership mismatch for sessionRef '${params.sessionRef}': bound to user '${params.expectedUserId}', but caller provided '${params.actualUserId}'.`
+      `[SessionOperationalState] Ownership mismatch for sessionRef '${params.sessionRef}': expected caller/owner '${params.expectedUserId}', but found state bound to user '${params.actualUserId}'.`
     );
     this.name = 'SessionOperationalStateOwnershipMismatchError';
     this.sessionRef = params.sessionRef;

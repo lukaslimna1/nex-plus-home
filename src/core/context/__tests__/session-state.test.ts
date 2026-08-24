@@ -52,8 +52,8 @@ class InMemorySessionOperationalStateStore implements SessionOperationalStateSto
       if (existing.userId !== params.userId) {
         throw new SessionOperationalStateOwnershipMismatchError({
           sessionRef: params.sessionRef,
-          expectedUserId: existing.userId,
-          actualUserId: params.userId,
+          expectedUserId: params.userId,
+          actualUserId: existing.userId,
         });
       }
       return existing;
@@ -81,8 +81,8 @@ class InMemorySessionOperationalStateStore implements SessionOperationalStateSto
     if (existing.userId !== params.userId) {
       throw new SessionOperationalStateOwnershipMismatchError({
         sessionRef: params.sessionRef,
-        expectedUserId: existing.userId,
-        actualUserId: params.userId,
+        expectedUserId: params.userId,
+        actualUserId: existing.userId,
       });
     }
 
@@ -175,7 +175,13 @@ describe('0.86B-2 · Session Operational State Domain Layer & Ownership Invarian
 
     await assert.rejects(
       () => getSessionOperationalState(mockSessionContextUser1, fakeStore),
-      SessionOperationalStateOwnershipMismatchError
+      (err: any) => {
+        assert.ok(err instanceof SessionOperationalStateOwnershipMismatchError);
+        assert.equal(err.sessionRef, sessionRefA);
+        assert.equal(err.expectedUserId, 'usr_lucas');         // Caller autenticado
+        assert.equal(err.actualUserId, 'usr_outra_pessoa');   // Usuário no estado
+        return true;
+      }
     );
   });
 
@@ -262,7 +268,13 @@ describe('0.86B-2 · Session Operational State Domain Layer & Ownership Invarian
           { contextSubjectRef: null, expectedRevision: 1 },
           store
         ),
-      SessionOperationalStateOwnershipMismatchError
+      (err: any) => {
+        assert.ok(err instanceof SessionOperationalStateOwnershipMismatchError);
+        assert.equal(err.sessionRef, sessionRefA);
+        assert.equal(err.expectedUserId, 'usr_joao');   // Caller
+        assert.equal(err.actualUserId, 'usr_lucas');    // Owner da sessão no store
+        return true;
+      }
     );
   });
 });

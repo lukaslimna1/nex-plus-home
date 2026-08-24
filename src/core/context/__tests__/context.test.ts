@@ -833,6 +833,34 @@ describe('0.86B-2 · SessionOperationalState Minimal Shape (Section 6)', () => {
     );
   });
 
+  it('rejeita SessionOperationalState contendo contextSubjectRef: null (deve ser ausente/undefined para pessoal)', () => {
+    const stateWithNullSubject = {
+      sessionRef: VALID_SESSION_REF_A,
+      userId: 'usr_lucas_123',
+      contextSubjectRef: null,
+      revision: 1,
+      createdAt: '2026-08-24T19:00:00.000Z',
+      updatedAt: '2026-08-24T19:00:00.000Z',
+    };
+    assert.throws(
+      () => validateSessionOperationalState(stateWithNullSubject),
+      (err: any) => err.violationType === 'INVALID_CONTEXT_SUBJECT_REF'
+    );
+  });
+
+  it('rejeita OperationalContext contendo contextSubjectRef: null', () => {
+    assert.throws(
+      () =>
+        validateOperationalContext({
+          actor: { kind: 'human', humanId: 'usr_lucas_123' },
+          userId: 'usr_lucas_123',
+          sessionRef: VALID_SESSION_REF_A,
+          contextSubjectRef: null as any,
+        }),
+      (err: any) => err.violationType === 'INVALID_CONTEXT_SUBJECT_REF'
+    );
+  });
+
   it('rejeita SessionOperationalState com revision < 1 ou timestamps inválidos', () => {
     assert.throws(
       () =>
