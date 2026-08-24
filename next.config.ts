@@ -7,6 +7,7 @@ const filename = fileURLToPath(import.meta.url)
 const dirname = path.dirname(filename)
 
 const nextConfig: NextConfig = {
+  distDir: process.env.NEXT_DIST_DIR || '.next',
   webpack: (config) => {
     config.resolve.extensionAlias = {
       '.cjs': ['.cts', '.cjs'],

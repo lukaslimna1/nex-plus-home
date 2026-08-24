@@ -23,9 +23,9 @@ export type IdentityClass = 'app_user' | 'admin' | 'anonymous';
  * Tradutor determinístico do resultado de logout para resposta segura ao frontend.
  */
 export function handleLogoutResult(
-  result?: { success?: boolean } | null,
+  result?: { success?: boolean; message?: string } | null,
 ): LogoutActionResult {
-  if (result && result.success === true) {
+  if (result && (result.success === true || typeof result.message === 'string')) {
     return { success: true };
   }
   return {

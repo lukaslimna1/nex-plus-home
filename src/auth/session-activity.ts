@@ -13,8 +13,8 @@
 export const DEFAULT_INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutos (600.000 ms)
 export const DEFAULT_WARNING_COUNTDOWN_SECONDS = 10; // 10 segundos
 export const MIN_REFRESH_INTERVAL_MS = 2 * 60 * 1000; // 2 minutos (120.000 ms)
-export const TRAILING_DEBOUNCE_MS = 15 * 1000; // 15 segundos após término de rajada
-export const MIN_TRAILING_INTERVAL_MS = 60 * 1000; // 1 minuto entre refreshes trailing
+export const TRAILING_DEBOUNCE_MS = 10 * 1000; // 10 segundos após término de rajada de atividade
+export const MIN_TRAILING_INTERVAL_MS = 30 * 1000; // 30 segundos de intervalo mínimo entre refreshes trailing
 export const BROADCAST_CHANNEL_NAME = 'nex_auth_activity';
 
 export type SessionActivityState = 'ACTIVE' | 'WARNING' | 'EXPIRED';

@@ -27,5 +27,12 @@ export default defineConfig({
     url: `${baseURL}/login`,
     reuseExistingServer: false,
     timeout: 30000,
+    env: {
+      NEXT_DIST_DIR: process.env.NEXT_DIST_DIR || '.next',
+      DATABASE_URL: process.env.DATABASE_URL || '',
+      PAYLOAD_SECRET: process.env.PAYLOAD_SECRET || '',
+      NODE_ENV: 'production',
+      PORT: port,
+    },
   },
 });

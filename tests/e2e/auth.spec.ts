@@ -140,9 +140,11 @@ test.describe('NEX+ Multiusuário · E2E Authentication Flow (0.8A Isolated Harn
 
     // E12. Re-injetar cookie antigo capturado: prova que a sessão no banco users_sessions foi revogada
     if (oldAuthCookie) {
+      const freshPage = await context.newPage();
       await context.addCookies([oldAuthCookie]);
-      await page.goto('/home');
-      await expect(page).toHaveURL(/\/login/);
+      await freshPage.goto('/home');
+      await expect(freshPage).toHaveURL(/\/login/);
+      await freshPage.close();
     }
   });
 
@@ -239,6 +241,7 @@ test.describe('NEX+ Multiusuário · E2E Authentication Flow (0.8A Isolated Harn
     await page.fill('input#password', currentTestPassword);
     await page.click('button[type="submit"]');
     await expect(page).toHaveURL(/\/home/);
+    await expect(page.locator(`text=${testDisplayName}`)).toBeVisible();
 
     // 2. Disparar mensagem de LOGOUT via BroadcastChannel (como se fosse de outra aba)
     await page.evaluate(() => {

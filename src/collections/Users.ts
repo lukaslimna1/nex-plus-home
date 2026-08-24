@@ -23,7 +23,7 @@ export const Users: CollectionConfig = {
   },
   auth: {
     useSessions: true,
-    tokenExpiration: Number(process.env.NEX_AUTH_TOKEN_EXPIRATION_SECONDS) || 720, // 12 minutos (Sliding Session ancorada na inatividade)
+    tokenExpiration: Number(process.env.NEX_AUTH_TOKEN_EXPIRATION_SECONDS) || 620, // 620s = 10m20s (Sliding Session ancorada na inatividade canônica de 600s + 10s grace + 10s safety buffer)
     cookies: edgeConfig.cookies,
     forgotPassword: {
       expiration: 3600000, // 1 hora

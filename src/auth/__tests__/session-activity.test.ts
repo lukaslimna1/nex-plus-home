@@ -232,4 +232,33 @@ describe('NEX+ Auth · Session Activity Controller (Sliding Session & Inactivity
     assert.equal(logoutCalled, true);
     controller.destroy();
   });
+
+  it('10. Atividade Contínua por > 4 horas simuladas: sessão permanece válida e periodicamente renovada', () => {
+    let refreshCount = 0;
+    let simulatedTime = 1000000;
+    const fourHoursMs = 4 * 60 * 60 * 1000;
+    const intervalBetweenUserActionsMs = 60 * 1000; // A cada 1 minuto o usuário clica/digita
+
+    const controller = new SessionActivityController({
+      inactivityTimeoutMs: 600000, // 10 min
+      minRefreshIntervalMs: 120000, // 2 min
+      getCurrentTime: () => simulatedTime,
+      onRefresh: async () => {
+        refreshCount += 1;
+        return { success: true };
+      },
+    });
+
+    const totalSteps = fourHoursMs / intervalBetweenUserActionsMs; // 240 minutos
+    for (let i = 0; i < totalSteps; i++) {
+      simulatedTime += intervalBetweenUserActionsMs;
+      controller.registerActivity();
+      assert.equal(controller.getState(), 'ACTIVE');
+    }
+
+    // A cada 2 minutos houve um refresh -> total aproximado de 120 refreshes
+    assert.ok(refreshCount >= 119 && refreshCount <= 121);
+    assert.equal(controller.getState(), 'ACTIVE');
+    controller.destroy();
+  });
 });

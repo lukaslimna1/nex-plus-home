@@ -102,12 +102,7 @@ try {
     }
     Write-Host "Banco descartável conectado e verificado: $currentDb" -ForegroundColor Green
 
-    # 4. Backup temporário do .env para garantir isolamento do build Next.js
-    Copy-Item -Path $envFilePath -Destination "$envFilePath.isolated.bak" -Force
-    $isolatedEnvContent = "DATABASE_URL=$disposableDbUrl`nPAYLOAD_SECRET=$payloadSecret`n"
-    Set-Content -Path $envFilePath -Value $isolatedEnvContent -Encoding utf8
-
-    # Configuração de ambiente filho isolado
+    # 4. Configuração de ambiente isolado (sem mutar o arquivo .env de produção)
     $env:DATABASE_URL = $disposableDbUrl
     $env:PAYLOAD_SECRET = $payloadSecret
     $env:NODE_ENV = "production"
@@ -115,6 +110,7 @@ try {
     $env:PORT = "3108"
     $env:PAYLOAD_PUBLIC_SERVER_URL = ""
     $env:PAYLOAD_TRUSTED_ORIGINS = ""
+    $env:NEXT_DIST_DIR = ".next-e2e-auth"
 
     # 5. Executar Migrations UP no banco descartável
     Write-Host "`n[2/7] Executando migrations (UP) no banco descartável..." -ForegroundColor Yellow
@@ -160,13 +156,13 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Falha ao re-executar payload migrate no banco descartável" }
     Write-Host "Schema reconvergido com sucesso após rollback e re-UP." -ForegroundColor Green
 
-    # 8. Build da Aplicação Next.js com o banco descartável
-    Write-Host "`n[5/7] Executando build de produção Next.js para E2E..." -ForegroundColor Yellow
-    & npm run build
-    if ($LASTEXITCODE -ne 0) { throw "Falha no build de produção do Next.js" }
+    # 8. Build da Aplicação Next.js com distDir isolado (.next-e2e-auth)
+    Write-Host "`n[5/7] Executando build de produção Next.js isolado em .next-e2e-auth..." -ForegroundColor Yellow
+    & npx next build
+    if ($LASTEXITCODE -ne 0) { throw "Falha no build de produção isolado do Next.js" }
 
     # 9. Execução dos Testes E2E com Playwright
-    Write-Host "`n[6/7] Executando testes E2E Playwright na porta dedicada $env:PORT..." -ForegroundColor Yellow
+    Write-Host "`n[6/7] Executando testes E2E Playwright na porta dedicada $env:PORT com distDir isolado..." -ForegroundColor Yellow
     & npx playwright test
     if ($LASTEXITCODE -ne 0) { throw "Falha nos testes E2E do Playwright" }
     Write-Host "Todos os testes E2E passaram com 100% de sucesso!" -ForegroundColor Green
@@ -177,7 +173,7 @@ catch {
 }
 finally {
     # 10. Destruição segura e garantida do Database Descartável
-    Write-Host "`n[7/7] Limpeza: destruindo banco de dados descartável..." -ForegroundColor Yellow
+    Write-Host "`n[7/7] Limpeza: destruindo banco de dados descartável e artefatos isolados..." -ForegroundColor Yellow
     if ($disposableDbName -and $disposableDbName.StartsWith("nex_e2e_") -and $disposableDbName -ne $operationalDbName) {
         # Terminar conexões ativas no banco descartável antes de dropar
         & psql -h $operationalHost -p $operationalPort -U $operationalUser -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$disposableDbName' AND pid <> pg_backend_pid();" | Out-Null
@@ -187,11 +183,14 @@ finally {
         Write-Host "[SECURITY_WARN] Nome do banco não passou na validação de drop: $disposableDbName" -ForegroundColor Red
     }
 
-    # 11. Restauração do ambiente e arquivo .env original
-    if (Test-Path "$envFilePath.isolated.bak") {
-        Move-Item -Path "$envFilePath.isolated.bak" -Destination $envFilePath -Force
+    # Limpar diretório de build isolado do E2E
+    $e2eDistPath = Join-Path $RepoRoot ".next-e2e-auth"
+    if (Test-Path $e2eDistPath) {
+        Remove-Item -Path $e2eDistPath -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "Diretório de build isolado '$e2eDistPath' removido com sucesso." -ForegroundColor Green
     }
 
+    # Restauração das variáveis de ambiente de borda
     if ($hadOriginalEdgeUrl) {
         $env:PAYLOAD_PUBLIC_SERVER_URL = $originalEdgeUrl
     } else {
@@ -202,6 +201,7 @@ finally {
     } else {
         Remove-Item env:\PAYLOAD_TRUSTED_ORIGINS -ErrorAction SilentlyContinue
     }
+    Remove-Item env:NEXT_DIST_DIR -ErrorAction SilentlyContinue
 }
 
 exit $exitCode

@@ -10,6 +10,9 @@
 
 import { getPayload } from 'payload';
 import { login, logout, refresh } from '@payloadcms/next/auth';
+import { headers, cookies } from 'next/headers';
+import { sql } from '@payloadcms/db-postgres';
+import { jwtVerify } from 'jose';
 import configPromise from '@/payload.config';
 import {
   normalizeEmail,
@@ -63,6 +66,16 @@ export async function loginAction(
     };
   }
 
+  let origin = '(none)';
+  let host = '(none)';
+  let forwardedHost = '(none)';
+  try {
+    const headerList = await headers();
+    origin = headerList.get('origin') || '(none)';
+    host = headerList.get('host') || '(none)';
+    forwardedHost = headerList.get('x-forwarded-host') || '(none)';
+  } catch {}
+
   try {
     const result = await login({
       collection: 'users',
@@ -72,14 +85,17 @@ export async function loginAction(
     });
 
     if (result && result.user) {
+      console.info(`[Auth Observability] Login success: origin='${origin}', host='${host}', x-forwarded-host='${forwardedHost}'`);
       return { success: true };
     }
 
+    console.info(`[Auth Observability] Login rejected (invalid credentials): origin='${origin}', host='${host}', x-forwarded-host='${forwardedHost}'`);
     return {
       success: false,
       error: 'E-mail ou senha inválidos.',
     };
   } catch {
+    console.info(`[Auth Observability] Login rejected (exception): origin='${origin}', host='${host}', x-forwarded-host='${forwardedHost}'`);
     // Retorno genérico seguro: não diferencia usuário inexistente de senha incorreta
     return {
       success: false,
@@ -220,9 +236,41 @@ export async function resetPasswordAction(
  */
 export async function logoutAction(): Promise<LogoutActionResult> {
   try {
+    const payload = await getPayload({ config: configPromise });
+    let userId = '';
+    let sid = '';
+
+    try {
+      const cookieStore = await cookies();
+      const token = cookieStore.get('payload-token')?.value;
+      if (token) {
+        const secretKey = new TextEncoder().encode(payload.secret);
+        const { payload: decoded } = await jwtVerify(token, secretKey);
+        if (decoded.id) userId = String(decoded.id).replace(/[^a-f0-9-]/gi, '');
+        if (decoded.sid) sid = String(decoded.sid).replace(/[^a-f0-9-]/gi, '');
+      }
+    } catch {}
+
     const result = await logout({
+      allSessions: true,
       config: configPromise,
     });
+
+    try {
+      const drizzle = (payload.db as unknown as { drizzle?: { execute: (q: unknown) => Promise<unknown> } }).drizzle;
+      if (drizzle) {
+        if (userId) {
+          await drizzle.execute(sql.raw(`DELETE FROM "users_sessions" WHERE "_parent_id" = '${userId}'`));
+        } else if (sid) {
+          await drizzle.execute(sql.raw(`DELETE FROM "users_sessions" WHERE "id" = '${sid}'`));
+        }
+      }
+    } catch {}
+
+    try {
+      const cookieStore = await cookies();
+      cookieStore.delete('payload-token');
+    } catch {}
     return handleLogoutResult(result);
   } catch {
     return {

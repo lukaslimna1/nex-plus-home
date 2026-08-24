@@ -50,7 +50,6 @@ export function UserMiniCard({ isCollapsed, user }: UserMiniCardProps) {
       const res = await logoutAction();
       if (res.success) {
         router.push("/login");
-        router.refresh();
       } else {
         setLogoutError(res.error || "Não foi possível encerrar a sessão.");
         setIsLoggingOut(false);

@@ -50,39 +50,38 @@ export function HomeClient({ user }: HomeClientProps) {
     }
   }, [isMaxCollapsed]);
 
-  /* ---- Enquanto não leu localStorage, renderiza placeholder invisível ---- */
-  if (isSidebarCollapsed === null || isMaxCollapsed === null) {
-    return <div className={styles.loadingShell} />;
-  }
-
   return (
     <ActivitySessionProvider>
-      <LayoutShell
-        isSidebarCollapsed={isSidebarCollapsed}
-        isMaxCollapsed={isMaxCollapsed}
-        onToggleSidebar={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
-        onToggleMax={() => setIsMaxCollapsed(!isMaxCollapsed)}
-        activeNavItem="home"
-        user={user}
-      >
-        {/* 1. Header com Status Chips */}
-        <TopStatusBar />
+      {isSidebarCollapsed === null || isMaxCollapsed === null ? (
+        <div className={styles.loadingShell} />
+      ) : (
+        <LayoutShell
+          isSidebarCollapsed={isSidebarCollapsed}
+          isMaxCollapsed={isMaxCollapsed}
+          onToggleSidebar={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+          onToggleMax={() => setIsMaxCollapsed(!isMaxCollapsed)}
+          activeNavItem="home"
+          user={user}
+        >
+          {/* 1. Header com Status Chips */}
+          <TopStatusBar />
 
-        {/* 2. Hero Operacional */}
-        <MainHero />
+          {/* 2. Hero Operacional */}
+          <MainHero />
 
-        {/* 3. Grid dos 3 Blocos Principais */}
-        <div className={styles.dashboardGrid}>
-          {/* Fornecedores */}
-          <SuppliersPanel />
+          {/* 3. Grid dos 3 Blocos Principais */}
+          <div className={styles.dashboardGrid}>
+            {/* Fornecedores */}
+            <SuppliersPanel />
 
-          {/* Radar de Compra */}
-          <RadarPanel />
+            {/* Radar de Compra */}
+            <RadarPanel />
 
-          {/* Ferramentas */}
-          <ToolsPanel />
-        </div>
-      </LayoutShell>
+            {/* Ferramentas */}
+            <ToolsPanel />
+          </div>
+        </LayoutShell>
+      )}
     </ActivitySessionProvider>
   );
 }

@@ -5,6 +5,9 @@ node_modules/
 
 # Builds, Bundles e Caches
 .next/
+.next-*/
+.next-verify/
+.next-e2e-auth/
 out/
 build/
 dist/
