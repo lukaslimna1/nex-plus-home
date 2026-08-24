@@ -249,4 +249,14 @@ test.describe('NEX+ Multiusuário · E2E Authentication Flow (0.8A Isolated Harn
     // 3. A página deve detectar a mensagem e redirecionar imediatamente para /login
     await expect(page).toHaveURL(/\/login/);
   });
+
+  test('E19. Anti-flood / Rate Limiting: Múltiplas solicitações de forgot-password continuam retornando resposta neutra sem vazar limites', async ({ page }) => {
+    for (let i = 0; i < 4; i++) {
+      await page.goto('/forgot-password');
+      await page.fill('input#email', testEmail);
+      await page.click('button[type="submit"]');
+      await expect(page.locator('text=Solicitação Enviada')).toBeVisible();
+      await expect(page.locator('text=Se existir uma conta associada')).toBeVisible();
+    }
+  });
 });

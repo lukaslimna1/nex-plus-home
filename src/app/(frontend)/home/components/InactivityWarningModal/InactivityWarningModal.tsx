@@ -77,7 +77,7 @@ export function InactivityWarningModal({
               className={styles.primaryButton}
               onClick={onStayLoggedIn}
             >
-              {isSubmitting ? "Renovando sessão..." : "Continuar Conectado"}
+              {isSubmitting ? "Renovando sessão..." : "Continuar sessão"}
             </button>
 
             <button
@@ -86,7 +86,7 @@ export function InactivityWarningModal({
               className={styles.secondaryButton}
               onClick={onLogout}
             >
-              Sair Agora
+              Sair agora
             </button>
           </div>
         </div>

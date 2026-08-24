@@ -13,6 +13,8 @@
 export const DEFAULT_INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutos (600.000 ms)
 export const DEFAULT_WARNING_COUNTDOWN_SECONDS = 10; // 10 segundos
 export const MIN_REFRESH_INTERVAL_MS = 2 * 60 * 1000; // 2 minutos (120.000 ms)
+export const TRAILING_DEBOUNCE_MS = 15 * 1000; // 15 segundos após término de rajada
+export const MIN_TRAILING_INTERVAL_MS = 60 * 1000; // 1 minuto entre refreshes trailing
 export const BROADCAST_CHANNEL_NAME = 'nex_auth_activity';
 
 export type SessionActivityState = 'ACTIVE' | 'WARNING' | 'EXPIRED';
@@ -27,6 +29,8 @@ export interface SessionActivityControllerConfig {
   inactivityTimeoutMs?: number;
   warningCountdownSeconds?: number;
   minRefreshIntervalMs?: number;
+  trailingDebounceMs?: number;
+  minTrailingIntervalMs?: number;
   onStateChange?: (state: SessionActivityState, countdownSeconds: number) => void;
   onRefresh?: () => Promise<{ success: boolean; error?: string }>;
   onLogout?: () => Promise<{ success: boolean; error?: string }>;
@@ -48,6 +52,8 @@ export class SessionActivityController {
   private readonly inactivityTimeoutMs: number;
   private readonly warningCountdownSeconds: number;
   private readonly minRefreshIntervalMs: number;
+  private readonly trailingDebounceMs: number;
+  private readonly minTrailingIntervalMs: number;
   private readonly onStateChange?: (state: SessionActivityState, countdownSeconds: number) => void;
   private readonly onRefresh?: () => Promise<{ success: boolean; error?: string }>;
   private readonly onLogout?: () => Promise<{ success: boolean; error?: string }>;
@@ -55,6 +61,7 @@ export class SessionActivityController {
 
   private inactivityTimer: ReturnType<typeof setTimeout> | null = null;
   private countdownInterval: ReturnType<typeof setInterval> | null = null;
+  private trailingRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private channel: BroadcastChannelLike | null = null;
   private isDestroyed = false;
 
@@ -62,6 +69,8 @@ export class SessionActivityController {
     this.inactivityTimeoutMs = config.inactivityTimeoutMs ?? DEFAULT_INACTIVITY_TIMEOUT_MS;
     this.warningCountdownSeconds = config.warningCountdownSeconds ?? DEFAULT_WARNING_COUNTDOWN_SECONDS;
     this.minRefreshIntervalMs = config.minRefreshIntervalMs ?? MIN_REFRESH_INTERVAL_MS;
+    this.trailingDebounceMs = config.trailingDebounceMs ?? TRAILING_DEBOUNCE_MS;
+    this.minTrailingIntervalMs = config.minTrailingIntervalMs ?? MIN_TRAILING_INTERVAL_MS;
     this.onStateChange = config.onStateChange;
     this.onRefresh = config.onRefresh;
     this.onLogout = config.onLogout;
@@ -103,7 +112,8 @@ export class SessionActivityController {
   /**
    * Registra atividade do usuário local (clique, digitação, touch, scroll).
    * Em estado ACTIVE: reseta o timer de inatividade e renova a sessão se atingido o intervalo mínimo.
-   * Em estado WARNING: fecha o modal de aviso e restaura o estado ACTIVE renovando a sessão.
+   * Agenda também um trailing debounced refresh para assegurar que a última atividade sincronize com o backend.
+   * Em estado WARNING: fecha o modal de aviso e restaura o estado ACTIVE renovando a sessão imediatamente.
    */
   public registerActivity(): void {
     if (this.isDestroyed || this.state === 'EXPIRED') return;
@@ -123,12 +133,38 @@ export class SessionActivityController {
       return;
     }
 
-    // Se estava em ACTIVE, renovar timer e verificar se é hora do refresh deslizante
+    // Se estava em ACTIVE, renovar timer de inatividade
     this.startInactivityTimer();
     this.broadcast({ type: 'ACTIVITY', timestamp: now });
 
+    // 1. Throttle imediato se passou o intervalo mínimo de atividade contínua
     if (now - this.lastRefreshTime >= this.minRefreshIntervalMs) {
+      this.clearTrailingRefreshTimer();
       this.triggerSessionRefresh();
+      return;
+    }
+
+    // 2. Trailing debounce: agenda refresh para quando a rajada de atividade atual cessar
+    this.scheduleTrailingRefresh();
+  }
+
+  private scheduleTrailingRefresh(): void {
+    this.clearTrailingRefreshTimer();
+
+    this.trailingRefreshTimer = setTimeout(() => {
+      if (this.isDestroyed || this.state !== 'ACTIVE') return;
+
+      const now = this.getCurrentTime();
+      if (now - this.lastRefreshTime >= this.minTrailingIntervalMs) {
+        this.triggerSessionRefresh();
+      }
+    }, this.trailingDebounceMs);
+  }
+
+  private clearTrailingRefreshTimer(): void {
+    if (this.trailingRefreshTimer) {
+      clearTimeout(this.trailingRefreshTimer);
+      this.trailingRefreshTimer = null;
     }
   }
 
@@ -139,6 +175,7 @@ export class SessionActivityController {
     if (this.isDestroyed || this.state === 'EXPIRED') return;
 
     this.clearCountdownInterval();
+    this.clearTrailingRefreshTimer();
     this.state = 'ACTIVE';
     this.countdown = this.warningCountdownSeconds;
     this.lastActivityTime = this.getCurrentTime();
@@ -269,6 +306,7 @@ export class SessionActivityController {
       this.inactivityTimer = null;
     }
     this.clearCountdownInterval();
+    this.clearTrailingRefreshTimer();
   }
 
   private notifyStateChange(): void {

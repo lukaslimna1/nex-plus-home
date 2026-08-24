@@ -181,4 +181,55 @@ describe('NEX+ Auth · Session Activity Controller (Sliding Session & Inactivity
 
     controller.destroy();
   });
+
+  it('8. Trailing Debounce: quando uma rajada de atividade termina, agenda e executa refresh trailing', async () => {
+    let refreshCount = 0;
+    let simulatedTime = 1000000;
+
+    const controller = new SessionActivityController({
+      inactivityTimeoutMs: 600000,
+      minRefreshIntervalMs: 120000,
+      trailingDebounceMs: 50, // 50ms para teste
+      minTrailingIntervalMs: 100,
+      getCurrentTime: () => simulatedTime,
+      onRefresh: async () => {
+        refreshCount += 1;
+        return { success: true };
+      },
+    });
+
+    // Usuário interage mas dentro do intervalo mínimo de throttle
+    simulatedTime += 200; // > minTrailingIntervalMs
+    controller.registerActivity();
+    assert.equal(refreshCount, 0);
+
+    // Aguardar debounce trailing disparar
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.equal(refreshCount, 1);
+
+    controller.destroy();
+  });
+
+  it('9. Countdown zerado no estado WARNING executa logout automático e transita para EXPIRED', async () => {
+    let logoutCalled = false;
+    const controller = new SessionActivityController({
+      inactivityTimeoutMs: 50,
+      warningCountdownSeconds: 2,
+      onLogout: async () => {
+        logoutCalled = true;
+        return { success: true };
+      },
+    });
+
+    // Aguardar timeout de inatividade (50ms) + contagem regressiva (2s aprox = 2500ms)
+    // Para teste rápido, chamamos logOut diretamente ou esperamos o tick
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.equal(controller.getState(), 'WARNING');
+
+    // Aguardar countdown zerar
+    await new Promise((resolve) => setTimeout(resolve, 2200));
+    assert.equal(controller.getState(), 'EXPIRED');
+    assert.equal(logoutCalled, true);
+    controller.destroy();
+  });
 });

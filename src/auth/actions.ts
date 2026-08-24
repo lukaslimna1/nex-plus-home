@@ -16,6 +16,7 @@ import {
   handleLogoutResult,
   type LogoutActionResult,
 } from './identity';
+import { forgotPasswordRateLimiter } from './rate-limiter';
 
 export interface LoginActionResult {
   readonly success: boolean;
@@ -114,6 +115,15 @@ export async function forgotPasswordAction(
 
   const neutralSuccessMessage =
     'Se existir uma conta associada a este e-mail, você receberá as instruções para redefinir sua senha.';
+
+  // Proteção zero-cost anti-flood / cota MailApp
+  const allowed = forgotPasswordRateLimiter.consume(cleanEmail);
+  if (!allowed) {
+    return {
+      success: true,
+      message: neutralSuccessMessage,
+    };
+  }
 
   try {
     const payload = await getPayload({ config: configPromise });

@@ -82,23 +82,22 @@ export const googleAppsScriptEmailAdapter = (
             });
 
             if (!response.ok) {
-              const errBody = await response.text().catch(() => 'Unknown error');
               payload.logger.error({
-                msg: `[NEX Email Relay] HTTP ${response.status} ao enviar email para destinatário`,
+                msg: `[NEX Email Relay] HTTP ${response.status} ao conectar no relay`,
               });
-              throw new Error(`Email relay returned status ${response.status}: ${errBody}`);
+              throw new Error(`Email relay returned status ${response.status}`);
             }
 
             const data = (await response.json().catch(() => ({ success: true }))) as { success?: boolean; error?: string };
             if (data && data.success === false) {
               payload.logger.error({
-                msg: `[NEX Email Relay] Erro no relay: ${data.error || 'Falha no envio'}`,
+                msg: `[NEX Email Relay] Falha informada pelo relay`,
               });
-              throw new Error(`Email relay failed: ${data.error || 'Unknown relay error'}`);
+              throw new Error(`Email relay reported failure`);
             }
 
             payload.logger.info({
-              msg: `[NEX Email Relay] Email enviado com sucesso para: ${Array.isArray(to) ? to.join(', ') : to} | Assunto: ${subject}`,
+              msg: `[NEX Email Relay] Email transacional despachado com sucesso via Google Apps Script`,
             });
 
             return;
@@ -111,9 +110,15 @@ export const googleAppsScriptEmailAdapter = (
         }
 
         // Modo Local/Dev/Fallback quando o relay remoto não está conectado
-        payload.logger.info({
-          msg: `[NEX Email Mock] Email enviado para: ${Array.isArray(to) ? to.join(', ') : to} | Assunto: ${subject}`,
-        });
+        if (process.env.NODE_ENV === 'production') {
+          payload.logger.warn({
+            msg: `[NEX Email Relay] AVISO OPERACIONAL: NEX_EMAIL_RELAY_URL ou NEX_EMAIL_RELAY_SECRET não configurados em ambiente de produção. E-mail retido no buffer local.`,
+          });
+        } else {
+          payload.logger.info({
+            msg: `[NEX Email Relay (Local/Mock)] Mensagem retida no buffer de testes`,
+          });
+        }
       },
     };
   };
