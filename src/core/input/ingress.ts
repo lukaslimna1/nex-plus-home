@@ -1,6 +1,6 @@
 /**
  * NEX+ · Ingress Content Service & Trust Boundary
- * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3 · Rodada B3-R3)
+ * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3 · Rodada B3-R4)
  *
  * Responsabilidades:
  * 1. Materialização física de blobs com hashing em streaming e staging seguro.
@@ -11,6 +11,8 @@
  * 6. Leitura e streaming autorizados com verificação ativa de integridade e expiração.
  * 7. Isolamento de fronteira (Boundary): métodos públicos retornam IngressContentView,
  *    garantindo que storageBackend e storageKey jamais sejam expostos a callers.
+ * 8. Error Boundary Sanitizado: erros físicos do BlobStore jamais vazam para callers,
+ *    sendo traduzidos deterministicamente para IngressStorageOperationError.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -38,6 +40,7 @@ import {
   IngressContentExpiredError,
   IngressContentNotFoundError,
   IngressIntegrityError,
+  IngressStorageOperationError,
 } from './errors';
 import type { IngressContentStore } from './persistence/contracts';
 
@@ -132,7 +135,7 @@ export class IngressContentService {
    * 1. Valida OperationalContext confiável.
    * 2. Autoriza operação 'create'.
    * 3. Grava no BlobStore (staging, streaming hash SHA-256).
-   * 4. Obtém amostra limitada em RAM via streaming (fail-closed se indisponível).
+   * 4. Obtém amostra limitada em RAM via streaming (fail-closed com IngressStorageOperationError se falhar).
    * 5. Executa inspeção server-side (determina verifiedMimeType ou rejeita).
    * 6. Se rejeitado, interrompe sem criar registro canônico.
    * 7. Se aceito, persiste IngressContentRecord append-only internamente.
@@ -155,22 +158,24 @@ export class IngressContentService {
     const contentId = (params.contentId ?? `ing_${randomUUID()}`) as IngressContentId;
     validateIngressContentId(contentId);
 
-    // 1. Materializar no BlobStore
-    const putResult = await this.blobStore.putBlob(params.data, {
-      expectedSha256: params.expectedSha256,
-      maxBytes: params.maxBytes,
-    });
+    // 1. Materializar no BlobStore com proteção de Error Boundary
+    let putResult;
+    try {
+      putResult = await this.blobStore.putBlob(params.data, {
+        expectedSha256: params.expectedSha256,
+        maxBytes: params.maxBytes,
+      });
+    } catch {
+      throw new IngressStorageOperationError('write', contentId);
+    }
 
-    // 2. Obter amostra limitada em RAM a partir de stream (FAIL CLOSED se falhar)
+    // 2. Obter amostra limitada em RAM a partir de stream (FAIL CLOSED com IngressStorageOperationError)
     let sampleBuffer: Buffer;
     try {
       const stream = await this.blobStore.getBlobStream(putResult.storageKey, putResult.sha256);
       sampleBuffer = await readStreamSample(stream, this.maxSampleBytes);
-    } catch (err: any) {
-      throw new IngressContentInspectionError(
-        `Failed to obtain verified content sample for inspection: ${err.message}`,
-        params.declaredMimeType
-      );
+    } catch {
+      throw new IngressStorageOperationError('sample', contentId);
     }
 
     // 3. Inspecionar conteúdo server-side com sampleBuffer limitado
@@ -272,6 +277,7 @@ export class IngressContentService {
   /**
    * Lê o conteúdo binário do blob após verificar autorização, expiração e integridade criptográfica.
    * Retorna os bytes do blob acompanhados da projeção pública IngressContentView.
+   * Erros de leitura física do storage são encapsulados em IngressStorageOperationError('read').
    */
   async getContent(
     contentId: IngressContentId,
@@ -279,23 +285,35 @@ export class IngressContentService {
   ): Promise<{ record: IngressContentView; data: Buffer }> {
     const internalRecord = await this.getInternalRecord(contentId, context);
 
-    const verifyResult = await this.blobStore.verifyBlob(
-      internalRecord.storageKey,
-      internalRecord.sha256,
-      internalRecord.byteSize
-    );
+    let verifyResult;
+    try {
+      verifyResult = await this.blobStore.verifyBlob(
+        internalRecord.storageKey,
+        internalRecord.sha256,
+        internalRecord.byteSize
+      );
+    } catch {
+      throw new IngressStorageOperationError('verify', contentId);
+    }
 
     if (!verifyResult.valid) {
       throw new IngressIntegrityError(contentId);
     }
 
-    const data = await this.blobStore.getBlob(internalRecord.storageKey, internalRecord.sha256);
+    let data: Buffer;
+    try {
+      data = await this.blobStore.getBlob(internalRecord.storageKey, internalRecord.sha256);
+    } catch {
+      throw new IngressStorageOperationError('read', contentId);
+    }
+
     return { record: toIngressContentView(internalRecord), data };
   }
 
   /**
    * Obtém stream do blob após verificar autorização, expiração e integridade.
    * Retorna o ReadableStream acompanhado da projeção pública IngressContentView.
+   * Erros de streaming físico do storage são encapsulados em IngressStorageOperationError('stream').
    */
   async getContentStream(
     contentId: IngressContentId,
@@ -303,17 +321,28 @@ export class IngressContentService {
   ): Promise<{ record: IngressContentView; stream: NodeJS.ReadableStream }> {
     const internalRecord = await this.getInternalRecord(contentId, context);
 
-    const verifyResult = await this.blobStore.verifyBlob(
-      internalRecord.storageKey,
-      internalRecord.sha256,
-      internalRecord.byteSize
-    );
+    let verifyResult;
+    try {
+      verifyResult = await this.blobStore.verifyBlob(
+        internalRecord.storageKey,
+        internalRecord.sha256,
+        internalRecord.byteSize
+      );
+    } catch {
+      throw new IngressStorageOperationError('verify', contentId);
+    }
 
     if (!verifyResult.valid) {
       throw new IngressIntegrityError(contentId);
     }
 
-    const stream = await this.blobStore.getBlobStream(internalRecord.storageKey, internalRecord.sha256);
+    let stream: NodeJS.ReadableStream;
+    try {
+      stream = await this.blobStore.getBlobStream(internalRecord.storageKey, internalRecord.sha256);
+    } catch {
+      throw new IngressStorageOperationError('stream', contentId);
+    }
+
     return { record: toIngressContentView(internalRecord), stream };
   }
 }

@@ -1,7 +1,9 @@
 /**
  * NEX+ · Hierarquia de Erros do Boundary de Input & Ingress Content
- * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3)
+ * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3 · Rodada B3-R4)
  */
+
+import type { IngressContentId } from './contracts';
 
 export class InputInvariantViolationError extends Error {
   readonly violationType: string;
@@ -105,6 +107,24 @@ export class IngressIntegrityError extends Error {
     this.name = 'IngressIntegrityError';
     this.contentId = contentId;
     this.reasonCode = 'integrity_verification_failed';
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export type IngressStorageOperation = 'write' | 'sample' | 'verify' | 'read' | 'stream';
+
+export class IngressStorageOperationError extends Error {
+  readonly operation: IngressStorageOperation;
+  readonly contentId?: IngressContentId;
+  readonly reasonCode: 'storage_operation_failed' = 'storage_operation_failed';
+
+  constructor(operation: IngressStorageOperation, contentId?: IngressContentId) {
+    super(
+      `Ingress storage operation '${operation}' failed${contentId ? ` for content '${contentId}'` : ''}.`
+    );
+    this.name = 'IngressStorageOperationError';
+    this.operation = operation;
+    this.contentId = contentId;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }

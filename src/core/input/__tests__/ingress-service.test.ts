@@ -1,6 +1,6 @@
 /**
  * NEX+ · Testes Unitários e Adversariais do IngressContentService
- * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3 · Rodada B3-R3)
+ * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3 · Rodada B3-R4)
  *
  * Provas:
  * 1. Autorização obrigatória no 'create' e 'read' (fail-closed sem authorizer).
@@ -14,11 +14,14 @@
  * 9. Inspeção streaming limita amostra em RAM sem materializar o blob inteiro.
  * 10. Boundary de Não-Vazamento de Storage: métodos públicos retornam IngressContentView
  *     e jamais expõem storageKey, storageBackend ou caminhos físicos internos.
+ * 11. Error Boundary Sanitizado (R4): erros físicos lançados pelo BlobStore (paths, keys, hash leaks)
+ *     são interceptados e traduzidos para IngressStorageOperationError seguro sem vazar metadata.
  */
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { Readable } from 'node:stream';
 
 import type { HumanActor } from '../../observations/contracts';
 import type { SessionRef } from '../../../auth/session-ref.types';
@@ -35,6 +38,7 @@ import {
   IngressContentInspectionError,
   IngressContentExpiredError,
   IngressIntegrityError,
+  IngressStorageOperationError,
 } from '../errors';
 import type { IngressContentStore } from '../persistence/contracts';
 import { IngressContentService } from '../ingress';
@@ -90,7 +94,6 @@ class InMemoryBlobStore implements BlobStore {
   async getBlobStream(storageKey: string, expectedSha256?: string): Promise<NodeJS.ReadableStream> {
     this.accessedStorageKeys.push(storageKey);
     const buf = await this.getBlob(storageKey, expectedSha256);
-    const { Readable } = await import('node:stream');
     return Readable.from(buf);
   }
 
@@ -136,7 +139,7 @@ class InMemoryIngressContentStore implements IngressContentStore {
   }
 }
 
-describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle · B3-R3)', () => {
+describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle · B3-R4)', () => {
   const sessionRefLucas = '1111111111111111111111111111111111111111111111111111111111111111' as SessionRef;
   const sessionRefJoao = '2222222222222222222222222222222222222222222222222222222222222222' as SessionRef;
 
@@ -509,10 +512,6 @@ describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle · B3-R3)
     assert.equal(result.record.sha256, expectedSha256);
   });
 
-  // ==========================================================================
-  // 9. PROVAS DE BOUNDARY: NÃO-VAZAMENTO DE STORAGE METADATA
-  // ==========================================================================
-
   it('9. Prova A-E: getRecord, getContent e getContentStream retornam IngressContentView sem storageKey/storageBackend', async () => {
     const blobStore = new InMemoryBlobStore();
     const contentStore = new InMemoryIngressContentStore();
@@ -581,5 +580,276 @@ describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle · B3-R3)
 
     // G. BlobStore recebeu a storageKey internamente para verificar e carregar
     assert.ok(blobStore.accessedStorageKeys.includes(internal.storageKey));
+  });
+
+  // ==========================================================================
+  // 10. ERROR BOUNDARY ADVERSARIAL: ERROS DO BLOBSTORE NÃO VAZAM METADATA FÍSICA
+  // ==========================================================================
+
+  describe('Error Boundary Sanitizado (R4 · Provas 1 a 6)', () => {
+    const RAW_SECRET_PATH = 'C:\\Nex+\\secret\\_staging\\file.tmp';
+    const RAW_STORAGE_KEY = 'sha256/ab/cd/SECRETKEY_99999999999999999999999999999999';
+    const RAW_MESSAGE = `Storage crash at '${RAW_SECRET_PATH}' with target key '${RAW_STORAGE_KEY}', expectedHash=abc actualHash=def`;
+
+    function assertSafeStorageError(
+      err: any,
+      expectedOperation: string,
+      expectedContentId?: string
+    ) {
+      assert.ok(err instanceof IngressStorageOperationError, `Expected IngressStorageOperationError, got: ${err?.constructor?.name}`);
+      assert.equal(err.operation, expectedOperation);
+      assert.equal(err.reasonCode, 'storage_operation_failed');
+      if (expectedContentId) {
+        assert.equal(err.contentId, expectedContentId);
+      }
+
+      // Prova que error.message não contém detalhes físicos vazados
+      assert.ok(!err.message.includes('C:\\'), `Message contained drive path: ${err.message}`);
+      assert.ok(!err.message.includes('_staging'), `Message contained staging path: ${err.message}`);
+      assert.ok(!err.message.includes('sha256/'), `Message contained storageKey path: ${err.message}`);
+      assert.ok(!err.message.includes('SECRETKEY'), `Message contained secret: ${err.message}`);
+      assert.ok(!err.message.includes('expectedHash'), `Message contained hash leak: ${err.message}`);
+      assert.ok(!err.message.includes('actualHash'), `Message contained hash leak: ${err.message}`);
+      assert.ok(!err.message.includes('Storage crash'), `Message contained raw error: ${err.message}`);
+
+      // Prova que JSON.stringify do erro não expõe propriedades privadas nem raw errors
+      const json = JSON.stringify(err);
+      assert.ok(!json.includes('C:\\'), `JSON contained drive path: ${json}`);
+      assert.ok(!json.includes('_staging'), `JSON contained staging path: ${json}`);
+      assert.ok(!json.includes('sha256/'), `JSON contained storageKey: ${json}`);
+      assert.ok(!json.includes('SECRETKEY'), `JSON contained secret: ${json}`);
+      assert.ok(!json.includes('expectedHash'), `JSON contained hash leak: ${json}`);
+      assert.ok(!json.includes('actualHash'), `JSON contained hash leak: ${json}`);
+      assert.ok(!json.includes('Storage crash'), `JSON contained raw error: ${json}`);
+    }
+
+    it('1. putBlob lança erro com paths brutos -> capturado e traduzido para IngressStorageOperationError("write")', async () => {
+      const failingBlobStore: BlobStore = {
+        async putBlob() {
+          throw new Error(RAW_MESSAGE);
+        },
+        async getBlob() { throw new Error('stub'); },
+        async getBlobStream() { throw new Error('stub'); },
+        async hasBlob() { return false; },
+        async verifyBlob() { return { valid: false }; },
+        async listStorageKeys() { return []; },
+      };
+
+      const contentStore = new InMemoryIngressContentStore();
+      const service = new IngressContentService({
+        blobStore: failingBlobStore,
+        contentStore,
+        authorizer: { async authorize() { return true; } },
+        inspector: { async inspect() { return { accepted: true, verifiedMimeType: 'text/plain' }; } },
+      });
+
+      await assert.rejects(
+        () => service.ingestContent({ data: Buffer.from('teste') }, lucasContext),
+        (err: any) => {
+          assertSafeStorageError(err, 'write');
+          return true;
+        }
+      );
+    });
+
+    it('2. getBlobStream do sampling lança erro bruto -> capturado e traduzido para IngressStorageOperationError("sample")', async () => {
+      const failingBlobStore: BlobStore = {
+        async putBlob() {
+          return { sha256: 'a'.repeat(64), byteSize: 10, storageKey: RAW_STORAGE_KEY, alreadyExisted: false };
+        },
+        async getBlob() { throw new Error('stub'); },
+        async getBlobStream() {
+          throw new Error(RAW_MESSAGE);
+        },
+        async hasBlob() { return false; },
+        async verifyBlob() { return { valid: false }; },
+        async listStorageKeys() { return []; },
+      };
+
+      const contentStore = new InMemoryIngressContentStore();
+      const service = new IngressContentService({
+        blobStore: failingBlobStore,
+        contentStore,
+        authorizer: { async authorize() { return true; } },
+        inspector: { async inspect() { return { accepted: true, verifiedMimeType: 'text/plain' }; } },
+      });
+
+      await assert.rejects(
+        () => service.ingestContent({ data: Buffer.from('teste') }, lucasContext),
+        (err: any) => {
+          assertSafeStorageError(err, 'sample');
+          return true;
+        }
+      );
+    });
+
+    it('3. stream do sampling emite erro durante leitura -> capturado e traduzido para IngressStorageOperationError("sample")', async () => {
+      const failingBlobStore: BlobStore = {
+        async putBlob() {
+          return { sha256: 'a'.repeat(64), byteSize: 10, storageKey: RAW_STORAGE_KEY, alreadyExisted: false };
+        },
+        async getBlob() { throw new Error('stub'); },
+        async getBlobStream() {
+          const errStream = new Readable({
+            read() {
+              this.destroy(new Error(RAW_MESSAGE));
+            },
+          });
+          return errStream;
+        },
+        async hasBlob() { return false; },
+        async verifyBlob() { return { valid: false }; },
+        async listStorageKeys() { return []; },
+      };
+
+      const contentStore = new InMemoryIngressContentStore();
+      const service = new IngressContentService({
+        blobStore: failingBlobStore,
+        contentStore,
+        authorizer: { async authorize() { return true; } },
+        inspector: { async inspect() { return { accepted: true, verifiedMimeType: 'text/plain' }; } },
+      });
+
+      await assert.rejects(
+        () => service.ingestContent({ data: Buffer.from('teste') }, lucasContext),
+        (err: any) => {
+          assertSafeStorageError(err, 'sample');
+          return true;
+        }
+      );
+    });
+
+    it('4. verifyBlob lança exceção bruta -> capturado e traduzido para IngressStorageOperationError("verify")', async () => {
+      const failingBlobStore: BlobStore = {
+        async putBlob() { throw new Error('stub'); },
+        async getBlob() { throw new Error('stub'); },
+        async getBlobStream() { throw new Error('stub'); },
+        async hasBlob() { return false; },
+        async verifyBlob() {
+          throw new Error(RAW_MESSAGE);
+        },
+        async listStorageKeys() { return []; },
+      };
+
+      const contentStore = new InMemoryIngressContentStore();
+      const internalRecord: IngressContentRecord = {
+        contentId: 'ing_err_1' as IngressContentId,
+        actor: { kind: 'human', humanId: 'usr_lucas' },
+        userId: 'usr_lucas',
+        sessionRef: sessionRefLucas,
+        verifiedMimeType: 'text/plain',
+        sha256: 'a'.repeat(64),
+        byteSize: 100,
+        storageBackend: 'local_fs',
+        storageKey: RAW_STORAGE_KEY,
+        receivedAt: '2026-08-24T21:00:00.000Z',
+      };
+      await contentStore.saveContent(internalRecord);
+
+      const service = new IngressContentService({
+        blobStore: failingBlobStore,
+        contentStore,
+        authorizer: { async authorize() { return true; } },
+        inspector: { async inspect() { return { accepted: true, verifiedMimeType: 'text/plain' }; } },
+      });
+
+      await assert.rejects(
+        () => service.getContent('ing_err_1' as IngressContentId, lucasContext),
+        (err: any) => {
+          assertSafeStorageError(err, 'verify', 'ing_err_1');
+          return true;
+        }
+      );
+    });
+
+    it('5. getBlob lança exceção bruta após verify válido -> capturado e traduzido para IngressStorageOperationError("read")', async () => {
+      const failingBlobStore: BlobStore = {
+        async putBlob() { throw new Error('stub'); },
+        async getBlob() {
+          throw new Error(RAW_MESSAGE);
+        },
+        async getBlobStream() { throw new Error('stub'); },
+        async hasBlob() { return true; },
+        async verifyBlob() {
+          return { valid: true, actualSha256: 'a'.repeat(64), actualSize: 100 };
+        },
+        async listStorageKeys() { return []; },
+      };
+
+      const contentStore = new InMemoryIngressContentStore();
+      const internalRecord: IngressContentRecord = {
+        contentId: 'ing_err_2' as IngressContentId,
+        actor: { kind: 'human', humanId: 'usr_lucas' },
+        userId: 'usr_lucas',
+        sessionRef: sessionRefLucas,
+        verifiedMimeType: 'text/plain',
+        sha256: 'a'.repeat(64),
+        byteSize: 100,
+        storageBackend: 'local_fs',
+        storageKey: RAW_STORAGE_KEY,
+        receivedAt: '2026-08-24T21:00:00.000Z',
+      };
+      await contentStore.saveContent(internalRecord);
+
+      const service = new IngressContentService({
+        blobStore: failingBlobStore,
+        contentStore,
+        authorizer: { async authorize() { return true; } },
+        inspector: { async inspect() { return { accepted: true, verifiedMimeType: 'text/plain' }; } },
+      });
+
+      await assert.rejects(
+        () => service.getContent('ing_err_2' as IngressContentId, lucasContext),
+        (err: any) => {
+          assertSafeStorageError(err, 'read', 'ing_err_2');
+          return true;
+        }
+      );
+    });
+
+    it('6. getBlobStream final lança exceção bruta após verify válido -> capturado e traduzido para IngressStorageOperationError("stream")', async () => {
+      const failingBlobStore: BlobStore = {
+        async putBlob() { throw new Error('stub'); },
+        async getBlob() { throw new Error('stub'); },
+        async getBlobStream() {
+          throw new Error(RAW_MESSAGE);
+        },
+        async hasBlob() { return true; },
+        async verifyBlob() {
+          return { valid: true, actualSha256: 'a'.repeat(64), actualSize: 100 };
+        },
+        async listStorageKeys() { return []; },
+      };
+
+      const contentStore = new InMemoryIngressContentStore();
+      const internalRecord: IngressContentRecord = {
+        contentId: 'ing_err_3' as IngressContentId,
+        actor: { kind: 'human', humanId: 'usr_lucas' },
+        userId: 'usr_lucas',
+        sessionRef: sessionRefLucas,
+        verifiedMimeType: 'text/plain',
+        sha256: 'a'.repeat(64),
+        byteSize: 100,
+        storageBackend: 'local_fs',
+        storageKey: RAW_STORAGE_KEY,
+        receivedAt: '2026-08-24T21:00:00.000Z',
+      };
+      await contentStore.saveContent(internalRecord);
+
+      const service = new IngressContentService({
+        blobStore: failingBlobStore,
+        contentStore,
+        authorizer: { async authorize() { return true; } },
+        inspector: { async inspect() { return { accepted: true, verifiedMimeType: 'text/plain' }; } },
+      });
+
+      await assert.rejects(
+        () => service.getContentStream('ing_err_3' as IngressContentId, lucasContext),
+        (err: any) => {
+          assertSafeStorageError(err, 'stream', 'ing_err_3');
+          return true;
+        }
+      );
+    });
   });
 });
