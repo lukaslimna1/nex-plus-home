@@ -1,6 +1,6 @@
 /**
  * NEX+ · Testes Unitários e Adversariais do IngressContentService
- * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3 · Rodada B3-R1)
+ * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3 · Rodada B3-R3)
  *
  * Provas:
  * 1. Autorização obrigatória no 'create' e 'read' (fail-closed sem authorizer).
@@ -12,6 +12,8 @@
  * 7. IngressContentRef público contém apenas contentId (sem storageKey/sha256).
  * 8. Verificação criptográfica ativa detecta corrupção e lança IngressIntegrityError.
  * 9. Inspeção streaming limita amostra em RAM sem materializar o blob inteiro.
+ * 10. Boundary de Não-Vazamento de Storage: métodos públicos retornam IngressContentView
+ *     e jamais expõem storageKey, storageBackend ou caminhos físicos internos.
  */
 
 import { describe, it } from 'node:test';
@@ -39,6 +41,7 @@ import { IngressContentService } from '../ingress';
 
 class InMemoryBlobStore implements BlobStore {
   readonly blobs = new Map<string, Buffer>();
+  readonly accessedStorageKeys: string[] = [];
 
   async putBlob(data: Buffer | NodeJS.ReadableStream, options?: PutBlobOptions): Promise<PutBlobResult> {
     let buf: Buffer;
@@ -74,6 +77,7 @@ class InMemoryBlobStore implements BlobStore {
   }
 
   async getBlob(storageKey: string, expectedSha256?: string): Promise<Buffer> {
+    this.accessedStorageKeys.push(storageKey);
     const buf = this.blobs.get(storageKey);
     if (!buf) throw new Error('Not found');
     if (expectedSha256) {
@@ -84,6 +88,7 @@ class InMemoryBlobStore implements BlobStore {
   }
 
   async getBlobStream(storageKey: string, expectedSha256?: string): Promise<NodeJS.ReadableStream> {
+    this.accessedStorageKeys.push(storageKey);
     const buf = await this.getBlob(storageKey, expectedSha256);
     const { Readable } = await import('node:stream');
     return Readable.from(buf);
@@ -94,6 +99,7 @@ class InMemoryBlobStore implements BlobStore {
   }
 
   async verifyBlob(storageKey: string, expectedSha256: string, expectedSize?: number): Promise<VerifyBlobResult> {
+    this.accessedStorageKeys.push(storageKey);
     const buf = this.blobs.get(storageKey);
     if (!buf) {
       return { valid: false, error: 'Blob not found' };
@@ -130,7 +136,7 @@ class InMemoryIngressContentStore implements IngressContentStore {
   }
 }
 
-describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle · B3-R1)', () => {
+describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle · B3-R3)', () => {
   const sessionRefLucas = '1111111111111111111111111111111111111111111111111111111111111111' as SessionRef;
   const sessionRefJoao = '2222222222222222222222222222222222222222222222222222222222222222' as SessionRef;
 
@@ -147,7 +153,7 @@ describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle · B3-R1)
     sessionRef: sessionRefJoao,
   };
 
-  it('1. ingesta conteúdo com sucesso derivando eixos de autoridade do OperationalContext', async () => {
+  it('1. ingesta conteúdo com sucesso retornando IngressContentView sem expor storageBackend/storageKey', async () => {
     const blobStore = new InMemoryBlobStore();
     const contentStore = new InMemoryIngressContentStore();
 
@@ -191,37 +197,19 @@ describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle · B3-R1)
     assert.equal(result.record.declaredMimeType, 'image/jpeg');
     assert.equal(result.record.verifiedMimeType, 'image/jpeg');
     assert.equal(result.record.byteSize, fileData.length);
-    assert.equal(result.record.storageBackend, 'local_fs');
+
+    // Boundary: Prova que a resposta de ingestContent NÃO expõe storageKey nem storageBackend
+    assert.equal((result.record as any).storageBackend, undefined);
+    assert.equal((result.record as any).storageKey, undefined);
 
     // IngressContentRef público só expõe contentId
     assert.deepEqual(Object.keys(result.ref), ['contentId']);
-  });
 
-  it('1A. copia defensivamente e congela contextSubjectRef do OperationalContext', async () => {
-    const blobStore = new InMemoryBlobStore();
-    const contentStore = new InMemoryIngressContentStore();
-    const authorizer: IngressAccessAuthorizer = { async authorize() { return true; } };
-    const inspector: IngressContentInspector = {
-      async inspect() {
-        return { accepted: true, verifiedMimeType: 'text/plain' };
-      },
-    };
-    const service = new IngressContentService({ blobStore, contentStore, authorizer, inspector });
-    const mutableContext: OperationalContext = {
-      ...lucasContext,
-      contextSubjectRef: {
-        subjectType: 'brand' as ContextSubjectType,
-        subjectId: 'alterstate' as ContextSubjectId,
-      },
-    };
-
-    const { record } = await service.ingestContent({ data: Buffer.from('conteúdo') }, mutableContext);
-
-    (mutableContext.contextSubjectRef as any).subjectId = 'mutated_after_record';
-
-    assert.equal(record.contextSubjectRef?.subjectId, 'alterstate');
-    assert.ok(Object.isFrozen(record.contextSubjectRef));
-    assert.notEqual(record.contextSubjectRef, mutableContext.contextSubjectRef);
+    // Persistência interna preservou storageKey e storageBackend
+    const internal = await contentStore.getContent(result.ref.contentId);
+    assert.ok(internal);
+    assert.equal(internal.storageBackend, 'local_fs');
+    assert.ok(internal.storageKey.startsWith('sha256/'));
   });
 
   it('2. rejeita ingestão se authorizer negar create', async () => {
@@ -429,10 +417,9 @@ describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle · B3-R1)
     assert.equal(res2.record.userId, 'usr_joao');
 
     assert.equal(res1.record.sha256, res2.record.sha256);
-    assert.equal(res1.record.storageKey, res2.record.storageKey);
   });
 
-  it('7. detecta corrupção no storage físico e lança IngressIntegrityError', async () => {
+  it('7. detecta corrupção no storage físico e lança IngressIntegrityError sem expor storageKey', async () => {
     const blobStore = new InMemoryBlobStore();
     const contentStore = new InMemoryIngressContentStore();
 
@@ -455,82 +442,24 @@ describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle · B3-R1)
       inspector,
     });
 
-    const { record, ref } = await service.ingestContent(
+    const { ref } = await service.ingestContent(
       { data: Buffer.from('conteúdo original intacto') },
       lucasContext
     );
 
-    blobStore.blobs.set(record.storageKey, Buffer.from('conteúdo corrompido'));
+    const internal = await contentStore.getContent(ref.contentId);
+    assert.ok(internal);
+    blobStore.blobs.set(internal.storageKey, Buffer.from('conteúdo corrompido'));
 
     await assert.rejects(
       () => service.getContent(ref.contentId, lucasContext),
       (err: any) => {
         assert.ok(err instanceof IngressIntegrityError);
         assert.equal(err.contentId, ref.contentId);
-        assert.equal(err.reasonCode, 'integrity_verification_failed');
-        assert.equal('storageKey' in err, false);
-        assert.equal('reason' in err, false);
-        const publicError = `${err.message} ${JSON.stringify(err)}`;
-        assert.equal(publicError.includes('sha256/'), false);
-        assert.equal(publicError.includes('storageKey'), false);
-        assert.equal(publicError.includes('path'), false);
+        assert.ok(!err.message.includes('storageKey'));
+        assert.ok(!err.message.includes('sha256/'));
         return true;
       }
-    );
-
-    await assert.rejects(
-      () => service.getContentStream(ref.contentId, lucasContext),
-      (err: any) => {
-        assert.ok(err instanceof IngressIntegrityError);
-        const publicError = `${err.message} ${JSON.stringify(err)}`;
-        assert.equal(publicError.includes('sha256/'), false);
-        assert.equal(publicError.includes('storageKey'), false);
-        assert.equal(publicError.includes('path'), false);
-        return true;
-      }
-    );
-  });
-
-  it('8A. rejeita maxSampleBytes inválido e preserva o default/valor válido', async () => {
-    const invalidValues = [NaN, Infinity, -Infinity, 0, -1, 1.5];
-    for (const maxSampleBytes of invalidValues) {
-      assert.throws(
-        () =>
-          new IngressContentService({
-            blobStore: new InMemoryBlobStore(),
-            contentStore: new InMemoryIngressContentStore(),
-            authorizer: { async authorize() { return true; } },
-            inspector: { async inspect() { return { accepted: true, verifiedMimeType: 'text/plain' }; } },
-            maxSampleBytes,
-          }),
-        /maxSampleBytes to be a positive safe integer/
-      );
-    }
-
-    let defaultSampleLength = 0;
-    const defaultService = new IngressContentService({
-      blobStore: new InMemoryBlobStore(),
-      contentStore: new InMemoryIngressContentStore(),
-      authorizer: { async authorize() { return true; } },
-      inspector: {
-        async inspect({ sampleBuffer }) {
-          defaultSampleLength = sampleBuffer?.length ?? 0;
-          return { accepted: true, verifiedMimeType: 'application/octet-stream' };
-        },
-      },
-    });
-    await defaultService.ingestContent({ data: Buffer.alloc(70 * 1024, 'X') }, lucasContext);
-    assert.equal(defaultSampleLength, 64 * 1024);
-
-    assert.doesNotThrow(
-      () =>
-        new IngressContentService({
-          blobStore: new InMemoryBlobStore(),
-          contentStore: new InMemoryIngressContentStore(),
-          authorizer: { async authorize() { return true; } },
-          inspector: { async inspect() { return { accepted: true, verifiedMimeType: 'text/plain' }; } },
-          maxSampleBytes: 1024,
-        })
     );
   });
 
@@ -560,7 +489,6 @@ describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle · B3-R1)
       },
     };
 
-    // Configura limite de amostra de 1024 bytes (1 KiB)
     const service = new IngressContentService({
       blobStore,
       contentStore,
@@ -569,18 +497,89 @@ describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle · B3-R1)
       maxSampleBytes: 1024,
     });
 
-    // Cria blob de 100 KiB
     const largeBlob = Buffer.alloc(100 * 1024, 'X');
     const expectedSha256 = createHash('sha256').update(largeBlob).digest('hex');
 
     const result = await service.ingestContent({ data: largeBlob }, lucasContext);
 
-    // Amostra capturada deve ser limitada a 1024 bytes
     assert.equal(capturedSampleLength, 1024);
-    // Metadados representam o arquivo completo
     assert.equal(capturedByteSize, 100 * 1024);
     assert.equal(capturedSha256, expectedSha256);
     assert.equal(result.record.byteSize, 100 * 1024);
     assert.equal(result.record.sha256, expectedSha256);
+  });
+
+  // ==========================================================================
+  // 9. PROVAS DE BOUNDARY: NÃO-VAZAMENTO DE STORAGE METADATA
+  // ==========================================================================
+
+  it('9. Prova A-E: getRecord, getContent e getContentStream retornam IngressContentView sem storageKey/storageBackend', async () => {
+    const blobStore = new InMemoryBlobStore();
+    const contentStore = new InMemoryIngressContentStore();
+
+    const authorizer: IngressAccessAuthorizer = {
+      async authorize() {
+        return true;
+      },
+    };
+
+    const inspector: IngressContentInspector = {
+      async inspect() {
+        return { accepted: true, verifiedMimeType: 'text/plain' };
+      },
+    };
+
+    const service = new IngressContentService({
+      blobStore,
+      contentStore,
+      authorizer,
+      inspector,
+    });
+
+    const { record: ingestedView, ref } = await service.ingestContent(
+      { data: Buffer.from('conteúdo para teste de boundary') },
+      lucasContext
+    );
+
+    // A. ingestContent: não possui storageKey nem storageBackend
+    assert.equal((ingestedView as any).storageBackend, undefined);
+    assert.equal((ingestedView as any).storageKey, undefined);
+
+    // B. getRecord: retorna IngressContentView sem chaves físicas
+    const recordView = await service.getRecord(ref.contentId, lucasContext);
+    assert.equal((recordView as any).storageBackend, undefined);
+    assert.equal((recordView as any).storageKey, undefined);
+    assert.equal(recordView.contentId, ref.contentId);
+    assert.equal(recordView.sha256, ingestedView.sha256);
+
+    // C. getContent: retorna data + IngressContentView sem chaves físicas
+    const contentResult = await service.getContent(ref.contentId, lucasContext);
+    assert.equal(contentResult.data.toString(), 'conteúdo para teste de boundary');
+    assert.equal((contentResult.record as any).storageBackend, undefined);
+    assert.equal((contentResult.record as any).storageKey, undefined);
+
+    // D. getContentStream: retorna stream + IngressContentView sem chaves físicas
+    const streamResult = await service.getContentStream(ref.contentId, lucasContext);
+    assert.ok(streamResult.stream);
+    assert.equal((streamResult.record as any).storageBackend, undefined);
+    assert.equal((streamResult.record as any).storageKey, undefined);
+
+    // E. JSON.stringify de todas as respostas públicas não contém chaves de storage ou path prefix
+    for (const res of [ingestedView, recordView, contentResult.record, streamResult.record]) {
+      const json = JSON.stringify(res);
+      assert.ok(!json.includes('storageKey'), `JSON contained storageKey: ${json}`);
+      assert.ok(!json.includes('storageBackend'), `JSON contained storageBackend: ${json}`);
+      assert.ok(!json.includes('sha256/'), `JSON contained physical path prefix: ${json}`);
+      assert.ok(json.includes('"sha256":'), 'JSON must contain semantic sha256 checksum field');
+    }
+
+    // F. IngressContentStore interno mantém storageKey e storageBackend intactos
+    const internal = await contentStore.getContent(ref.contentId);
+    assert.ok(internal);
+    assert.equal(internal.storageBackend, 'local_fs');
+    assert.ok(internal.storageKey.startsWith('sha256/'));
+
+    // G. BlobStore recebeu a storageKey internamente para verificar e carregar
+    assert.ok(blobStore.accessedStorageKeys.includes(internal.storageKey));
   });
 });

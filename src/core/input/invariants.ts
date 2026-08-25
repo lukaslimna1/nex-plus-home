@@ -1,6 +1,6 @@
 /**
  * NEX+ · Invariantes e Validadores Runtime de Input & Ingress Content
- * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3)
+ * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3 · Rodada B3-R3)
  *
  * Princípios:
  * 1. Allowlist runtime fechada em todas as variantes e objetos canônicos.
@@ -8,10 +8,12 @@
  * 3. Validação estrita de formato (SHA-256 64 hex, timestamps UTC ISO 8601 com 'Z' compartilhados com o Core).
  * 4. Validação de coerência de autoridade (SessionRef -> userId, HumanActor.humanId === userId).
  * 5. Imutabilidade profunda com cópia defensiva estruturada por variante.
+ * 6. Projeção pública IngressContentView estrita: isolamento completo de storageBackend e storageKey.
  */
 
 import type { Actor, HumanActor, MaxActor, SystemActor, IntegrationActor } from '../observations/contracts';
 import { isValidSessionRef } from '../../auth/session-ref.types';
+import type { ContextSubjectRef } from '../context/contracts';
 import {
   isCanonicalUtcInstant,
   isNonEmptyString,
@@ -24,10 +26,10 @@ import type {
   IngressContentRef,
   InputPart,
   InputRecord,
+  IngressContentView,
   IngressContentRecord,
   RecordInputDraft,
 } from './contracts';
-import type { ContextSubjectRef } from '../context/contracts';
 import { InputInvariantViolationError } from './errors';
 
 // ============================================================================
@@ -76,18 +78,6 @@ export function validateIngressContentId(id: unknown): asserts id is IngressCont
       `IngressContentId must be a non-empty string, got '${String(id)}'.`
     );
   }
-}
-
-/**
- * Reconstrói e congela o sujeito contextual recebido de um OperationalContext.
- * O B3 não pode depender de o caller ter congelado previamente esse objeto.
- */
-export function sanitizeContextSubjectRef(ref: ContextSubjectRef): ContextSubjectRef {
-  validateContextSubjectRef(ref);
-  return Object.freeze({
-    subjectType: ref.subjectType,
-    subjectId: ref.subjectId,
-  });
 }
 
 // ============================================================================
@@ -332,7 +322,7 @@ export function sanitizeInputPart(part: InputPart): InputPart {
 }
 
 // ============================================================================
-// 7. VALIDAÇÃO DE ACTOR (ALLOWLIST FECHADA)
+// 7. VALIDAÇÃO E SANITIZAÇÃO DE ACTOR E CONTEXT SUBJECT REF
 // ============================================================================
 
 export function validateActor(actor: unknown): asserts actor is Actor {
@@ -437,6 +427,14 @@ export function sanitizeActor(actor: Actor): Actor {
       return Object.freeze(i);
     }
   }
+}
+
+export function sanitizeContextSubjectRef(ref: ContextSubjectRef): ContextSubjectRef {
+  validateContextSubjectRef(ref);
+  return Object.freeze({
+    subjectType: ref.subjectType,
+    subjectId: ref.subjectId,
+  });
 }
 
 // ============================================================================
@@ -575,7 +573,177 @@ export function validateInputRecord(record: unknown): asserts record is InputRec
 }
 
 // ============================================================================
-// 9. VALIDAÇÃO DE INGRESS CONTENT RECORD (METADATA INTERNA)
+// 9. VALIDAÇÃO DE INGRESS CONTENT VIEW (PROJEÇÃO PÚBLICA SEM METADATA FÍSICA)
+// ============================================================================
+
+export function validateIngressContentView(
+  view: unknown
+): asserts view is IngressContentView {
+  if (!view || typeof view !== 'object') {
+    throw new InputInvariantViolationError(
+      'INVALID_INGRESS_CONTENT_VIEW',
+      'IngressContentView must be a non-null object.'
+    );
+  }
+  const candidate = view as Record<string, unknown>;
+
+  assertExactKeys(
+    candidate,
+    [
+      'contentId',
+      'actor',
+      'userId',
+      'sessionRef',
+      'contextSubjectRef',
+      'sourceRefId',
+      'declaredMimeType',
+      'verifiedMimeType',
+      'sha256',
+      'byteSize',
+      'receivedAt',
+      'expiresAt',
+    ],
+    'IngressContentView'
+  );
+
+  validateIngressContentId(candidate.contentId);
+  validateActor(candidate.actor);
+
+  if (candidate.userId !== undefined && !isNonEmptyString(candidate.userId)) {
+    throw new InputInvariantViolationError(
+      'INVALID_USER_ID',
+      'IngressContentView.userId must be a non-empty string when provided.'
+    );
+  }
+
+  if (candidate.sessionRef !== undefined) {
+    if (!isValidSessionRef(candidate.sessionRef)) {
+      throw new InputInvariantViolationError(
+        'INVALID_SESSION_REF',
+        `IngressContentView.sessionRef must be a valid 64-char lowercase hexadecimal SessionRef, got '${String(
+          candidate.sessionRef
+        )}'.`
+      );
+    }
+    if (candidate.userId === undefined) {
+      throw new InputInvariantViolationError(
+        'SESSION_REF_WITHOUT_USER_ID',
+        'IngressContentView.sessionRef cannot be provided without a corresponding userId.'
+      );
+    }
+  }
+
+  if (candidate.contextSubjectRef !== undefined) {
+    if (candidate.contextSubjectRef === null) {
+      throw new InputInvariantViolationError(
+        'INVALID_CONTEXT_SUBJECT_REF',
+        'IngressContentView.contextSubjectRef must be either a valid ContextSubjectRef or undefined (null is not allowed).'
+      );
+    }
+    validateContextSubjectRef(candidate.contextSubjectRef);
+  }
+
+  if (candidate.sourceRefId !== undefined && !isNonEmptyString(candidate.sourceRefId)) {
+    throw new InputInvariantViolationError(
+      'INVALID_SOURCE_REF_ID',
+      'IngressContentView.sourceRefId must be a non-empty string when provided.'
+    );
+  }
+
+  if (candidate.declaredMimeType !== undefined && !isNonEmptyString(candidate.declaredMimeType)) {
+    throw new InputInvariantViolationError(
+      'INVALID_DECLARED_MIME_TYPE',
+      'IngressContentView.declaredMimeType must be a non-empty string when provided.'
+    );
+  }
+
+  if (!isNonEmptyString(candidate.verifiedMimeType)) {
+    throw new InputInvariantViolationError(
+      'INVALID_VERIFIED_MIME_TYPE',
+      'IngressContentView.verifiedMimeType must be a non-empty string.'
+    );
+  }
+
+  if (!isValidSha256(candidate.sha256)) {
+    throw new InputInvariantViolationError(
+      'INVALID_SHA256',
+      `IngressContentView.sha256 must be a 64-char lowercase hexadecimal string, got '${String(
+        candidate.sha256
+      )}'.`
+    );
+  }
+
+  if (
+    typeof candidate.byteSize !== 'number' ||
+    !Number.isSafeInteger(candidate.byteSize) ||
+    candidate.byteSize < 0
+  ) {
+    throw new InputInvariantViolationError(
+      'INVALID_BYTE_SIZE',
+      `IngressContentView.byteSize must be a non-negative safe integer, got '${String(
+        candidate.byteSize
+      )}'.`
+    );
+  }
+
+  if (!isCanonicalUtcInstant(candidate.receivedAt)) {
+    throw new InputInvariantViolationError(
+      'INVALID_RECEIVED_AT',
+      `IngressContentView.receivedAt must be a valid ISO 8601 UTC instant ending in 'Z', got '${String(
+        candidate.receivedAt
+      )}'.`
+    );
+  }
+
+  if (candidate.expiresAt !== undefined) {
+    if (!isCanonicalUtcInstant(candidate.expiresAt)) {
+      throw new InputInvariantViolationError(
+        'INVALID_EXPIRES_AT',
+        `IngressContentView.expiresAt must be a valid ISO 8601 UTC instant ending in 'Z', got '${String(
+          candidate.expiresAt
+        )}'.`
+      );
+    }
+    if (new Date(candidate.expiresAt).getTime() <= new Date(candidate.receivedAt as string).getTime()) {
+      throw new InputInvariantViolationError(
+        'INVALID_EXPIRES_AT_ORDER',
+        `IngressContentView.expiresAt ('${candidate.expiresAt}') must be after receivedAt ('${candidate.receivedAt}').`
+      );
+    }
+  }
+}
+
+/**
+ * Constrói de forma pura e defensiva a projeção pública IngressContentView
+ * a partir de um IngressContentRecord interno, omitindo deliberadamente
+ * storageBackend e storageKey.
+ */
+export function toIngressContentView(record: IngressContentRecord): IngressContentView {
+  validateIngressContentRecord(record);
+
+  const view: IngressContentView = {
+    contentId: record.contentId,
+    actor: sanitizeActor(record.actor),
+    ...(record.userId ? { userId: record.userId } : {}),
+    ...(record.sessionRef ? { sessionRef: record.sessionRef } : {}),
+    ...(record.contextSubjectRef
+      ? { contextSubjectRef: sanitizeContextSubjectRef(record.contextSubjectRef) }
+      : {}),
+    ...(record.sourceRefId ? { sourceRefId: record.sourceRefId } : {}),
+    ...(record.declaredMimeType ? { declaredMimeType: record.declaredMimeType } : {}),
+    verifiedMimeType: record.verifiedMimeType,
+    sha256: record.sha256,
+    byteSize: record.byteSize,
+    receivedAt: record.receivedAt,
+    ...(record.expiresAt ? { expiresAt: record.expiresAt } : {}),
+  };
+
+  validateIngressContentView(view);
+  return Object.freeze(view);
+}
+
+// ============================================================================
+// 10. VALIDAÇÃO DE INGRESS CONTENT RECORD (METADATA INTERNA DE PERSISTÊNCIA)
 // ============================================================================
 
 export function validateIngressContentRecord(
@@ -732,7 +900,7 @@ export function validateIngressContentRecord(
 }
 
 // ============================================================================
-// 10. VALIDAÇÃO DE DRAFT DE INPUT RECORD
+// 11. VALIDAÇÃO DE DRAFT DE INPUT RECORD
 // ============================================================================
 
 export function validateRecordInputDraft(draft: unknown): asserts draft is RecordInputDraft {

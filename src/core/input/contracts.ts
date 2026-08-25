@@ -1,6 +1,6 @@
 /**
  * NEX+ · InputRecord Multimodal & Ingress Content
- * Contratos Canônicos TypeScript — Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3)
+ * Contratos Canônicos TypeScript — Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3 · Rodada B3-R3)
  *
  * Princípios Fundamentais:
  * 1. InputRecord é o FATO ORIGINAL da entrada, imutável e multipart ordenado.
@@ -13,7 +13,7 @@
  *    derivam exclusivamente do OperationalContext confiável do B2.
  * 8. InputRecord NÃO copia location, focus, observedInteraction nem objetos inteiros de domínio.
  * 9. Ingress transitório != Resource != Evidence durável.
- * 10. Provider IDs e storageKey são detalhes internos e nunca entram no contrato canônico público.
+ * 10. Provider IDs, storageBackend e storageKey são detalhes internos e nunca entram no contrato público.
  */
 
 import type {
@@ -128,9 +128,42 @@ export interface InputRecord {
 }
 
 // ============================================================================
-// 6. INGRESS CONTENT RECORD (Metadata Interna Append-Only)
+// 6. INGRESS CONTENT VIEW (Projeção Pública Autorizada sem Metadata Física)
 // ============================================================================
 
+/**
+ * Projeção pública autorizada de um conteúdo de Ingress.
+ * Contém apenas metadados semânticos e checksum SHA-256.
+ * NUNCA expõe storageBackend, storageKey, caminhos locais ou URLs internas.
+ */
+export interface IngressContentView {
+  readonly contentId: IngressContentId;
+
+  readonly actor: Actor;
+  readonly userId?: string;
+  readonly sessionRef?: SessionRef;
+  readonly contextSubjectRef?: ContextSubjectRef;
+
+  readonly sourceRefId?: SourceRefId;
+
+  readonly declaredMimeType?: string;
+  readonly verifiedMimeType: string;
+
+  readonly sha256: string;
+  readonly byteSize: number;
+
+  readonly receivedAt: string;
+  readonly expiresAt?: string;
+}
+
+// ============================================================================
+// 7. INGRESS CONTENT RECORD (Metadata Interna Append-Only de Persistência/Storage)
+// ============================================================================
+
+/**
+ * Registro interno mantido pela camada de persistência e BlobStore.
+ * Armazena storageBackend e storageKey internamente para resolução e auditoria.
+ */
 export interface IngressContentRecord {
   readonly contentId: IngressContentId;
 
@@ -155,7 +188,7 @@ export interface IngressContentRecord {
 }
 
 // ============================================================================
-// 7. PARÂMETROS E RESULTADOS DOS SERVIÇOS
+// 8. PARÂMETROS E RESULTADOS DOS SERVIÇOS
 // ============================================================================
 
 export interface RecordInputDraft {
@@ -182,7 +215,7 @@ export interface IngestContentParams {
 }
 
 // ============================================================================
-// 8. TRUST BOUNDARIES: AUTHORIZERS & INSPECTOR
+// 9. TRUST BOUNDARIES: AUTHORIZERS & INSPECTOR
 // ============================================================================
 
 export type IngressAccessOperation = 'create' | 'read' | 'attach_to_input';

@@ -1,14 +1,16 @@
 /**
  * NEX+ · Ingress Content Service & Trust Boundary
- * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3 · Rodada B3-R1)
+ * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3 · Rodada B3-R3)
  *
  * Responsabilidades:
  * 1. Materialização física de blobs com hashing em streaming e staging seguro.
  * 2. Inspeção server-side obrigatória via IngressContentInspector com leitura de amostra limitada em RAM.
  * 3. Falha fechada (fail-closed) caso o inspetor ou a amostra não possam ser obtidos.
  * 4. Autorização obrigatória via IngressAccessAuthorizer (fail-closed, sem permissão implícita por contentId).
- * 5. Registro append-only de metadados em IngressContentStore.
+ * 5. Registro append-only de metadados internos em IngressContentStore.
  * 6. Leitura e streaming autorizados com verificação ativa de integridade e expiração.
+ * 7. Isolamento de fronteira (Boundary): métodos públicos retornam IngressContentView,
+ *    garantindo que storageBackend e storageKey jamais sejam expostos a callers.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -18,6 +20,7 @@ import type { BlobStore } from '../storage/blob-store';
 import type {
   IngressContentId,
   IngressContentRecord,
+  IngressContentView,
   IngressContentRef,
   IngestContentParams,
   IngressAccessAuthorizer,
@@ -27,6 +30,7 @@ import {
   validateIngressContentId,
   validateIngressContentRecord,
   sanitizeContextSubjectRef,
+  toIngressContentView,
 } from './invariants';
 import {
   IngressAuthorizationError,
@@ -131,12 +135,13 @@ export class IngressContentService {
    * 4. Obtém amostra limitada em RAM via streaming (fail-closed se indisponível).
    * 5. Executa inspeção server-side (determina verifiedMimeType ou rejeita).
    * 6. Se rejeitado, interrompe sem criar registro canônico.
-   * 7. Se aceito, persiste IngressContentRecord append-only.
+   * 7. Se aceito, persiste IngressContentRecord append-only internamente.
+   * 8. Retorna a projeção pública IngressContentView (sem storageBackend/storageKey) e a IngressContentRef.
    */
   async ingestContent(
     params: IngestContentParams,
     context: OperationalContext
-  ): Promise<{ record: IngressContentRecord; ref: IngressContentRef }> {
+  ): Promise<{ record: IngressContentView; ref: IngressContentRef }> {
     validateOperationalContext(context);
 
     const isAuthorized = await this.authorizer.authorize({
@@ -185,8 +190,8 @@ export class IngressContentService {
 
     const receivedAt = this.nowProvider();
 
-    // 4. Montar IngressContentRecord derivando autoridade estritamente do OperationalContext
-    const record: IngressContentRecord = Object.freeze({
+    // 4. Montar IngressContentRecord interno derivando autoridade estritamente do OperationalContext
+    const internalRecord: IngressContentRecord = Object.freeze({
       contentId,
       actor: Object.freeze({ ...context.actor }),
       ...(context.userId ? { userId: context.userId } : {}),
@@ -205,18 +210,20 @@ export class IngressContentService {
       ...(params.expiresAt ? { expiresAt: params.expiresAt } : {}),
     });
 
-    validateIngressContentRecord(record);
+    validateIngressContentRecord(internalRecord);
 
-    const savedRecord = await this.contentStore.saveContent(record);
+    const savedRecord = await this.contentStore.saveContent(internalRecord);
     const ref: IngressContentRef = Object.freeze({ contentId: savedRecord.contentId });
+    const view: IngressContentView = toIngressContentView(savedRecord);
 
-    return { record: savedRecord, ref };
+    return { record: view, ref };
   }
 
   /**
-   * Obtém o IngressContentRecord após verificar autorização e expiração.
+   * Helper interno para carregar e autorizar o IngressContentRecord completo
+   * necessário para operações do BlobStore e checagens de integridade.
    */
-  async getRecord(
+  private async getInternalRecord(
     contentId: IngressContentId,
     context: OperationalContext
   ): Promise<IngressContentRecord> {
@@ -251,48 +258,62 @@ export class IngressContentService {
   }
 
   /**
+   * Obtém a projeção pública IngressContentView após verificar autorização e expiração.
+   * Não expõe storageBackend nem storageKey.
+   */
+  async getRecord(
+    contentId: IngressContentId,
+    context: OperationalContext
+  ): Promise<IngressContentView> {
+    const internalRecord = await this.getInternalRecord(contentId, context);
+    return toIngressContentView(internalRecord);
+  }
+
+  /**
    * Lê o conteúdo binário do blob após verificar autorização, expiração e integridade criptográfica.
+   * Retorna os bytes do blob acompanhados da projeção pública IngressContentView.
    */
   async getContent(
     contentId: IngressContentId,
     context: OperationalContext
-  ): Promise<{ record: IngressContentRecord; data: Buffer }> {
-    const record = await this.getRecord(contentId, context);
+  ): Promise<{ record: IngressContentView; data: Buffer }> {
+    const internalRecord = await this.getInternalRecord(contentId, context);
 
     const verifyResult = await this.blobStore.verifyBlob(
-      record.storageKey,
-      record.sha256,
-      record.byteSize
+      internalRecord.storageKey,
+      internalRecord.sha256,
+      internalRecord.byteSize
     );
 
     if (!verifyResult.valid) {
       throw new IngressIntegrityError(contentId);
     }
 
-    const data = await this.blobStore.getBlob(record.storageKey, record.sha256);
-    return { record, data };
+    const data = await this.blobStore.getBlob(internalRecord.storageKey, internalRecord.sha256);
+    return { record: toIngressContentView(internalRecord), data };
   }
 
   /**
    * Obtém stream do blob após verificar autorização, expiração e integridade.
+   * Retorna o ReadableStream acompanhado da projeção pública IngressContentView.
    */
   async getContentStream(
     contentId: IngressContentId,
     context: OperationalContext
-  ): Promise<{ record: IngressContentRecord; stream: NodeJS.ReadableStream }> {
-    const record = await this.getRecord(contentId, context);
+  ): Promise<{ record: IngressContentView; stream: NodeJS.ReadableStream }> {
+    const internalRecord = await this.getInternalRecord(contentId, context);
 
     const verifyResult = await this.blobStore.verifyBlob(
-      record.storageKey,
-      record.sha256,
-      record.byteSize
+      internalRecord.storageKey,
+      internalRecord.sha256,
+      internalRecord.byteSize
     );
 
     if (!verifyResult.valid) {
       throw new IngressIntegrityError(contentId);
     }
 
-    const stream = await this.blobStore.getBlobStream(record.storageKey, record.sha256);
-    return { record, stream };
+    const stream = await this.blobStore.getBlobStream(internalRecord.storageKey, internalRecord.sha256);
+    return { record: toIngressContentView(internalRecord), stream };
   }
 }

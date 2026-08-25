@@ -1,6 +1,6 @@
 /**
  * NEX+ · Testes Unitários e Adversariais de Invariantes de Input & Ingress Content
- * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3 · Rodada B3-R1)
+ * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3 · Rodada B3-R3)
  *
  * Cobertura de Invariantes:
  * A. Multipart ordenado com todas as variantes canônicas.
@@ -13,6 +13,8 @@
  * H. Validação de formato e temporalidade canônica compartilhada (UTC ISO 8601 com 'Z').
  * I. Rejeição de whitespace externo em SourceEventIdentity (" source", "source ", " id", "id ").
  * J. Imutabilidade profunda com cópia defensiva estruturada por variante.
+ * K. IngressContentView não aceita nem expõe storageBackend ou storageKey.
+ * L. toIngressContentView constrói projeção pública pura omitindo storageKey/storageBackend.
  */
 
 import { describe, it } from 'node:test';
@@ -29,6 +31,7 @@ import type {
   SourceEventIdentity,
   InputPart,
   InputRecord,
+  IngressContentView,
   IngressContentRecord,
 } from '../contracts';
 import {
@@ -42,10 +45,12 @@ import {
   sanitizeInputPart,
   validateActor,
   validateInputRecord,
+  validateIngressContentView,
   validateIngressContentRecord,
+  toIngressContentView,
 } from '../invariants';
 
-describe('0.86B-3 · Invariantes de Input & Ingress Content (Runtime Strictness · B3-R1)', () => {
+describe('0.86B-3 · Invariantes de Input & Ingress Content (Runtime Strictness · B3-R3)', () => {
   const VALID_SESSION_REF = '1111111111111111111111111111111111111111111111111111111111111111' as SessionRef;
   const VALID_SHA256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
 
@@ -388,10 +393,81 @@ describe('0.86B-3 · Invariantes de Input & Ingress Content (Runtime Strictness 
   });
 
   // ==========================================================================
-  // 8. INGRESS CONTENT RECORD
+  // 8. INGRESS CONTENT VIEW (PROJEÇÃO PÚBLICA SEM STORAGE METADATA)
   // ==========================================================================
 
-  it('valida IngressContentRecord append-only com metadata de verificação', () => {
+  it('valida IngressContentView pública e rejeita presença de storageBackend ou storageKey', () => {
+    const validView: IngressContentView = {
+      contentId: 'ing_view_1' as IngressContentId,
+      actor: humanLucas,
+      userId: 'usr_lucas_123',
+      sessionRef: VALID_SESSION_REF,
+      contextSubjectRef: brandAlterstate,
+      declaredMimeType: 'image/png',
+      verifiedMimeType: 'image/png',
+      sha256: VALID_SHA256,
+      byteSize: 1024,
+      receivedAt: '2026-08-24T21:00:00.000Z',
+      expiresAt: '2026-08-25T21:00:00.000Z',
+    };
+
+    assert.doesNotThrow(() => validateIngressContentView(validView));
+
+    // Rejeita storageKey na view pública
+    assert.throws(
+      () => validateIngressContentView({ ...validView, storageKey: 'sha256/aa/bb/secret' }),
+      (err: any) => err.violationType === 'UNEXPECTED_PROPERTY'
+    );
+
+    // Rejeita storageBackend na view pública
+    assert.throws(
+      () => validateIngressContentView({ ...validView, storageBackend: 'local_fs' }),
+      (err: any) => err.violationType === 'UNEXPECTED_PROPERTY'
+    );
+  });
+
+  it('toIngressContentView constrói projeção pública defensiva sem storageBackend/storageKey', () => {
+    const internalRecord: IngressContentRecord = {
+      contentId: 'ing_doc_1' as IngressContentId,
+      actor: humanLucas,
+      userId: 'usr_lucas_123',
+      sessionRef: VALID_SESSION_REF,
+      contextSubjectRef: brandAlterstate,
+      sourceRefId: 'src_manual_1' as any,
+      declaredMimeType: 'application/pdf',
+      verifiedMimeType: 'application/pdf',
+      sha256: VALID_SHA256,
+      byteSize: 2048,
+      storageBackend: 'local_fs',
+      storageKey: `sha256/e3/b0/${VALID_SHA256}`,
+      receivedAt: '2026-08-24T21:00:00.000Z',
+      expiresAt: '2026-08-26T21:00:00.000Z',
+    };
+
+    const view = toIngressContentView(internalRecord);
+
+    assert.equal(view.contentId, 'ing_doc_1');
+    assert.equal(view.verifiedMimeType, 'application/pdf');
+    assert.equal(view.sha256, VALID_SHA256);
+    assert.equal(view.byteSize, 2048);
+    assert.equal((view as any).storageBackend, undefined);
+    assert.equal((view as any).storageKey, undefined);
+    assert.ok(Object.isFrozen(view));
+    assert.ok(Object.isFrozen(view.actor));
+    assert.ok(Object.isFrozen(view.contextSubjectRef));
+
+    // JSON.stringify da view pública não contém chaves de storage nem caminhos físicos
+    const json = JSON.stringify(view);
+    assert.ok(!json.includes('storageKey'));
+    assert.ok(!json.includes('storageBackend'));
+    assert.ok(!json.includes('sha256/'));
+  });
+
+  // ==========================================================================
+  // 9. INGRESS CONTENT RECORD (METADATA INTERNA)
+  // ==========================================================================
+
+  it('valida IngressContentRecord append-only com metadata de verificação interna', () => {
     const valid: IngressContentRecord = {
       contentId: 'ing_doc_1' as IngressContentId,
       actor: humanLucas,
