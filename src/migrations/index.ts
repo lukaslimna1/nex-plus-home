@@ -5,6 +5,7 @@ import * as migration_20260821_220000_evidence_artifact_store from './20260821_2
 import * as migration_20260821_230000_reconciliation_and_precedents from './20260821_230000_reconciliation_and_precedents';
 import * as migration_20260824_190000_session_operational_state from './20260824_190000_session_operational_state';
 import * as migration_20260824_210000_input_record_and_ingress from './20260824_210000_input_record_and_ingress';
+import * as migration_20260825_030000_material_context_pin from './20260825_030000_material_context_pin';
 
 export const migrations = [
   {
@@ -41,5 +42,10 @@ export const migrations = [
     up: migration_20260824_210000_input_record_and_ingress.up,
     down: migration_20260824_210000_input_record_and_ingress.down,
     name: '20260824_210000_input_record_and_ingress',
+  },
+  {
+    up: migration_20260825_030000_material_context_pin.up,
+    down: migration_20260825_030000_material_context_pin.down,
+    name: '20260825_030000_material_context_pin',
   },
 ];

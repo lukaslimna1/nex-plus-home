@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    Harness canônico de validação isolada para persistência de InputRecord & Ingress Content (Escopo 0.86B-3).
+    Harness canônico de validação isolada para persistência de Material Context Pin (Escopo 0.86B-4).
 .DESCRIPTION
-    Cria um DATABASE PostgreSQL descartável dedicado (prefixo nex_inp_),
+    Cria um DATABASE PostgreSQL descartável dedicado (prefixo nex_mat_),
     executa o ciclo completo de validação estrutural de migrations (UP -> DOWN -> UP),
-    executa os testes de integração PostgreSQL de Ingress Content, InputRecord e InputPart[] relacionais,
+    executa os testes de integração PostgreSQL de Material Context Pin e MaterialContextItem[] relacionais,
     e destrói o banco descartável ao final sem afetar o banco de dados operacional.
 #>
 
@@ -58,17 +58,17 @@ if ($operationalHost -ne "127.0.0.1" -and $operationalHost -ne "localhost") {
 }
 
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host " NEX+ · HARNESS DE INPUT RECORD & INGRESS ISOLADO (0.86B-3)" -ForegroundColor Cyan
+Write-Host " NEX+ · HARNESS DE MATERIAL CONTEXT PIN ISOLADO (0.86B-4)" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host "Host: $operationalHost | Porta: $operationalPort | Banco Operacional: $operationalDbName (PROTEGIDO)"
 
 # 3. Geração do nome do Database Descartável
 $randomSuffix = [System.IO.Path]::GetRandomFileName().Substring(0, 6).ToLowerInvariant()
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$disposableDbName = "nex_inp_${timestamp}_${randomSuffix}"
+$disposableDbName = "nex_mat_${timestamp}_${randomSuffix}"
 
 # Trava estrita de segurança
-if (-not $disposableDbName.StartsWith("nex_inp_") -or $disposableDbName -eq $operationalDbName) {
+if (-not $disposableDbName.StartsWith("nex_mat_") -or $disposableDbName -eq $operationalDbName) {
     Write-Host "[SECURITY_FAIL] Nome do banco descartável inválido: $disposableDbName" -ForegroundColor Red
     exit 1
 }
@@ -87,7 +87,7 @@ try {
 
     # Verificação de segurança via query SQL direta
     $currentDb = (& psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT current_database();").Trim()
-    if ($currentDb -ne $disposableDbName -or -not $currentDb.StartsWith("nex_inp_")) {
+    if ($currentDb -ne $disposableDbName -or -not $currentDb.StartsWith("nex_mat_")) {
         throw "Verificação de segurança falhou: banco conectado '$currentDb' diverge do esperado '$disposableDbName'."
     }
     Write-Host "Banco descartável conectado e verificado: $currentDb" -ForegroundColor Green
@@ -97,7 +97,7 @@ try {
     $env:PAYLOAD_SECRET = $payloadSecret
 
     # 5. Executar Migrations UP no banco descartável
-    Write-Host "`n[2/6] Executando migrations (UP) até 0.86B-3 no banco descartável..." -ForegroundColor Yellow
+    Write-Host "`n[2/6] Executando migrations (UP) até 0.86B-4 no banco descartável..." -ForegroundColor Yellow
     & npx payload migrate
     if ($LASTEXITCODE -ne 0) { throw "Falha ao executar payload migrate inicial no banco descartável" }
 
@@ -110,39 +110,34 @@ try {
     & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 7 WHERE name = '20260824_210000_input_record_and_ingress';" | Out-Null
     & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 8 WHERE name = '20260825_030000_material_context_pin';" | Out-Null
 
-    # Verificar tabelas do 0.86B-3 criadas pós-UP
+    # Verificar tabelas do 0.86B-4 criadas pós-UP
     $tablesUpRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
     $tablesUp = if ($tablesUpRaw) { @($tablesUpRaw.Split("`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ }) } else { @() }
 
-    $requiredTables086B3 = @("nex_ingress_contents", "nex_input_records", "nex_input_parts")
-    foreach ($tbl in $requiredTables086B3) {
+    $requiredTables086B4 = @("nex_material_context_pins", "nex_material_context_items")
+    foreach ($tbl in $requiredTables086B4) {
         if ($tablesUp -notcontains $tbl) {
-            throw "Verificação pós-UP falhou: tabela 0.86B-3 obrigatória '$tbl' ausente no banco descartável."
+            throw "Verificação pós-UP falhou: tabela 0.86B-4 obrigatória '$tbl' ausente no banco descartável."
         }
     }
-    Write-Host "Tabelas 0.86B-3 verificadas com sucesso pós-UP: $($requiredTables086B3 -join ', ')." -ForegroundColor Green
+    Write-Host "Tabelas 0.86B-4 verificadas com sucesso pós-UP: $($requiredTables086B4 -join ', ')." -ForegroundColor Green
 
-    # 6. Executar Testes de Integração PostgreSQL do 0.86B-3
+    # 6. Executar Testes de Integração PostgreSQL do 0.86B-4
     Write-Host "`n[3/6] Executando testes funcionais e relacionais contra o banco descartável..." -ForegroundColor Yellow
-    & npx tsx --test src/core/input/persistence/__tests__/postgres.integration.test.ts
-    if ($LASTEXITCODE -ne 0) { throw "Falha nos testes de integração PostgreSQL do 0.86B-3" }
+    & npx tsx --test src/core/material-context/persistence/__tests__/postgres.integration.test.ts
+    if ($LASTEXITCODE -ne 0) { throw "Falha nos testes de integração PostgreSQL do 0.86B-4" }
     Write-Host "Testes de integração PostgreSQL concluídos com 100% de sucesso!" -ForegroundColor Green
 
-    # 7. Testar Migration DOWN (Rollback ordenado de 0.86B-4 e 0.86B-3)
-    Write-Host "`n[4/6] Testando rollback de migration (DOWN ordenado de 0.86B-4 e 0.86B-3) no banco descartável..." -ForegroundColor Yellow
-    Write-Host "Executando DOWN 1/2 (0.86B-4: material_context_pin)..."
+    # 7. Testar Migration DOWN (Rollback exclusivo do 0.86B-4)
+    Write-Host "`n[4/6] Testando rollback de migration (DOWN do 0.86B-4) no banco descartável..." -ForegroundColor Yellow
     & npx payload migrate:down
-    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 1/2 (0.86B-4: material_context_pin) no banco descartável" }
-
-    Write-Host "Executando DOWN 2/2 (0.86B-3: input_record_and_ingress)..."
-    & npx payload migrate:down
-    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 2/2 (0.86B-3: input_record_and_ingress) no banco descartável" }
+    if ($LASTEXITCODE -ne 0) { throw "Falha ao executar payload migrate:down para 0.86B-4 no banco descartável" }
 
     # Verificar estrutura pós-DOWN
     $tablesDownRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
     $tablesDown = if ($tablesDownRaw) { @($tablesDownRaw.Split("`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ }) } else { @() }
 
-    foreach ($tbl in $requiredTables086B3) {
+    foreach ($tbl in $requiredTables086B4) {
         if ($tablesDown -contains $tbl) {
             throw "Verificação pós-DOWN falhou: tabela '$tbl' ainda existe após rollback."
         }
@@ -156,24 +151,27 @@ try {
         "nex_review_events",
         "nex_canonical_projection_revisions",
         "nex_reconciliation_case_revisions",
-        "nex_session_operational_state"
+        "nex_session_operational_state",
+        "nex_ingress_contents",
+        "nex_input_records",
+        "nex_input_parts"
     )
     foreach ($tbl in $requiredTablesPreserved) {
         if ($tablesDown -notcontains $tbl) {
             throw "Verificação pós-DOWN falhou: tabela '$tbl' foi indevidamente alterada no rollback."
         }
     }
-    Write-Host "Estrutura pós-DOWN verificada: tabelas 0.86B-3 removidas, tabelas anteriores (incluindo nex_session_operational_state) preservadas intactas." -ForegroundColor Green
+    Write-Host "Estrutura pós-DOWN verificada: tabelas 0.86B-4 removidas, tabelas anteriores (incluindo nex_input_records) preservadas intactas." -ForegroundColor Green
 
     # 8. Executar Migration UP novamente (Convergência bidirecional)
-    Write-Host "`n[5/6] Re-executando migrations (UP do 0.86B-3) no banco descartável..." -ForegroundColor Yellow
+    Write-Host "`n[5/6] Re-executando migrations (UP do 0.86B-4) no banco descartável..." -ForegroundColor Yellow
     & npx payload migrate
     if ($LASTEXITCODE -ne 0) { throw "Falha ao re-executar payload migrate no banco descartável" }
 
     $tablesReUpRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
     $tablesReUp = if ($tablesReUpRaw) { @($tablesReUpRaw.Split("`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ }) } else { @() }
 
-    foreach ($tbl in $requiredTables086B3) {
+    foreach ($tbl in $requiredTables086B4) {
         if ($tablesReUp -notcontains $tbl) {
             throw "Verificação pós-re-UP falhou: tabela '$tbl' ausente após re-convergência."
         }
@@ -182,7 +180,7 @@ try {
 
     # 9. Re-execução dos testes no schema restaurado
     Write-Host "`n[6/6] Executando novamente os testes funcionais no schema reconvergido..." -ForegroundColor Yellow
-    & npx tsx --test src/core/input/persistence/__tests__/postgres.integration.test.ts
+    & npx tsx --test src/core/material-context/persistence/__tests__/postgres.integration.test.ts
     if ($LASTEXITCODE -ne 0) { throw "Falha nos testes de integração após reconvergência" }
     Write-Host "Todos os testes de integração passaram com 100% de sucesso no schema restaurado!" -ForegroundColor Green
 }
@@ -193,7 +191,7 @@ catch {
 finally {
     # 10. Destruição segura e garantida do Database Descartável
     Write-Host "`n[CLEANUP] Encerrando conexões residuais e destruindo banco descartável..." -ForegroundColor Yellow
-    if ($disposableDbName -and $disposableDbName.StartsWith("nex_inp_") -and $disposableDbName -ne $operationalDbName) {
+    if ($disposableDbName -and $disposableDbName.StartsWith("nex_mat_") -and $disposableDbName -ne $operationalDbName) {
         try {
             $env:DATABASE_URL = $dbUrl
             & psql -h $operationalHost -p $operationalPort -U $operationalUser -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$disposableDbName' AND pid <> pg_backend_pid();" | Out-Null

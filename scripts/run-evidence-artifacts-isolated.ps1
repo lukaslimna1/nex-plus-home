@@ -116,6 +116,7 @@ try {
 
     & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 6 WHERE name = '20260824_190000_session_operational_state';" | Out-Null
     & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 7 WHERE name = '20260824_210000_input_record_and_ingress';" | Out-Null
+    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 8 WHERE name = '20260825_030000_material_context_pin';" | Out-Null
 
     # Consultar o ledger e provar correspondência exata dos batches
     $ledgerRowsRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT name || '=' || batch FROM payload_migrations ORDER BY name;"
@@ -144,7 +145,7 @@ try {
     if ($ledgerMap['20260821_230000_reconciliation_and_precedents'] -ne 5) {
         throw "Verificação do ledger falhou: 20260821_230000_reconciliation_and_precedents batch esperado 5, obtido $($ledgerMap['20260821_230000_reconciliation_and_precedents'])"
     }
-    Write-Host "Ledger de migrations verificado e validado com sucesso (batches 1..7 ordenados)." -ForegroundColor Green
+    Write-Host "Ledger de migrations verificado e validado com sucesso (batches 1..8 ordenados)." -ForegroundColor Green
 
     # Verificar tabelas 0.85C criadas pós-UP
     $tablesUpRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
@@ -163,24 +164,28 @@ try {
     }
     Write-Host "Todas as tabelas do 0.85C verificadas com sucesso pós-UP." -ForegroundColor Green
 
-    # 6. Testar Migration DOWN (Rollback de 0.86B-3, 0.86B-2, 0.85D e 0.85C)
-    Write-Host "`n[3/5] Testando rollback de migration (DOWN ordenado de 0.86B-3, 0.86B-2, 0.85D e 0.85C) no banco descartável..." -ForegroundColor Yellow
+    # 6. Testar Migration DOWN (Rollback de 0.86B-4, 0.86B-3, 0.86B-2, 0.85D e 0.85C)
+    Write-Host "`n[3/5] Testando rollback de migration (DOWN ordenado de 0.86B-4, 0.86B-3, 0.86B-2, 0.85D e 0.85C) no banco descartável..." -ForegroundColor Yellow
 
-    Write-Host "Executando DOWN 1/4 (0.86B-3: input_record_and_ingress)..."
+    Write-Host "Executando DOWN 1/5 (0.86B-4: material_context_pin)..."
     & npx payload migrate:down
-    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 1/4 (0.86B-3: input_record_and_ingress) no banco descartável" }
+    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 1/5 (0.86B-4: material_context_pin) no banco descartável" }
 
-    Write-Host "Executando DOWN 2/4 (0.86B-2: session_operational_state)..."
+    Write-Host "Executando DOWN 2/5 (0.86B-3: input_record_and_ingress)..."
     & npx payload migrate:down
-    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 2/4 (0.86B-2: session_operational_state) no banco descartável" }
+    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 2/5 (0.86B-3: input_record_and_ingress) no banco descartável" }
 
-    Write-Host "Executando DOWN 3/4 (0.85D: reconciliation_and_precedents)..."
+    Write-Host "Executando DOWN 3/5 (0.86B-2: session_operational_state)..."
     & npx payload migrate:down
-    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 3/4 (0.85D: reconciliation_and_precedents) no banco descartável" }
+    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 3/5 (0.86B-2: session_operational_state) no banco descartável" }
 
-    Write-Host "Executando DOWN 4/4 (0.85C: evidence_artifact_store)..."
+    Write-Host "Executando DOWN 4/5 (0.85D: reconciliation_and_precedents)..."
     & npx payload migrate:down
-    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 4/4 (0.85C: evidence_artifact_store) no banco descartável" }
+    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 4/5 (0.85D: reconciliation_and_precedents) no banco descartável" }
+
+    Write-Host "Executando DOWN 5/5 (0.85C: evidence_artifact_store)..."
+    & npx payload migrate:down
+    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 5/5 (0.85C: evidence_artifact_store) no banco descartável" }
 
     # Verificar estrutura pós-DOWN
     $tablesDownRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"

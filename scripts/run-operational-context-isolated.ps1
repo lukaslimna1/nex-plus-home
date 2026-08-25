@@ -101,12 +101,14 @@ try {
     & npx payload migrate
     if ($LASTEXITCODE -ne 0) { throw "Falha ao executar payload migrate inicial no banco descartável" }
 
-    # Ajustar ledger para manter batches ordenados 1..6
+    # Ajustar ledger para manter batches ordenados 1..8
     & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 2 WHERE name = '20260820_030631_multiuser_auth';" | Out-Null
     & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 3 WHERE name = '20260821_210000_observation_persistence';" | Out-Null
     & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 4 WHERE name = '20260821_220000_evidence_artifact_store';" | Out-Null
     & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 5 WHERE name = '20260821_230000_reconciliation_and_precedents';" | Out-Null
     & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 6 WHERE name = '20260824_190000_session_operational_state';" | Out-Null
+    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 7 WHERE name = '20260824_210000_input_record_and_ingress';" | Out-Null
+    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 8 WHERE name = '20260825_030000_material_context_pin';" | Out-Null
 
     # Verificar tabela nex_session_operational_state criada pós-UP
     $tablesUpRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
@@ -124,10 +126,19 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Falha nos testes de integração PostgreSQL do 0.86B-2" }
     Write-Host "Testes de integração PostgreSQL concluídos com 100% de sucesso!" -ForegroundColor Green
 
-    # 7. Testar Migration DOWN (Rollback exclusivo do 0.86B-2)
-    Write-Host "`n[4/6] Testando rollback de migration (DOWN do 0.86B-2) no banco descartável..." -ForegroundColor Yellow
+    # 7. Testar Migration DOWN (Rollback ordenado de 0.86B-4, 0.86B-3 e 0.86B-2)
+    Write-Host "`n[4/6] Testando rollback de migration (DOWN ordenado de 0.86B-4, 0.86B-3 e 0.86B-2) no banco descartável..." -ForegroundColor Yellow
+    Write-Host "Executando DOWN 1/3 (0.86B-4: material_context_pin)..."
     & npx payload migrate:down
-    if ($LASTEXITCODE -ne 0) { throw "Falha ao executar payload migrate:down para 0.86B-2 no banco descartável" }
+    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 1/3 (0.86B-4: material_context_pin) no banco descartável" }
+
+    Write-Host "Executando DOWN 2/3 (0.86B-3: input_record_and_ingress)..."
+    & npx payload migrate:down
+    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 2/3 (0.86B-3: input_record_and_ingress) no banco descartável" }
+
+    Write-Host "Executando DOWN 3/3 (0.86B-2: session_operational_state)..."
+    & npx payload migrate:down
+    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 3/3 (0.86B-2: session_operational_state) no banco descartável" }
 
     # Verificar estrutura pós-DOWN
     $tablesDownRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
