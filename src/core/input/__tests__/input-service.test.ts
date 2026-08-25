@@ -519,4 +519,67 @@ describe('0.86B-3 · InputRecordService (Multimodal Envelopes & Authority · B3-
     assert.notEqual(res1.record.inputId, res2.record.inputId);
     assert.equal(inputStore.records.size, 2);
   });
+
+  it('8. Fronteira temporal estrita de attach_to_input: now < expiresAt permitido, now === e now > bloqueados', async () => {
+    const inputStore = new InMemoryInputRecordStore();
+    const contentStore = new InMemoryIngressContentStore();
+
+    let currentTime = '2026-08-24T21:00:00.000Z';
+
+    const contentRecord: IngressContentRecord = {
+      contentId: 'ing_exp_bound' as IngressContentId,
+      actor: { kind: 'human', humanId: 'usr_lucas' },
+      userId: 'usr_lucas',
+      verifiedMimeType: 'application/pdf',
+      sha256: 'a'.repeat(64),
+      byteSize: 500,
+      storageBackend: 'local_fs',
+      storageKey: 'sha256/aa/aa/bound',
+      receivedAt: '2026-08-24T21:00:00.000Z',
+      expiresAt: '2026-08-24T22:00:00.000Z',
+    };
+    await contentStore.saveContent(contentRecord);
+
+    const service = new InputRecordService({
+      inputStore,
+      contentStore,
+      authorizer: permissiveIngressAuthorizer,
+      inputAuthorizer: userScopedInputAuthorizer,
+      nowProvider: () => currentTime,
+    });
+
+    const draft = {
+      parts: [
+        { kind: 'text' as const, text: 'Teste temporal' },
+        { kind: 'content_ref' as const, content: { contentId: 'ing_exp_bound' as IngressContentId } },
+      ],
+    };
+
+    // A. now < expiresAt (21:59:59.999Z) -> PERMITIDO
+    currentTime = '2026-08-24T21:59:59.999Z';
+    const okRes = await service.recordInput(draft, lucasContext);
+    assert.ok(okRes.record.inputId);
+
+    // B. now === expiresAt (22:00:00.000Z) -> BLOQUEADO
+    currentTime = '2026-08-24T22:00:00.000Z';
+    await assert.rejects(
+      () => service.recordInput(draft, lucasContext),
+      (err: any) => {
+        assert.ok(err instanceof IngressContentExpiredError);
+        assert.equal(err.contentId, 'ing_exp_bound');
+        return true;
+      }
+    );
+
+    // C. now > expiresAt (22:00:00.001Z) -> BLOQUEADO
+    currentTime = '2026-08-24T22:00:00.001Z';
+    await assert.rejects(
+      () => service.recordInput(draft, lucasContext),
+      (err: any) => {
+        assert.ok(err instanceof IngressContentExpiredError);
+        assert.equal(err.contentId, 'ing_exp_bound');
+        return true;
+      }
+    );
+  });
 });

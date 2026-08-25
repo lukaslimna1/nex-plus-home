@@ -1,6 +1,6 @@
 /**
  * NEX+ · Input Record Service
- * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3 · Rodada B3-R1)
+ * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3 · Rodada B3-R5)
  *
  * Responsabilidades:
  * 1. Constrói o InputRecord canônico imutável a partir do OperationalContext confiável e draft não-autoritativo.
@@ -10,6 +10,7 @@
  * 5. Replay seguro: reconhece duplicate delivery de SourceEventIdentity ANTES de validar content_ref/expiração.
  * 6. Boundary de autorização de leitura: exige InputRecordAccessAuthorizer fail-closed (SourceEventIdentity não autoriza leitura).
  * 7. Persiste atomicamente InputRecord e suas InputPart[] relacionais no PostgreSQL.
+ * 8. Expiração temporal estrita de attachments: now >= expiresAt bloqueia attach_to_input com IngressContentExpiredError.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -140,11 +141,11 @@ export class InputRecordService {
           throw new IngressContentNotFoundError(contentId);
         }
 
-        // Verifica expiração
+        // Verifica expiração (estrita: now >= expiresAt bloqueia)
         if (contentRecord.expiresAt) {
           const now = new Date(this.nowProvider()).getTime();
           const expires = new Date(contentRecord.expiresAt).getTime();
-          if (now > expires) {
+          if (now >= expires) {
             throw new IngressContentExpiredError(contentId, contentRecord.expiresAt);
           }
         }

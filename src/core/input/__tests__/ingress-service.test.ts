@@ -336,7 +336,7 @@ describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle · B3-R4)
     );
   });
 
-  it('5. bloqueia acesso a conteúdo expirado com IngressContentExpiredError', async () => {
+  it('5. fronteira temporal estrita de expiração: now < expiresAt permitido, now === e now > bloqueados', async () => {
     const blobStore = new InMemoryBlobStore();
     const contentStore = new InMemoryIngressContentStore();
 
@@ -370,15 +370,44 @@ describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle · B3-R4)
       lucasContext
     );
 
-    // Às 21h30 (antes de expirar): leitura permitida
-    currentTime = '2026-08-24T21:30:00.000Z';
-    const active = await service.getContent(ref.contentId, lucasContext);
-    assert.ok(active.data.length > 0);
+    // A. now < expiresAt (21:59:59.999Z): getContent e getContentStream permitidos
+    currentTime = '2026-08-24T21:59:59.999Z';
+    const activeContent = await service.getContent(ref.contentId, lucasContext);
+    assert.ok(activeContent.data.length > 0);
+    const activeStream = await service.getContentStream(ref.contentId, lucasContext);
+    assert.ok(activeStream.stream);
 
-    // Às 22h01 (após expirar): leitura rejeitada por expiração
-    currentTime = '2026-08-24T22:01:00.000Z';
+    // B. now === expiresAt (22:00:00.000Z): getContent e getContentStream bloqueados
+    currentTime = '2026-08-24T22:00:00.000Z';
     await assert.rejects(
       () => service.getContent(ref.contentId, lucasContext),
+      (err: any) => {
+        assert.ok(err instanceof IngressContentExpiredError);
+        assert.equal(err.contentId, ref.contentId);
+        return true;
+      }
+    );
+    await assert.rejects(
+      () => service.getContentStream(ref.contentId, lucasContext),
+      (err: any) => {
+        assert.ok(err instanceof IngressContentExpiredError);
+        assert.equal(err.contentId, ref.contentId);
+        return true;
+      }
+    );
+
+    // C. now > expiresAt (22:00:00.001Z): getContent e getContentStream bloqueados
+    currentTime = '2026-08-24T22:00:00.001Z';
+    await assert.rejects(
+      () => service.getContent(ref.contentId, lucasContext),
+      (err: any) => {
+        assert.ok(err instanceof IngressContentExpiredError);
+        assert.equal(err.contentId, ref.contentId);
+        return true;
+      }
+    );
+    await assert.rejects(
+      () => service.getContentStream(ref.contentId, lucasContext),
       (err: any) => {
         assert.ok(err instanceof IngressContentExpiredError);
         assert.equal(err.contentId, ref.contentId);
@@ -850,6 +879,167 @@ describe('0.86B-3 · IngressContentService (Trust Boundary & Lifecycle · B3-R4)
           return true;
         }
       );
+    });
+
+    it('7. getContentStream resolve com sucesso mas source stream emite erro assíncrono durante consumo -> capturado e traduzido para IngressStorageOperationError("stream")', async () => {
+      let sourceDestroyed = false;
+      const asyncFailingStream = new Readable({
+        read() {
+          this.push(Buffer.from('primeiro pedaço'));
+          process.nextTick(() => {
+            this.destroy(new Error(RAW_MESSAGE));
+          });
+        },
+        destroy(err, cb) {
+          sourceDestroyed = true;
+          cb(err);
+        },
+      });
+
+      const failingBlobStore: BlobStore = {
+        async putBlob() { throw new Error('stub'); },
+        async getBlob() { throw new Error('stub'); },
+        async getBlobStream() {
+          return asyncFailingStream;
+        },
+        async hasBlob() { return true; },
+        async verifyBlob() {
+          return { valid: true, actualSha256: 'a'.repeat(64), actualSize: 100 };
+        },
+        async listStorageKeys() { return []; },
+      };
+
+      const contentStore = new InMemoryIngressContentStore();
+      const internalRecord: IngressContentRecord = {
+        contentId: 'ing_err_async' as IngressContentId,
+        actor: { kind: 'human', humanId: 'usr_lucas' },
+        userId: 'usr_lucas',
+        sessionRef: sessionRefLucas,
+        verifiedMimeType: 'text/plain',
+        sha256: 'a'.repeat(64),
+        byteSize: 100,
+        storageBackend: 'local_fs',
+        storageKey: RAW_STORAGE_KEY,
+        receivedAt: '2026-08-24T21:00:00.000Z',
+      };
+      await contentStore.saveContent(internalRecord);
+
+      const service = new IngressContentService({
+        blobStore: failingBlobStore,
+        contentStore,
+        authorizer: { async authorize() { return true; } },
+        inspector: { async inspect() { return { accepted: true, verifiedMimeType: 'text/plain' }; } },
+      });
+
+      // getContentStream resolve normalmente com sucesso
+      const { record, stream } = await service.getContentStream('ing_err_async' as IngressContentId, lucasContext);
+      assert.equal(record.contentId, 'ing_err_async');
+      assert.ok(stream);
+
+      // Consumo do stream pelo caller via async iteration deve falhar com o erro sanitizado do boundary
+      await assert.rejects(
+        async () => {
+          for await (const _chunk of stream) {
+            // consome
+          }
+        },
+        (err: any) => {
+          assertSafeStorageError(err, 'stream', 'ing_err_async');
+          return true;
+        }
+      );
+
+      assert.equal(sourceDestroyed, true);
+    });
+
+    it('8. lifecycle do safeStream: consumo normal entrega bytes sem bufferizar tudo em RAM e destroy do consumidor destrói source subjacente', async () => {
+      let chunksCount = 0;
+      const chunks = [Buffer.from('chunk 1 '), Buffer.from('chunk 2 '), Buffer.from('chunk 3')];
+
+      const normalStream = new Readable({
+        read() {
+          if (chunksCount < chunks.length) {
+            this.push(chunks[chunksCount++]);
+          } else {
+            this.push(null);
+          }
+        },
+      });
+
+      const blobStore: BlobStore = {
+        async putBlob() { throw new Error('stub'); },
+        async getBlob() { throw new Error('stub'); },
+        async getBlobStream() {
+          return normalStream;
+        },
+        async hasBlob() { return true; },
+        async verifyBlob() {
+          return { valid: true, actualSha256: 'a'.repeat(64), actualSize: 22 };
+        },
+        async listStorageKeys() { return []; },
+      };
+
+      const contentStore = new InMemoryIngressContentStore();
+      const internalRecord: IngressContentRecord = {
+        contentId: 'ing_lifecycle' as IngressContentId,
+        actor: { kind: 'human', humanId: 'usr_lucas' },
+        userId: 'usr_lucas',
+        sessionRef: sessionRefLucas,
+        verifiedMimeType: 'text/plain',
+        sha256: 'a'.repeat(64),
+        byteSize: 22,
+        storageBackend: 'local_fs',
+        storageKey: 'sha256/aa/bb/safe',
+        receivedAt: '2026-08-24T21:00:00.000Z',
+      };
+      await contentStore.saveContent(internalRecord);
+
+      const service = new IngressContentService({
+        blobStore,
+        contentStore,
+        authorizer: { async authorize() { return true; } },
+        inspector: { async inspect() { return { accepted: true, verifiedMimeType: 'text/plain' }; } },
+      });
+
+      // 1. Leitura normal entrega todos os bytes
+      const { stream } = await service.getContentStream('ing_lifecycle' as IngressContentId, lucasContext);
+      const collected: Buffer[] = [];
+      for await (const chunk of stream) {
+        collected.push(Buffer.from(chunk));
+      }
+      assert.equal(Buffer.concat(collected).toString(), 'chunk 1 chunk 2 chunk 3');
+
+      // 2. Destruição do consumidor propaga para o source subjacente
+      let abortSourceDestroyed = false;
+      const abortSourceStream = new Readable({
+        read() {
+          this.push(Buffer.from('dados contínuos'));
+        },
+        destroy(err, cb) {
+          abortSourceDestroyed = true;
+          cb(err);
+        },
+      });
+
+      const abortBlobStore: BlobStore = {
+        async putBlob() { throw new Error('stub'); },
+        async getBlob() { throw new Error('stub'); },
+        async getBlobStream() { return abortSourceStream; },
+        async hasBlob() { return true; },
+        async verifyBlob() { return { valid: true }; },
+        async listStorageKeys() { return []; },
+      };
+
+      const abortService = new IngressContentService({
+        blobStore: abortBlobStore,
+        contentStore,
+        authorizer: { async authorize() { return true; } },
+        inspector: { async inspect() { return { accepted: true, verifiedMimeType: 'text/plain' }; } },
+      });
+
+      const { stream: abortStream } = await abortService.getContentStream('ing_lifecycle' as IngressContentId, lucasContext);
+      (abortStream as any).destroy();
+      assert.equal(abortSourceDestroyed, true);
     });
   });
 });

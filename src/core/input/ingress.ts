@@ -1,6 +1,6 @@
 /**
  * NEX+ · Ingress Content Service & Trust Boundary
- * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3 · Rodada B3-R4)
+ * Escopo 0.86 (Bloco 0.86B · Hardening 0.86B-3 · Rodada B3-R5)
  *
  * Responsabilidades:
  * 1. Materialização física de blobs com hashing em streaming e staging seguro.
@@ -8,14 +8,15 @@
  * 3. Falha fechada (fail-closed) caso o inspetor ou a amostra não possam ser obtidos.
  * 4. Autorização obrigatória via IngressAccessAuthorizer (fail-closed, sem permissão implícita por contentId).
  * 5. Registro append-only de metadados internos em IngressContentStore.
- * 6. Leitura e streaming autorizados com verificação ativa de integridade e expiração.
+ * 6. Leitura e streaming autorizados com verificação ativa de integridade e expiração estrita (now >= expiresAt).
  * 7. Isolamento de fronteira (Boundary): métodos públicos retornam IngressContentView,
  *    garantindo que storageBackend e storageKey jamais sejam expostos a callers.
- * 8. Error Boundary Sanitizado: erros físicos do BlobStore jamais vazam para callers,
- *    sendo traduzidos deterministicamente para IngressStorageOperationError.
+ * 8. Error Boundary Sanitizado: erros físicos do BlobStore (síncronos e assíncronos via stream)
+ *    jamais vazam para callers, sendo traduzidos deterministicamente para IngressStorageOperationError.
  */
 
 import { randomUUID } from 'node:crypto';
+import { PassThrough } from 'node:stream';
 import type { OperationalContext } from '../context/contracts';
 import { validateOperationalContext } from '../context/invariants';
 import type { BlobStore } from '../storage/blob-store';
@@ -45,6 +46,48 @@ import {
 import type { IngressContentStore } from './persistence/contracts';
 
 const DEFAULT_SAMPLE_LIMIT_BYTES = 64 * 1024; // 64 KiB
+
+/**
+ * Adapter do boundary de Ingress para encapsular o ReadableStream do BlobStore.
+ * Garante que:
+ * 1. Bytes e backpressure fluam naturalmente (PassThrough).
+ * 2. Erros emitidos assincronamente pelo stream source durante o consumo sejam capturados
+ *    e traduzidos para IngressStorageOperationError('stream', contentId) sem vazar detalhes físicos.
+ * 3. Quando o consumidor fechar ou destruir o wrapper, o source subjacente seja destruído para cleanup.
+ */
+function createSafeIngressStream(
+  source: NodeJS.ReadableStream,
+  contentId: IngressContentId
+): NodeJS.ReadableStream {
+  const pass = new PassThrough({
+    destroy(err, cb) {
+      if (typeof (source as any).destroy === 'function' && !(source as any).destroyed) {
+        (source as any).destroy();
+      }
+      cb(err);
+    },
+  });
+  let finished = false;
+
+  const onSourceError = () => {
+    if (finished) return;
+    finished = true;
+    pass.destroy(new IngressStorageOperationError('stream', contentId));
+  };
+
+  source.on('error', onSourceError);
+
+  pass.on('close', () => {
+    finished = true;
+    if (typeof (source as any).destroy === 'function' && !(source as any).destroyed) {
+      (source as any).destroy();
+    }
+  });
+
+  source.pipe(pass);
+
+  return pass;
+}
 
 /**
  * Helper interno para ler de forma segura e limitada em RAM
@@ -240,11 +283,11 @@ export class IngressContentService {
       throw new IngressContentNotFoundError(contentId);
     }
 
-    // Verifica expiração temporal
+    // Verifica expiração temporal (estrita: now >= expiresAt está expirado)
     if (record.expiresAt) {
       const now = new Date(this.nowProvider()).getTime();
       const expires = new Date(record.expiresAt).getTime();
-      if (now > expires) {
+      if (now >= expires) {
         throw new IngressContentExpiredError(contentId, record.expiresAt);
       }
     }
@@ -311,9 +354,10 @@ export class IngressContentService {
   }
 
   /**
-   * Obtém stream do blob após verificar autorização, expiração e integridade.
-   * Retorna o ReadableStream acompanhado da projeção pública IngressContentView.
-   * Erros de streaming físico do storage são encapsulados em IngressStorageOperationError('stream').
+   * Obtém stream seguro do blob após verificar autorização, expiração e integridade.
+   * Retorna o ReadableStream encapsulado acompanhado da projeção pública IngressContentView.
+   * Erros de streaming físico do storage (síncronos ou assíncronos durante o consumo)
+   * são encapsulados em IngressStorageOperationError('stream').
    */
   async getContentStream(
     contentId: IngressContentId,
@@ -336,13 +380,15 @@ export class IngressContentService {
       throw new IngressIntegrityError(contentId);
     }
 
-    let stream: NodeJS.ReadableStream;
+    let rawStream: NodeJS.ReadableStream;
     try {
-      stream = await this.blobStore.getBlobStream(internalRecord.storageKey, internalRecord.sha256);
+      rawStream = await this.blobStore.getBlobStream(internalRecord.storageKey, internalRecord.sha256);
     } catch {
       throw new IngressStorageOperationError('stream', contentId);
     }
 
-    return { record: toIngressContentView(internalRecord), stream };
+    const safeStream = createSafeIngressStream(rawStream, contentId);
+
+    return { record: toIngressContentView(internalRecord), stream: safeStream };
   }
 }
