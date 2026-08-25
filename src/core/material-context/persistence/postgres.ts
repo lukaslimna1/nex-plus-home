@@ -227,16 +227,7 @@ export function mapRowToMaterialContextItem(row: any): MaterialContextItem {
         aspectKey: row.aspect_key,
       });
 
-      // Snapshot value pode ser string JSON ou objeto parseado pelo pg driver
-      let rawVal = row.snapshot_value;
-      if (typeof rawVal === 'string') {
-        try {
-          rawVal = JSON.parse(rawVal);
-        } catch {
-          // valor literal
-        }
-      }
-      const value: JsonValue = sanitizeJsonMaterialValue(rawVal);
+      const value: JsonValue = sanitizeJsonMaterialValue(row.snapshot_value);
 
       return Object.freeze<MaterialAspectSnapshot>({
         kind: 'aspect_snapshot',

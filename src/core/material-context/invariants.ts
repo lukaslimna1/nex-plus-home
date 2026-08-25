@@ -120,7 +120,7 @@ export function sanitizeJsonMaterialValue(value: unknown, seen = new WeakSet<obj
       );
     }
 
-    // Detecção de referências circulares
+    // Detecção de referências circulares na pilha de ancestrais
     if (seen.has(value)) {
       throw new MaterialContextInvariantViolationError(
         'CIRCULAR_REFERENCE_DETECTED',
@@ -129,34 +129,44 @@ export function sanitizeJsonMaterialValue(value: unknown, seen = new WeakSet<obj
     }
     seen.add(value);
 
-    // Arrays
-    if (Array.isArray(value)) {
-      const sanitizedArray = value.map((item) => sanitizeJsonMaterialValue(item, seen));
-      return Object.freeze(sanitizedArray);
-    }
+    try {
+      // Arrays
+      if (Array.isArray(value)) {
+        const sanitizedArray = value.map((item) => sanitizeJsonMaterialValue(item, seen));
+        return Object.freeze(sanitizedArray);
+      }
 
-    // Plain objects (garante prototype Object ou null)
-    const proto = Object.getPrototypeOf(value);
-    if (proto !== Object.prototype && proto !== null) {
-      throw new MaterialContextInvariantViolationError(
-        'INVALID_CLASS_INSTANCE',
-        `Arbitrary class instances (${value.constructor?.name ?? 'unknown'}) are prohibited in JSON material values.`
-      );
-    }
-
-    const sanitizedObj: Record<string, JsonValue> = {};
-    for (const key of Object.keys(value)) {
-      const val = (value as Record<string, unknown>)[key];
-      if (typeof val === 'undefined') {
+      // Plain objects (garante prototype Object ou null)
+      const proto = Object.getPrototypeOf(value);
+      if (proto !== Object.prototype && proto !== null) {
         throw new MaterialContextInvariantViolationError(
-          'INVALID_OBJECT_UNDEFINED_PROPERTY',
-          `Property '${key}' has value undefined which is invalid in JSON.`
+          'INVALID_CLASS_INSTANCE',
+          `Arbitrary class instances (${value.constructor?.name ?? 'unknown'}) are prohibited in JSON material values.`
         );
       }
-      sanitizedObj[key] = sanitizeJsonMaterialValue(val, seen);
-    }
 
-    return Object.freeze(sanitizedObj);
+      const sanitizedObj: Record<string, JsonValue> = {};
+      for (const key of Object.keys(value)) {
+        const val = (value as Record<string, unknown>)[key];
+        if (typeof val === 'undefined') {
+          throw new MaterialContextInvariantViolationError(
+            'INVALID_OBJECT_UNDEFINED_PROPERTY',
+            `Property '${key}' has value undefined which is invalid in JSON.`
+          );
+        }
+        const sanitizedVal = sanitizeJsonMaterialValue(val, seen);
+        Object.defineProperty(sanitizedObj, key, {
+          value: sanitizedVal,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      }
+
+      return Object.freeze(sanitizedObj);
+    } finally {
+      seen.delete(value);
+    }
   }
 
   throw new MaterialContextInvariantViolationError(

@@ -157,7 +157,7 @@ describe('0.86B-4 · Material Context Pin Invariants & Sanitizers', () => {
       );
     });
 
-    it('rejeita referências circulares', () => {
+    it('rejeita referências circulares diretas (self)', () => {
       const circular: any = { a: 1 };
       circular.self = circular;
       assert.throws(
@@ -168,6 +168,98 @@ describe('0.86B-4 · Material Context Pin Invariants & Sanitizers', () => {
           return true;
         }
       );
+    });
+
+    it('rejeita referências circulares indiretas (a -> b -> a)', () => {
+      const a: any = { name: 'a' };
+      const b: any = { name: 'b' };
+      a.child = b;
+      b.parent = a;
+      assert.throws(
+        () => sanitizeJsonMaterialValue(a),
+        (err: any) => {
+          assert.ok(err instanceof MaterialContextInvariantViolationError);
+          assert.equal(err.violationType, 'CIRCULAR_REFERENCE_DETECTED');
+          return true;
+        }
+      );
+    });
+
+    it('aceita referências compartilhadas acíclicas (shared alias) com cópias independentes', () => {
+      const x = { n: 1 };
+      const value = {
+        first: x,
+        second: x,
+      };
+
+      const sanitized: any = sanitizeJsonMaterialValue(value);
+      assert.deepEqual(sanitized, { first: { n: 1 }, second: { n: 1 } });
+      assert.equal(sanitized.first.n, 1);
+      assert.equal(sanitized.second.n, 1);
+
+      // Mutação posterior no objeto original não altera o snapshot
+      x.n = 999;
+      assert.equal(sanitized.first.n, 1);
+      assert.equal(sanitized.second.n, 1);
+      assert.ok(Object.isFrozen(sanitized));
+      assert.ok(Object.isFrozen(sanitized.first));
+      assert.ok(Object.isFrozen(sanitized.second));
+    });
+
+    it('aceita referências compartilhadas acíclicas dentro de arrays', () => {
+      const shared = { amount: 50 };
+      const arr = [shared, shared];
+
+      const sanitized: any = sanitizeJsonMaterialValue(arr);
+      assert.deepEqual(sanitized, [{ amount: 50 }, { amount: 50 }]);
+      shared.amount = 999;
+      assert.equal(sanitized[0].amount, 50);
+      assert.equal(sanitized[1].amount, 50);
+      assert.ok(Object.isFrozen(sanitized));
+      assert.ok(Object.isFrozen(sanitized[0]));
+      assert.ok(Object.isFrozen(sanitized[1]));
+    });
+
+    it('teste adversarial __proto__: preserva dado sem poluir Object.prototype nem alterar protótipo', () => {
+      const rawJson = '{"__proto__": {"polluted": true}, "normal": 42}';
+      const parsed = JSON.parse(rawJson);
+
+      const sanitized: any = sanitizeJsonMaterialValue(parsed);
+
+      // 1. Não altera Object.prototype
+      assert.equal((Object.prototype as any).polluted, undefined);
+
+      // 2. O objeto canônico não ganha inherited polluted
+      assert.equal(sanitized.polluted, undefined);
+
+      // 3. __proto__ permanece como dado próprio ou acessível
+      assert.ok(Object.prototype.hasOwnProperty.call(sanitized, '__proto__'));
+      assert.deepEqual(sanitized.__proto__, { polluted: true });
+
+      // 4. JSON.stringify do resultado preserva o campo
+      assert.equal(JSON.stringify(sanitized), '{"__proto__":{"polluted":true},"normal":42}');
+
+      // 5. Nested values ficam profundamente congelados
+      assert.ok(Object.isFrozen(sanitized));
+      assert.ok(Object.isFrozen(sanitized.__proto__));
+
+      // 6. Mutação posterior no objeto original não altera o snapshot
+      parsed.__proto__.polluted = false;
+      assert.equal(sanitized.__proto__.polluted, true);
+    });
+
+    it('preserva chaves constructor e prototype como dados normais em JSON', () => {
+      const raw = {
+        constructor: 'CustomConstructor',
+        prototype: { method: 'run' },
+      };
+
+      const sanitized: any = sanitizeJsonMaterialValue(raw);
+      assert.equal(sanitized.constructor, 'CustomConstructor');
+      assert.deepEqual(sanitized.prototype, { method: 'run' });
+      assert.ok(Object.isFrozen(sanitized));
+      assert.ok(Object.isFrozen(sanitized.prototype));
+      assert.equal(JSON.stringify(sanitized), '{"constructor":"CustomConstructor","prototype":{"method":"run"}}');
     });
 
     it('rejeita classes arbitrárias', () => {

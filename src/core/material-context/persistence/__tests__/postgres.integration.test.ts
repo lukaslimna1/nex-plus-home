@@ -31,6 +31,7 @@ import type {
   MaterialContextPinId,
   MaterialContextPin,
   MaterialContextItem,
+  MaterialAspectSnapshot,
 } from '../../contracts';
 import { PostgresMaterialContextStore } from '../postgres';
 
@@ -367,5 +368,98 @@ describe('0.86B-4 · Persistência PostgreSQL de Material Context Pin', { skip: 
       () => pool.query(`TRUNCATE nex_material_context_pins CASCADE;`),
       (err: any) => err.message.includes('NEX_PERSISTENCE_APPEND_ONLY_VIOLATION') || err.message.toLowerCase().includes('append-only') || err.code === '0A000' || err.message.toLowerCase().includes('truncar')
     );
+  });
+
+  it('6. Blocker 1: Round-trip real no PostgreSQL preserva strings em JSONB sem segundo parse', async () => {
+    const stringValues = [
+      'null',
+      '123',
+      'true',
+      'false',
+      '{"a":1}',
+      '[1,2]',
+      'hello',
+    ];
+
+    const nativeValues = [
+      null,
+      123,
+      true,
+      false,
+      { a: 1 },
+      [1, 2],
+    ];
+
+    const aspectResource: ContextAspectRef = {
+      target: {
+        kind: 'resource',
+        resource: {
+          ownerModule: { moduleKey: 'catalog' as any },
+          resourceType: 'product' as any,
+          resourceId: 'prod_1' as any,
+        },
+      },
+      aspectKey: 'test_key' as any,
+    };
+
+    const items: MaterialContextItem[] = [
+      ...stringValues.map((strVal) => ({
+        kind: 'aspect_snapshot' as const,
+        aspect: aspectResource,
+        value: strVal,
+      })),
+      ...nativeValues.map((natVal) => ({
+        kind: 'aspect_snapshot' as const,
+        aspect: aspectResource,
+        value: natVal,
+      })),
+    ];
+
+    const pin: MaterialContextPin = {
+      pinId: 'pin_string_roundtrip_test' as MaterialContextPinId,
+      actor: humanLucas,
+      pinnedAt: '2026-08-25T03:00:00.000Z',
+      items,
+    };
+
+    await store.savePin(pin);
+
+    const retrieved = await store.getPin('pin_string_roundtrip_test' as MaterialContextPinId);
+    assert.ok(retrieved);
+    assert.equal(retrieved.items.length, stringValues.length + nativeValues.length);
+
+    // 1. Provas estritas para strings (não sofreram segundo parse)
+    for (let i = 0; i < stringValues.length; i++) {
+      const originalStr = stringValues[i];
+      const item = retrieved.items[i] as MaterialAspectSnapshot;
+      assert.equal(item.kind, 'aspect_snapshot');
+      assert.equal(typeof item.value, 'string', `Valor para índice ${i} (${originalStr}) deve ter typeof 'string'`);
+      assert.strictEqual(item.value, originalStr, `Valor para índice ${i} deve ser estritamente igual a '${originalStr}'`);
+    }
+
+    // Provas diferenciais explícitas: "null" !== null, "123" !== 123, "{\"a\":1}" !== {a:1}
+    assert.notStrictEqual((retrieved.items[0] as MaterialAspectSnapshot).value, null);
+    assert.notStrictEqual((retrieved.items[1] as MaterialAspectSnapshot).value, 123);
+    assert.notDeepEqual((retrieved.items[4] as MaterialAspectSnapshot).value, { a: 1 });
+
+    // 2. Provas estritas para tipos nativos
+    const offset = stringValues.length;
+    // null real
+    assert.strictEqual((retrieved.items[offset] as MaterialAspectSnapshot).value, null);
+    // 123 real
+    assert.strictEqual((retrieved.items[offset + 1] as MaterialAspectSnapshot).value, 123);
+    assert.equal(typeof (retrieved.items[offset + 1] as MaterialAspectSnapshot).value, 'number');
+    // true real
+    assert.strictEqual((retrieved.items[offset + 2] as MaterialAspectSnapshot).value, true);
+    assert.equal(typeof (retrieved.items[offset + 2] as MaterialAspectSnapshot).value, 'boolean');
+    // false real
+    assert.strictEqual((retrieved.items[offset + 3] as MaterialAspectSnapshot).value, false);
+    assert.equal(typeof (retrieved.items[offset + 3] as MaterialAspectSnapshot).value, 'boolean');
+    // { a: 1 } real
+    assert.deepEqual((retrieved.items[offset + 4] as MaterialAspectSnapshot).value, { a: 1 });
+    assert.equal(typeof (retrieved.items[offset + 4] as MaterialAspectSnapshot).value, 'object');
+    // [1, 2] real
+    assert.deepEqual((retrieved.items[offset + 5] as MaterialAspectSnapshot).value, [1, 2]);
+    assert.ok(Array.isArray((retrieved.items[offset + 5] as MaterialAspectSnapshot).value));
   });
 });
