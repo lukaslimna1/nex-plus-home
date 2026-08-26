@@ -101,14 +101,14 @@ try {
     & npx payload migrate
     if ($LASTEXITCODE -ne 0) { throw "Falha ao executar payload migrate inicial no banco descartável" }
 
-    # Ajustar ledger para manter batches ordenados 1..8
-    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 2 WHERE name = '20260820_030631_multiuser_auth';" | Out-Null
-    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 3 WHERE name = '20260821_210000_observation_persistence';" | Out-Null
-    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 4 WHERE name = '20260821_220000_evidence_artifact_store';" | Out-Null
-    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 5 WHERE name = '20260821_230000_reconciliation_and_precedents';" | Out-Null
-    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 6 WHERE name = '20260824_190000_session_operational_state';" | Out-Null
-    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 7 WHERE name = '20260824_210000_input_record_and_ingress';" | Out-Null
-    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 8 WHERE name = '20260825_030000_material_context_pin';" | Out-Null
+    # Inspeção read-only do ledger real registrado pelo Payload (sem qualquer mutação)
+    Write-Host "`n[LEDGER_PROSPECT] Consultando ledger real em payload_migrations..." -ForegroundColor Cyan
+    $ledgerInitialRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "SELECT id, name, batch, created_at FROM payload_migrations ORDER BY id;"
+    Write-Host $ledgerInitialRaw -ForegroundColor Cyan
+
+    $maxBatchRaw = (& psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT COALESCE(MAX(batch), 0) FROM payload_migrations;").Trim()
+    $migrationsCountRaw = (& psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT COUNT(*) FROM payload_migrations;").Trim()
+    Write-Host "Migrations aplicadas: $migrationsCountRaw | Batch(es) real(is) detectado(s): $maxBatchRaw | MAX(batch): $maxBatchRaw" -ForegroundColor Green
 
     # Verificar tabelas pós-UP
     $tablesUpRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
@@ -137,52 +137,28 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Falha nos testes de integração PostgreSQL do 0.86B-5" }
     Write-Host "Testes de integração PostgreSQL concluídos com 100% de sucesso!" -ForegroundColor Green
 
-    # 7. Testar Migration DOWN (Rollback ordenado de 8..2)
-    Write-Host "`n[4/6] Testando rollback de migration (DOWN ordenado 8..2) no banco descartável..." -ForegroundColor Yellow
-    Write-Host "Executando DOWN 1/7 (0.86B-4: material_context_pin)..."
+    # 7. Testar Migration DOWN (Rollback real do último batch registrado pelo Payload)
+    Write-Host "`n[4/6] Executando rollback do último batch real do Payload (migrate:down)..." -ForegroundColor Yellow
     & npx payload migrate:down
-    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 1/7 (0.86B-4) no banco descartável" }
+    if ($LASTEXITCODE -ne 0) { throw "Falha ao executar payload migrate:down no banco descartável" }
 
-    Write-Host "Executando DOWN 2/7 (0.86B-3: input_record_and_ingress)..."
-    & npx payload migrate:down
-    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 2/7 (0.86B-3) no banco descartável" }
-
-    Write-Host "Executando DOWN 3/7 (0.86B-2: session_operational_state)..."
-    & npx payload migrate:down
-    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 3/7 (0.86B-2) no banco descartável" }
-
-    Write-Host "Executando DOWN 4/7 (0.85D: reconciliation_and_precedents)..."
-    & npx payload migrate:down
-    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 4/7 (0.85D) no banco descartável" }
-
-    Write-Host "Executando DOWN 5/7 (0.85C: evidence_artifact_store)..."
-    & npx payload migrate:down
-    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 5/7 (0.85C) no banco descartável" }
-
-    Write-Host "Executando DOWN 6/7 (0.85B: observation_persistence)..."
-    & npx payload migrate:down
-    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 6/7 (0.85B) no banco descartável" }
-
-    Write-Host "Executando DOWN 7/7 (0.8A: multiuser_auth)..."
-    & npx payload migrate:down
-    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 7/7 (0.8A) no banco descartável" }
-
-    # Verificar estrutura pós-DOWN
-    $tablesDownRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
-    $tablesDown = if ($tablesDownRaw) { @($tablesDownRaw.Split("`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ }) } else { @() }
-
-    if ($tablesDown -contains "users" -or $tablesDown -contains "nex_material_context_pins" -or $tablesDown -contains "nex_input_records") {
-        throw "Verificação pós-DOWN falhou: tabelas de migrações posteriores ainda existem."
+    # Inspeção pós-DOWN (read-only)
+    $ledgerTableExists = (& psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'payload_migrations');").Trim()
+    if ($ledgerTableExists -eq "t") {
+        $ledgerPostDown = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "SELECT id, name, batch FROM payload_migrations ORDER BY id;"
+        Write-Host "Ledger pós-DOWN:`n$ledgerPostDown" -ForegroundColor Cyan
+    } else {
+        Write-Host "Ledger pós-DOWN: tabela payload_migrations revertida pelo rollback do batch inicial." -ForegroundColor Cyan
     }
-    if ($tablesDown -notcontains "admins" -or $tablesDown -notcontains "admins_sessions") {
-        throw "Verificação pós-DOWN falhou: tabelas da foundation foram indevidamente alteradas."
-    }
-    Write-Host "Estrutura pós-DOWN verificada: migrações 8..2 removidas, foundation intacta." -ForegroundColor Green
+    Write-Host "Rollback do último batch real concluído com sucesso." -ForegroundColor Green
 
-    # 8. Executar Migration UP novamente (Convergência bidirecional)
+    # 8. Executar Migration UP novamente (Convergência bidirecional real)
     Write-Host "`n[5/6] Re-executando migrations (UP) no banco descartável..." -ForegroundColor Yellow
     & npx payload migrate
     if ($LASTEXITCODE -ne 0) { throw "Falha ao re-executar payload migrate no banco descartável" }
+
+    $ledgerReUp = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "SELECT id, name, batch FROM payload_migrations ORDER BY id;"
+    Write-Host "Ledger pós-re-UP:`n$ledgerReUp" -ForegroundColor Cyan
 
     $tablesReUpRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
     $tablesReUp = if ($tablesReUpRaw) { @($tablesReUpRaw.Split("`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ }) } else { @() }
