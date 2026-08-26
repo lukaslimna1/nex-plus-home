@@ -115,6 +115,9 @@ try {
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($lockInfo)
         $lockStream.Write($bytes, 0, $bytes.Length)
         $lockStream.Flush()
+        $lockStream.Close()
+        $lockStream.Dispose()
+        $lockStream = $null
         $lockAcquired = $true
     } catch [System.IO.IOException] {
         throw "[SECURITY_FAIL] ERRO DE CONCORRÊNCIA: outra instância de teste E2E isolado já está em execução (lock ativo em $e2eLockFile). Abortando."
@@ -225,26 +228,53 @@ finally {
         Write-Host "[SECURITY_WARN] Nome do banco não passou na validação de drop: $disposableDbName" -ForegroundColor Red
     }
 
-    # Limpar diretório de build isolado do E2E
+    # Limpar diretório de build isolado do E2E (.next-e2e-auth)
     $e2eDistPath = Join-Path $RepoRoot ".next-e2e-auth"
-    if ($lockAcquired -and (Test-Path $e2eDistPath)) {
-        Remove-Item -Path $e2eDistPath -Recurse -Force -ErrorAction SilentlyContinue
-        Write-Host "Diretório de build isolado '$e2eDistPath' removido com sucesso." -ForegroundColor Green
+    $resolvedDist = [System.IO.Path]::GetFullPath($e2eDistPath)
+    $resolvedRoot = [System.IO.Path]::GetFullPath($RepoRoot)
+    $distParent = [System.IO.Path]::GetDirectoryName($resolvedDist)
+    $distLeaf = [System.IO.Path]::GetFileName($resolvedDist)
+
+    if ($distParent -eq $resolvedRoot -and $distLeaf -eq ".next-e2e-auth" -and $resolvedDist -ne $resolvedRoot) {
+        if (Test-Path -LiteralPath $resolvedDist) {
+            Remove-Item -LiteralPath $resolvedDist -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "Diretório de build isolado '$resolvedDist' removido com sucesso." -ForegroundColor Green
+        }
+    } else {
+        Write-Host "[SECURITY_WARN] Caminho inválido para limpeza de build isolado: $e2eDistPath" -ForegroundColor Red
+    }
+
+    # Limpar diretório de resultados Playwright isolado do E2E (.test-results-e2e-auth)
+    $e2eResultsPath = Join-Path $RepoRoot ".test-results-e2e-auth"
+    $resolvedResults = [System.IO.Path]::GetFullPath($e2eResultsPath)
+    $resultsParent = [System.IO.Path]::GetDirectoryName($resolvedResults)
+    $resultsLeaf = [System.IO.Path]::GetFileName($resolvedResults)
+
+    if ($resultsParent -eq $resolvedRoot -and $resultsLeaf -eq ".test-results-e2e-auth" -and $resolvedResults -ne $resolvedRoot) {
+        if (Test-Path -LiteralPath $resolvedResults) {
+            Remove-Item -LiteralPath $resolvedResults -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "Diretório de resultados Playwright isolado '$resolvedResults' removido com sucesso." -ForegroundColor Green
+        }
+    } else {
+        Write-Host "[SECURITY_WARN] Caminho inválido para limpeza de resultados isolados: $e2eResultsPath" -ForegroundColor Red
     }
 
     # 11. Liberação do Lock Exclusivo
     if ($lockStream) {
-        $lockStream.Close()
-        $lockStream.Dispose()
+        try { $lockStream.Close(); $lockStream.Dispose() } catch {}
         $lockStream = $null
     }
-    if ($lockAcquired -and (Test-Path $e2eLockFile)) {
+    $resolvedLock = [System.IO.Path]::GetFullPath($e2eLockFile)
+    $lockParent = [System.IO.Path]::GetDirectoryName($resolvedLock)
+    $lockLeaf = [System.IO.Path]::GetFileName($resolvedLock)
+    if ($lockParent -eq $resolvedRoot -and $lockLeaf -eq ".next-e2e-auth.lock" -and (Test-Path -LiteralPath $resolvedLock)) {
         for ($i = 0; $i -lt 10; $i++) {
             try {
-                Remove-Item -Path $e2eLockFile -Force -ErrorAction Stop
+                Remove-Item -LiteralPath $resolvedLock -Force -ErrorAction Stop
+                Write-Host "Lock file '$resolvedLock' removido com sucesso." -ForegroundColor Green
                 break
             } catch {
-                Start-Sleep -Milliseconds 50
+                Start-Sleep -Milliseconds 100
             }
         }
     }

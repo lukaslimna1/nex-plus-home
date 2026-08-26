@@ -78,11 +78,57 @@ function terminateChild() {
   } catch {}
 }
 
+const distDir = path.join(projectRoot, '.next-verify');
+
+function cleanVerifyDistDir() {
+  const resolvedDist = path.resolve(distDir);
+  const resolvedRoot = path.resolve(projectRoot);
+
+  // Path safety checks
+  if (
+    resolvedDist === resolvedRoot ||
+    !resolvedDist.startsWith(resolvedRoot + path.sep) ||
+    path.basename(resolvedDist) !== '.next-verify'
+  ) {
+    throw new Error(`[build:verify] [SECURITY_FAIL] Caminho inválido para limpeza de distDir: ${resolvedDist}`);
+  }
+
+  if (fs.existsSync(resolvedDist)) {
+    fs.rmSync(resolvedDist, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
+  }
+}
+
 function finish(code, message) {
   if (finished) return;
   finished = true;
+
+  let cleanupError = null;
+  try {
+    cleanVerifyDistDir();
+  } catch (err) {
+    cleanupError = err;
+  }
+
   releaseLock();
-  if (message) console.error(message);
+
+  if (message) {
+    if (code === 0) {
+      console.log(message);
+    } else {
+      console.error(message);
+    }
+  }
+
+  if (cleanupError) {
+    console.error(`[build:verify] [HYGIENE_FAIL] Falha ao limpar diretório isolado .next-verify: ${cleanupError?.message || cleanupError}`);
+    process.exit(code !== 0 ? code : 1);
+  }
+
   process.exit(code);
 }
 
@@ -121,14 +167,14 @@ child.once('close', (code) => {
   if (code !== 0) {
     finish(code || 1, `[build:verify] Build de verificação falhou com código ${code}`);
   }
-  finish(0, '[build:verify] Build de verificação concluído com sucesso em .next-verify');
+  finish(0, '[build:verify] Build de verificação concluído com sucesso em .next-verify (e limpo)');
 });
 
 function handleSignal() {
   if (finished) return;
   terminateChild();
   setTimeout(() => {
-    if (!finished) finish(1, '[build:verify] Build interrompido; lock liberado após encerramento forçado.');
+    if (!finished) finish(1, '[build:verify] Build interrompido; lock e distDir isolado limpos após encerramento forçado.');
   }, 1500).unref();
 }
 

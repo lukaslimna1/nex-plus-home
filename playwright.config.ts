@@ -12,8 +12,14 @@ if (process.env.NEXT_DIST_DIR) {
   throw new Error('[SECURITY_GUARD] Playwright recusou NEXT_DIST_DIR externo; use o distDir controlado pelo modo e2e.');
 }
 
+const outputDir =
+  process.env.NEX_E2E_ISOLATED === '1'
+    ? '.test-results-e2e-auth'
+    : './test-results';
+
 export default defineConfig({
   testDir: './tests/e2e',
+  outputDir,
   timeout: 30000,
   expect: {
     timeout: 5000,
