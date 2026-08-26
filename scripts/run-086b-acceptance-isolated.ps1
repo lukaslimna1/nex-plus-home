@@ -78,12 +78,14 @@ $escapedPass = [System.Uri]::EscapeDataString($operationalPass)
 $disposableDbUrl = "postgresql://${operationalUser}:${escapedPass}@${operationalHost}:${operationalPort}/${disposableDbName}"
 
 $exitCode = 0
+$databaseCreated = $false
 
 try {
     # 4. Criação do Database Descartável
     Write-Host "`n[1/6] Criando banco de dados descartável: $disposableDbName..." -ForegroundColor Yellow
     & createdb -h $operationalHost -p $operationalPort -U $operationalUser $disposableDbName
     if ($LASTEXITCODE -ne 0) { throw "Falha ao criar banco de dados descartável: $disposableDbName" }
+    $databaseCreated = $true
 
     # Verificação de segurança via query SQL direta
     $currentDb = (& psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT current_database();").Trim()
@@ -183,22 +185,50 @@ catch {
 finally {
     # 10. Destruição segura e garantida do Database Descartável
     Write-Host "`n[CLEANUP] Encerrando conexões residuais e destruindo banco descartável..." -ForegroundColor Yellow
-    if ($disposableDbName -and $disposableDbName.StartsWith("nex_086b_acc_") -and $disposableDbName -ne $operationalDbName) {
-        try {
-            $env:DATABASE_URL = $dbUrl
-            & psql -h $operationalHost -p $operationalPort -U $operationalUser -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$disposableDbName' AND pid <> pg_backend_pid();" | Out-Null
-            & dropdb -h $operationalHost -p $operationalPort -U $operationalUser $disposableDbName
-            Write-Host "[CLEANUP] Banco descartável '$disposableDbName' destruído com sucesso." -ForegroundColor Green
+    $cleanupFailed = $false
+
+    if ($databaseCreated -and $disposableDbName -and $disposableDbName.StartsWith("nex_086b_acc_") -and $disposableDbName -ne $operationalDbName -and ($disposableDbName -match '^[a-zA-Z0-9_]+$')) {
+        $env:DATABASE_URL = $dbUrl
+        & psql -h $operationalHost -p $operationalPort -U $operationalUser -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$disposableDbName' AND pid <> pg_backend_pid();" | Out-Null
+        & dropdb -h $operationalHost -p $operationalPort -U $operationalUser $disposableDbName
+        $dropExitCode = $LASTEXITCODE
+
+        if ($dropExitCode -ne 0) {
+            Write-Host "[CLEANUP_FAIL] dropdb retornou exit code $dropExitCode ao tentar destruir '$disposableDbName'." -ForegroundColor Red
+            $cleanupFailed = $true
         }
-        catch {
-            Write-Host "[CLEANUP_WARN] Erro ao destruir banco descartável '$disposableDbName': $_" -ForegroundColor Yellow
+
+        # Pós-condição: confirmar ausência do banco via query direta em pg_database
+        $dbExistsRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d postgres -t -A -c "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = '$disposableDbName');"
+        $psqlCheckExitCode = $LASTEXITCODE
+
+        if ($psqlCheckExitCode -ne 0) {
+            Write-Host "[CLEANUP_FAIL] Falha ao verificar pós-condição do banco no PostgreSQL (psql exit code $psqlCheckExitCode)." -ForegroundColor Red
+            $cleanupFailed = $true
+        } else {
+            $dbExists = if ($dbExistsRaw) { $dbExistsRaw.Trim() } else { "" }
+            if ($dbExists -eq "f" -or $dbExists -eq "false") {
+                if ($dropExitCode -eq 0) {
+                    Write-Host "[CLEANUP] Banco descartável '$disposableDbName' destruído com sucesso." -ForegroundColor Green
+                }
+            } else {
+                Write-Host "[CLEANUP_FAIL] Pós-condição falhou: banco descartável '$disposableDbName' ainda existe no PostgreSQL." -ForegroundColor Red
+                $cleanupFailed = $true
+            }
         }
+    } elseif ($databaseCreated) {
+        Write-Host "[SECURITY_FAIL] Nome do banco não passou na validação de drop: $disposableDbName" -ForegroundColor Red
+        $cleanupFailed = $true
     }
 
     # Restauração estrita das variáveis de ambiente originais
     $env:DATABASE_URL = $dbUrl
     $env:PAYLOAD_SECRET = $payloadSecret
     $env:PGPASSWORD = $operationalPass
+
+    if ($cleanupFailed) {
+        $exitCode = 1
+    }
 }
 
 exit $exitCode

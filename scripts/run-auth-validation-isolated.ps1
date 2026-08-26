@@ -219,13 +219,40 @@ catch {
 finally {
     # 10. Destruição segura e garantida do Database Descartável
     Write-Host "`n[7/7] Limpeza: destruindo banco de dados descartável e artefatos isolados..." -ForegroundColor Yellow
-    if ($databaseCreated -and $disposableDbName -and $disposableDbName.StartsWith("nex_e2e_") -and $disposableDbName -ne $operationalDbName) {
+    $cleanupFailed = $false
+
+    if ($databaseCreated -and $disposableDbName -and $disposableDbName.StartsWith("nex_e2e_") -and $disposableDbName -ne $operationalDbName -and ($disposableDbName -match '^[a-zA-Z0-9_]+$')) {
         # Terminar conexões ativas no banco descartável antes de dropar
         & psql -h $operationalHost -p $operationalPort -U $operationalUser -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$disposableDbName' AND pid <> pg_backend_pid();" | Out-Null
         & dropdb -h $operationalHost -p $operationalPort -U $operationalUser $disposableDbName
-        Write-Host "Banco descartável '$disposableDbName' removido com sucesso." -ForegroundColor Green
-    } else {
-        Write-Host "[SECURITY_WARN] Nome do banco não passou na validação de drop: $disposableDbName" -ForegroundColor Red
+        $dropExitCode = $LASTEXITCODE
+
+        if ($dropExitCode -ne 0) {
+            Write-Host "[CLEANUP_FAIL] dropdb retornou exit code $dropExitCode ao tentar remover '$disposableDbName'." -ForegroundColor Red
+            $cleanupFailed = $true
+        }
+
+        # Pós-condição: confirmar ausência do banco via query direta em pg_database
+        $dbExistsRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d postgres -t -A -c "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = '$disposableDbName');"
+        $psqlCheckExitCode = $LASTEXITCODE
+
+        if ($psqlCheckExitCode -ne 0) {
+            Write-Host "[CLEANUP_FAIL] Falha ao verificar pós-condição do banco no PostgreSQL (psql exit code $psqlCheckExitCode)." -ForegroundColor Red
+            $cleanupFailed = $true
+        } else {
+            $dbExists = if ($dbExistsRaw) { $dbExistsRaw.Trim() } else { "" }
+            if ($dbExists -eq "f" -or $dbExists -eq "false") {
+                if ($dropExitCode -eq 0) {
+                    Write-Host "Banco descartável '$disposableDbName' removido com sucesso." -ForegroundColor Green
+                }
+            } else {
+                Write-Host "[CLEANUP_FAIL] Pós-condição falhou: banco descartável '$disposableDbName' ainda existe no PostgreSQL." -ForegroundColor Red
+                $cleanupFailed = $true
+            }
+        }
+    } elseif ($databaseCreated) {
+        Write-Host "[SECURITY_FAIL] Nome do banco não passou na validação de drop: $disposableDbName" -ForegroundColor Red
+        $cleanupFailed = $true
     }
 
     # Limpar diretório de build isolado do E2E (.next-e2e-auth)
@@ -237,11 +264,23 @@ finally {
 
     if ($distParent -eq $resolvedRoot -and $distLeaf -eq ".next-e2e-auth" -and $resolvedDist -ne $resolvedRoot) {
         if (Test-Path -LiteralPath $resolvedDist) {
-            Remove-Item -LiteralPath $resolvedDist -Recurse -Force -ErrorAction SilentlyContinue
-            Write-Host "Diretório de build isolado '$resolvedDist' removido com sucesso." -ForegroundColor Green
+            try {
+                Remove-Item -LiteralPath $resolvedDist -Recurse -Force -ErrorAction Stop
+            } catch {
+                Write-Host "[CLEANUP_FAIL] Erro ao remover diretório de build isolado '$resolvedDist': $_" -ForegroundColor Red
+                $cleanupFailed = $true
+            }
+
+            if (Test-Path -LiteralPath $resolvedDist) {
+                Write-Host "[CLEANUP_FAIL] Pós-condição falhou: diretório de build isolado '$resolvedDist' ainda existe." -ForegroundColor Red
+                $cleanupFailed = $true
+            } else {
+                Write-Host "Diretório de build isolado '$resolvedDist' removido com sucesso." -ForegroundColor Green
+            }
         }
     } else {
-        Write-Host "[SECURITY_WARN] Caminho inválido para limpeza de build isolado: $e2eDistPath" -ForegroundColor Red
+        Write-Host "[SECURITY_FAIL] Caminho inválido para limpeza de build isolado: $e2eDistPath" -ForegroundColor Red
+        $cleanupFailed = $true
     }
 
     # Limpar diretório de resultados Playwright isolado do E2E (.test-results-e2e-auth)
@@ -252,14 +291,26 @@ finally {
 
     if ($resultsParent -eq $resolvedRoot -and $resultsLeaf -eq ".test-results-e2e-auth" -and $resolvedResults -ne $resolvedRoot) {
         if (Test-Path -LiteralPath $resolvedResults) {
-            Remove-Item -LiteralPath $resolvedResults -Recurse -Force -ErrorAction SilentlyContinue
-            Write-Host "Diretório de resultados Playwright isolado '$resolvedResults' removido com sucesso." -ForegroundColor Green
+            try {
+                Remove-Item -LiteralPath $resolvedResults -Recurse -Force -ErrorAction Stop
+            } catch {
+                Write-Host "[CLEANUP_FAIL] Erro ao remover diretório de resultados Playwright isolado '$resolvedResults': $_" -ForegroundColor Red
+                $cleanupFailed = $true
+            }
+
+            if (Test-Path -LiteralPath $resolvedResults) {
+                Write-Host "[CLEANUP_FAIL] Pós-condição falhou: diretório de resultados Playwright isolado '$resolvedResults' ainda existe." -ForegroundColor Red
+                $cleanupFailed = $true
+            } else {
+                Write-Host "Diretório de resultados Playwright isolado '$resolvedResults' removido com sucesso." -ForegroundColor Green
+            }
         }
     } else {
-        Write-Host "[SECURITY_WARN] Caminho inválido para limpeza de resultados isolados: $e2eResultsPath" -ForegroundColor Red
+        Write-Host "[SECURITY_FAIL] Caminho inválido para limpeza de resultados isolados: $e2eResultsPath" -ForegroundColor Red
+        $cleanupFailed = $true
     }
 
-    # 11. Liberação do Lock Exclusivo
+    # 11. Liberação do Lock Exclusivo (pertencente apenas a esta execução)
     if ($lockStream) {
         try { $lockStream.Close(); $lockStream.Dispose() } catch {}
         $lockStream = $null
@@ -267,15 +318,29 @@ finally {
     $resolvedLock = [System.IO.Path]::GetFullPath($e2eLockFile)
     $lockParent = [System.IO.Path]::GetDirectoryName($resolvedLock)
     $lockLeaf = [System.IO.Path]::GetFileName($resolvedLock)
-    if ($lockParent -eq $resolvedRoot -and $lockLeaf -eq ".next-e2e-auth.lock" -and (Test-Path -LiteralPath $resolvedLock)) {
-        for ($i = 0; $i -lt 10; $i++) {
-            try {
-                Remove-Item -LiteralPath $resolvedLock -Force -ErrorAction Stop
-                Write-Host "Lock file '$resolvedLock' removido com sucesso." -ForegroundColor Green
-                break
-            } catch {
-                Start-Sleep -Milliseconds 100
+
+    if ($lockAcquired) {
+        if ($lockParent -eq $resolvedRoot -and $lockLeaf -eq ".next-e2e-auth.lock" -and $resolvedLock -ne $resolvedRoot) {
+            if (Test-Path -LiteralPath $resolvedLock) {
+                for ($i = 0; $i -lt 10; $i++) {
+                    try {
+                        Remove-Item -LiteralPath $resolvedLock -Force -ErrorAction Stop
+                        break
+                    } catch {
+                        Start-Sleep -Milliseconds 100
+                    }
+                }
+
+                if (Test-Path -LiteralPath $resolvedLock) {
+                    Write-Host "[HYGIENE_FAIL] Pós-condição falhou: lock file '$resolvedLock' ainda existe após tentativas de remoção." -ForegroundColor Red
+                    $cleanupFailed = $true
+                } else {
+                    Write-Host "Lock file '$resolvedLock' removido com sucesso." -ForegroundColor Green
+                }
             }
+        } else {
+            Write-Host "[SECURITY_FAIL] Caminho inválido para remoção de lock: $e2eLockFile" -ForegroundColor Red
+            $cleanupFailed = $true
         }
     }
 
@@ -302,6 +367,10 @@ finally {
     }
     Remove-Item env:NEXT_DIST_DIR -ErrorAction SilentlyContinue
     Remove-Item env:NEX_BUILD_MODE -ErrorAction SilentlyContinue
+
+    if ($cleanupFailed) {
+        $exitCode = 1
+    }
 }
 
 exit $exitCode
