@@ -45,6 +45,8 @@ export default defineConfig({
       PAYLOAD_TRUSTED_ORIGINS: e2eOrigin,
       NODE_ENV: 'production',
       PORT: port,
+      NEX_EMAIL_RELAY_URL: '',
+      NEX_EMAIL_RELAY_SECRET: '',
     },
   },
 });

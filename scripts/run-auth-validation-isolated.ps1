@@ -43,6 +43,10 @@ $hadOriginalEdgeUrl = [System.Environment]::GetEnvironmentVariables().ContainsKe
 $originalEdgeUrl = $env:PAYLOAD_PUBLIC_SERVER_URL
 $hadOriginalTrustedOrigins = [System.Environment]::GetEnvironmentVariables().ContainsKey("PAYLOAD_TRUSTED_ORIGINS")
 $originalTrustedOrigins = $env:PAYLOAD_TRUSTED_ORIGINS
+$hadOriginalEmailRelayUrl = [System.Environment]::GetEnvironmentVariables().ContainsKey("NEX_EMAIL_RELAY_URL")
+$originalEmailRelayUrl = $env:NEX_EMAIL_RELAY_URL
+$hadOriginalEmailRelaySecret = [System.Environment]::GetEnvironmentVariables().ContainsKey("NEX_EMAIL_RELAY_SECRET")
+$originalEmailRelaySecret = $env:NEX_EMAIL_RELAY_SECRET
 
 # Origem única e explícita do E2E isolado; não depende do .env real.
 $e2eOrigin = "http://127.0.0.1:3108"
@@ -138,6 +142,8 @@ try {
     $env:PAYLOAD_PUBLIC_SERVER_URL = $e2eOrigin
     $env:PAYLOAD_TRUSTED_ORIGINS = $e2eOrigin
     $env:NEX_BUILD_MODE = "e2e"
+    $env:NEX_EMAIL_RELAY_URL = ""
+    $env:NEX_EMAIL_RELAY_SECRET = ""
     Remove-Item env:NEXT_DIST_DIR -ErrorAction SilentlyContinue
 
     # 5. Executar Migrations UP no banco descartável
@@ -145,8 +151,14 @@ try {
     & npx payload migrate
     if ($LASTEXITCODE -ne 0) { throw "Falha ao executar payload migrate inicial no banco descartável" }
 
-    # Ajustar ledger para manter foundation como Batch 1 e multiuser_auth como Batch 2
+    # Ajustar ledger para manter batches ordenados 1..8
     & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 2 WHERE name = '20260820_030631_multiuser_auth';" | Out-Null
+    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 3 WHERE name = '20260821_210000_observation_persistence';" | Out-Null
+    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 4 WHERE name = '20260821_220000_evidence_artifact_store';" | Out-Null
+    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 5 WHERE name = '20260821_230000_reconciliation_and_precedents';" | Out-Null
+    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 6 WHERE name = '20260824_190000_session_operational_state';" | Out-Null
+    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 7 WHERE name = '20260824_210000_input_record_and_ingress';" | Out-Null
+    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 8 WHERE name = '20260825_030000_material_context_pin';" | Out-Null
 
     # Verificar tabelas criadas pós-UP
     $tablesUpRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
@@ -156,10 +168,35 @@ try {
     }
     Write-Host "Tabelas pós-UP verificadas: admins, users, users_sessions presentes." -ForegroundColor Green
 
-    # 6. Testar Migration DOWN (Rollback da última migration: multiuser_auth) no banco descartável
-    Write-Host "`n[3/7] Testando rollback de migration (DOWN) no banco descartável..." -ForegroundColor Yellow
+    # 6. Testar Migration DOWN (Rollback ordenado até a foundation) no banco descartável
+    Write-Host "`n[3/7] Testando rollback de migration (DOWN ordenado 8..2) no banco descartável..." -ForegroundColor Yellow
+    Write-Host "Executando DOWN 1/7 (0.86B-4: material_context_pin)..."
     & npx payload migrate:down
-    if ($LASTEXITCODE -ne 0) { throw "Falha ao executar payload migrate:down no banco descartável" }
+    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 1/7 (0.86B-4: material_context_pin) no banco descartável" }
+
+    Write-Host "Executando DOWN 2/7 (0.86B-3: input_record_and_ingress)..."
+    & npx payload migrate:down
+    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 2/7 (0.86B-3: input_record_and_ingress) no banco descartável" }
+
+    Write-Host "Executando DOWN 3/7 (0.86B-2: session_operational_state)..."
+    & npx payload migrate:down
+    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 3/7 (0.86B-2: session_operational_state) no banco descartável" }
+
+    Write-Host "Executando DOWN 4/7 (0.85D: reconciliation_and_precedents)..."
+    & npx payload migrate:down
+    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 4/7 (0.85D: reconciliation_and_precedents) no banco descartável" }
+
+    Write-Host "Executando DOWN 5/7 (0.85C: evidence_artifact_store)..."
+    & npx payload migrate:down
+    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 5/7 (0.85C: evidence_artifact_store) no banco descartável" }
+
+    Write-Host "Executando DOWN 6/7 (0.85B: observation_persistence)..."
+    & npx payload migrate:down
+    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 6/7 (0.85B: observation_persistence) no banco descartável" }
+
+    Write-Host "Executando DOWN 7/7 (0.8A: multiuser_auth)..."
+    & npx payload migrate:down
+    if ($LASTEXITCODE -ne 0) { throw "Falha no DOWN 7/7 (0.8A: multiuser_auth) no banco descartável" }
 
     # Verificar estrutura pós-DOWN
     $tablesDownRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
@@ -222,14 +259,17 @@ finally {
     if ($lockStream) {
         $lockStream.Close()
         $lockStream.Dispose()
+        $lockStream = $null
     }
     if ($lockAcquired -and (Test-Path $e2eLockFile)) {
-        try {
-            $existingLock = Get-Content -Raw $e2eLockFile -ErrorAction SilentlyContinue | ConvertFrom-Json
-            if ($existingLock.pid -eq $PID -and $existingLock.token -eq $lockOwnerToken) {
-                Remove-Item -Path $e2eLockFile -Force -ErrorAction SilentlyContinue
+        for ($i = 0; $i -lt 10; $i++) {
+            try {
+                Remove-Item -Path $e2eLockFile -Force -ErrorAction Stop
+                break
+            } catch {
+                Start-Sleep -Milliseconds 50
             }
-        } catch {}
+        }
     }
 
     # Restauração das variáveis de ambiente de borda
@@ -242,6 +282,16 @@ finally {
         $env:PAYLOAD_TRUSTED_ORIGINS = $originalTrustedOrigins
     } else {
         Remove-Item env:\PAYLOAD_TRUSTED_ORIGINS -ErrorAction SilentlyContinue
+    }
+    if ($hadOriginalEmailRelayUrl) {
+        $env:NEX_EMAIL_RELAY_URL = $originalEmailRelayUrl
+    } else {
+        Remove-Item env:\NEX_EMAIL_RELAY_URL -ErrorAction SilentlyContinue
+    }
+    if ($hadOriginalEmailRelaySecret) {
+        $env:NEX_EMAIL_RELAY_SECRET = $originalEmailRelaySecret
+    } else {
+        Remove-Item env:\NEX_EMAIL_RELAY_SECRET -ErrorAction SilentlyContinue
     }
     Remove-Item env:NEXT_DIST_DIR -ErrorAction SilentlyContinue
     Remove-Item env:NEX_BUILD_MODE -ErrorAction SilentlyContinue

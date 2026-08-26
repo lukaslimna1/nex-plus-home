@@ -21,6 +21,7 @@
     "test:db:operational-context:isolated": "powershell.exe -NoLogo -NoProfile -File ./scripts/run-operational-context-isolated.ps1",
     "test:db:input-record:isolated": "powershell.exe -NoLogo -NoProfile -File ./scripts/run-input-record-isolated.ps1",
     "test:db:material-context:isolated": "powershell.exe -NoLogo -NoProfile -File ./scripts/run-material-context-isolated.ps1",
+    "test:db:086b-acceptance:isolated": "powershell.exe -NoLogo -NoProfile -File ./scripts/run-086b-acceptance-isolated.ps1",
     "test:context:server-boundary:positive": "node --conditions=react-server --import tsx --experimental-test-module-mocks --test src/core/context/__tests__/server-boundary.positive.test.ts"
   },
   "dependencies": {
