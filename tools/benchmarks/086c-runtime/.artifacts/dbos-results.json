@@ -1,0 +1,64 @@
+{
+  "completedAt": "2026-08-27T02:50:13.440Z",
+  "version": "4.27.6",
+  "systemDatabaseSchema": "nex086c_dbos",
+  "results": [
+    {
+      "id": "raw-step-crash-recovery-repeats-non-idempotent-effect",
+      "passed": true,
+      "crash": {
+        "message": {
+          "type": "effect-applied",
+          "result": {
+            "callId": "0fbbe733-b816-40d2-8385-c1d22a0b8c94",
+            "effectId": "1c21d8bd-8f45-49df-b2d4-ebe8c911b4b1",
+            "applied": true
+          }
+        },
+        "exit": {
+          "code": null,
+          "signal": "SIGKILL"
+        },
+        "stderr": "",
+        "stdout": ""
+      }
+    },
+    {
+      "id": "nex-safe-boundary-step-recovery-blocks-unknown-completion",
+      "passed": true,
+      "crash": {
+        "message": {
+          "type": "effect-applied",
+          "attemptId": "654487fa-f5d3-4e72-a868-c0618e54c99a",
+          "result": {
+            "callId": "243f7788-6339-4a5c-bf26-75cff8f50d19",
+            "effectId": "6b1d2796-4715-43a8-908b-51223bf8caf9",
+            "applied": true
+          }
+        },
+        "exit": {
+          "code": null,
+          "signal": "SIGKILL"
+        },
+        "stderr": "",
+        "stdout": ""
+      }
+    },
+    {
+      "id": "enqueueInTransaction-rollback",
+      "passed": true
+    },
+    {
+      "id": "durable-signal-before-waiter",
+      "passed": true
+    },
+    {
+      "id": "durable-signal-after-waiter",
+      "passed": true
+    },
+    {
+      "id": "durable-sleep",
+      "passed": true
+    }
+  ]
+}

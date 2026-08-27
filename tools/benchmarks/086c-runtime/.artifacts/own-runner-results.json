@@ -1,0 +1,74 @@
+{
+  "completedAt": "2026-08-27T02:49:52.483Z",
+  "results": [
+    {
+      "id": "own-listen-notify",
+      "passed": true,
+      "latencyMs": 135
+    },
+    {
+      "id": "listen-registration-race-poll-fallback",
+      "passed": true,
+      "latencyMs": 126
+    },
+    {
+      "id": "transactional-enqueue-rollback",
+      "passed": true
+    },
+    {
+      "id": "outbox-relay",
+      "passed": true
+    },
+    {
+      "id": "cancel-before-execution",
+      "passed": true
+    },
+    {
+      "id": "T5-nex-safe-unknown-completion-no-idempotency",
+      "passed": true,
+      "crash": {
+        "message": {
+          "type": "effect-applied",
+          "jobId": "crash-no-idempotency-bbec00b3-0077-45db-acec-78a44b17a675",
+          "attemptId": "425c10f1-fb2f-452e-a8c3-e0a002ccba2f",
+          "providerResult": {
+            "callId": "bb3c045a-1c06-4c47-b1fa-e3a127ab2b01",
+            "effectId": "694e27e4-67b9-4fb7-b33c-b2ad5a569c30",
+            "applied": true
+          }
+        },
+        "exit": {
+          "code": null,
+          "signal": "SIGKILL"
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "id": "T5-raw-blind-redelivery-duplicates-non-idempotent-effect",
+      "passed": true
+    },
+    {
+      "id": "idempotency-key-provider-guarantee-is-effectively-once-not-exactly-once-delivery",
+      "passed": true
+    },
+    {
+      "id": "T9-stale-worker-fencing",
+      "passed": true
+    },
+    {
+      "id": "postgres-restart-rehydration",
+      "passed": true
+    },
+    {
+      "id": "multi-worker-correctness-2",
+      "passed": true,
+      "jobs": 10
+    },
+    {
+      "id": "multi-worker-correctness-5",
+      "passed": true,
+      "jobs": 20
+    }
+  ]
+}

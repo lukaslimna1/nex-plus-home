@@ -1,0 +1,82 @@
+{
+  "completedAt": "2026-08-27T02:48:36.211Z",
+  "runner": "own-postgresql-runner",
+  "results": [
+    {
+      "jobs": 100,
+      "workers": 1,
+      "elapsedMs": 4503.5,
+      "jobsPerSecond": 22.2,
+      "enqueueToAttempt": {
+        "p50Ms": 2275.02,
+        "p95Ms": 4114.38,
+        "p99Ms": 4278.92,
+        "maxMs": 4324.58
+      },
+      "enqueueToEvidence": {
+        "p50Ms": 2288.75,
+        "p95Ms": 4126.5,
+        "p99Ms": 4303.64,
+        "maxMs": 4346.53
+      },
+      "qualification": "Own-runner-only laboratory baseline; loopback HTTP provider and Docker PostgreSQL are included, so this is not a cross-runtime throughput ranking."
+    },
+    {
+      "jobs": 100,
+      "workers": 5,
+      "elapsedMs": 743.84,
+      "jobsPerSecond": 134.44,
+      "enqueueToAttempt": {
+        "p50Ms": 366.89,
+        "p95Ms": 569.78,
+        "p99Ms": 594.97,
+        "maxMs": 595.08
+      },
+      "enqueueToEvidence": {
+        "p50Ms": 379.19,
+        "p95Ms": 581.9,
+        "p99Ms": 606.63,
+        "maxMs": 606.76
+      },
+      "qualification": "Own-runner-only laboratory baseline; loopback HTTP provider and Docker PostgreSQL are included, so this is not a cross-runtime throughput ranking."
+    },
+    {
+      "jobs": 1000,
+      "workers": 5,
+      "elapsedMs": 7269.01,
+      "jobsPerSecond": 137.57,
+      "enqueueToAttempt": {
+        "p50Ms": 3624.26,
+        "p95Ms": 5933.24,
+        "p99Ms": 6131.38,
+        "maxMs": 6173.23
+      },
+      "enqueueToEvidence": {
+        "p50Ms": 3635.57,
+        "p95Ms": 5945.3,
+        "p99Ms": 6151.52,
+        "maxMs": 6185.75
+      },
+      "qualification": "Own-runner-only laboratory baseline; loopback HTTP provider and Docker PostgreSQL are included, so this is not a cross-runtime throughput ranking."
+    },
+    {
+      "jobs": 10000,
+      "workers": 5,
+      "elapsedMs": 89720.77,
+      "jobsPerSecond": 111.46,
+      "enqueueToAttempt": {
+        "p50Ms": 45860.19,
+        "p95Ms": 74651.88,
+        "p99Ms": 77636.58,
+        "maxMs": 78340.68
+      },
+      "enqueueToEvidence": {
+        "p50Ms": 45873.9,
+        "p95Ms": 74679.24,
+        "p99Ms": 77658.37,
+        "maxMs": 78353.19
+      },
+      "qualification": "Own-runner-only laboratory baseline; loopback HTTP provider and Docker PostgreSQL are included, so this is not a cross-runtime throughput ranking."
+    }
+  ]
+}

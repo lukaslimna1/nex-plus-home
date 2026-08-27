@@ -1,0 +1,66 @@
+{
+  "completedAt": "2026-08-27T02:50:02.468Z",
+  "version": "12.28.0",
+  "schemaVersion": 38,
+  "results": [
+    {
+      "id": "transactional-enqueue-rollback",
+      "passed": true
+    },
+    {
+      "id": "raw-engine-crash-redelivery-duplicates-non-idempotent-effect",
+      "passed": true,
+      "crash": {
+        "message": {
+          "type": "effect-applied",
+          "deliveryId": "034fb51b-f920-448c-bbf7-1e70a840e513",
+          "result": {
+            "callId": "50d78062-e5f3-431f-b7c0-4d47a8cf9202",
+            "effectId": "12ef24c4-9662-4677-86b7-afdfec99e2fe",
+            "applied": true
+          }
+        },
+        "exit": {
+          "code": null,
+          "signal": "SIGKILL"
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "id": "nex-safe-boundary-crash-redelivery-blocks-unknown-completion",
+      "passed": true,
+      "crash": {
+        "message": {
+          "type": "effect-applied",
+          "deliveryId": "b5bba31a-6ebb-4281-a79e-0d1b0767b8a9",
+          "attemptId": "e6c79e23-417f-44e6-9102-8ce2ebc95c96",
+          "result": {
+            "callId": "0122beab-c4de-47d2-af39-47b90550ca85",
+            "effectId": "1f60245b-482b-4e87-a8f8-53e2a37c7f43",
+            "applied": true
+          }
+        },
+        "exit": {
+          "code": null,
+          "signal": "SIGKILL"
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "id": "multi-worker-duplicate-wake-2-nex-safe",
+      "passed": true,
+      "workers": 2,
+      "duplicateDeliveries": 2,
+      "outcomes": [
+        "in_flight_elsewhere",
+        "succeeded"
+      ]
+    },
+    {
+      "id": "postgres-restart-persisted-delivery-rehydration",
+      "passed": true
+    }
+  ]
+}

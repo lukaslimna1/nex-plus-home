@@ -1,0 +1,68 @@
+{
+  "completedAt": "2026-08-27T02:51:28.837Z",
+  "version": "0.9.2",
+  "schema": "nex086c_openworkflow",
+  "results": [
+    {
+      "id": "raw-step-crash-recovery-repeats-non-idempotent-effect",
+      "passed": true,
+      "crash": {
+        "message": {
+          "type": "effect-applied",
+          "result": {
+            "callId": "bac6a207-f25e-48a0-a465-7968dd2b7a88",
+            "effectId": "5ca5aa06-05f3-4d5d-9892-5c28d99c2ee4",
+            "applied": true
+          }
+        },
+        "exit": {
+          "code": null,
+          "signal": "SIGKILL"
+        },
+        "stderr": "",
+        "stdout": ""
+      },
+      "recoveryMs": 30396,
+      "defaultLease": "30 seconds"
+    },
+    {
+      "id": "nex-safe-boundary-step-recovery-blocks-unknown-completion",
+      "passed": true,
+      "crash": {
+        "message": {
+          "type": "effect-applied",
+          "attemptId": "a209e5f9-9cdd-4719-9989-b1299995aaae",
+          "result": {
+            "callId": "9fadce94-9f11-4146-b9b0-a4120d536852",
+            "effectId": "87ca98fd-7e22-4089-8042-474c282d6596",
+            "applied": true
+          }
+        },
+        "exit": {
+          "code": null,
+          "signal": "SIGKILL"
+        },
+        "stderr": "",
+        "stdout": ""
+      },
+      "recoveryMs": 30225,
+      "defaultLease": "30 seconds"
+    },
+    {
+      "id": "signal-before-waiter-is-dropped",
+      "passed": true,
+      "deliveryIds": []
+    },
+    {
+      "id": "signal-after-waiter-delivers",
+      "passed": true,
+      "deliveryIds": [
+        "fe566a82-487d-4ad0-882e-2448106fc4ce"
+      ]
+    },
+    {
+      "id": "durable-sleep",
+      "passed": true
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "name": "nex-086c-runtime-benchmark",
+  "version": "0.0.0-experimental",
+  "private": true,
+  "type": "module",
+  "description": "Isolated, disposable laboratory for NEX+ 0.86C durable-runtime evidence. Not production code.",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "lab:setup": "node scripts/setup.mjs",
+    "lab:cleanup": "node scripts/cleanup.mjs",
+    "test:own": "node scripts/run-own-runner.mjs",
+    "test:pgboss": "node scripts/run-pg-boss.mjs",
+    "test:graphile": "node scripts/run-graphile-worker.mjs",
+    "test:dbos": "node scripts/run-dbos.mjs",
+    "test:openworkflow": "node scripts/run-openworkflow.mjs",
+    "test:absurd": "node scripts/run-absurd.mjs",
+    "test:payload": "node scripts/run-payload.mjs",
+    "test:performance": "node scripts/run-own-performance.mjs",
+    "measure:footprint": "node scripts/measure-footprint.mjs",
+    "test:all": "node scripts/run-all.mjs",
+    "report": "node scripts/render-report.mjs"
+  },
+  "dependencies": {
+    "@dbos-inc/dbos-sdk": "4.27.6",
+    "absurd-sdk": "0.5.0",
+    "graphile-worker": "0.17.3",
+    "openworkflow": "0.9.2",
+    "pg": "8.20.0",
+    "pg-boss": "12.28.0",
+    "postgres": "^3.4.9"
+  }
+}

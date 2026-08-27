@@ -1,0 +1,29 @@
+{
+  "cleanedAt": "2026-08-27T03:02:27.104Z",
+  "removedDatabases": [
+    "nex086c_jobstore",
+    "nex086c_provider",
+    "nex086c_pgboss",
+    "nex086c_graphile",
+    "nex086c_dbos",
+    "nex086c_openworkflow",
+    "nex086c_absurd",
+    "nex086c_payload"
+  ],
+  "container": "nex086c-postgres",
+  "volume": "nex086c_pgdata",
+  "remaining": {
+    "container": {
+      "code": 1,
+      "signal": null,
+      "stdout": "",
+      "stderr": "error: no such object: nex086c-postgres"
+    },
+    "volume": {
+      "code": 1,
+      "signal": null,
+      "stdout": "",
+      "stderr": "Error response from daemon: get nex086c_pgdata: no such volume"
+    }
+  }
+}

@@ -1,0 +1,84 @@
+{
+  "completedAt": "2026-08-27T02:52:21.826Z",
+  "version": "3.88.0",
+  "candidateDatabase": "nex086c_payload",
+  "sourceAudit": {
+    "claimPath": "runJobs filters processing=false then updateJobs performs findMany followed by per-job upsert",
+    "leaseColumnsObserved": false,
+    "nativeCrashReaperObserved": false
+  },
+  "finalPayloadJobCount": 5,
+  "results": [
+    {
+      "id": "worker-kill-leaves-processing-job-stuck-after-restart",
+      "passed": true,
+      "crash": {
+        "message": {
+          "type": "effect-applied",
+          "result": {
+            "callId": "c505f80c-09a5-49db-a093-9b9fb54a9bf0",
+            "effectId": "e4907262-5c5f-4d0b-b065-a045172394e6",
+            "applied": true
+          }
+        },
+        "exit": {
+          "code": null,
+          "signal": "SIGKILL"
+        },
+        "stderr": "",
+        "stdout": "[23:51:57] \u001b[33mWARN\u001b[39m: \u001b[36mNo email adapter provided. Email will be written to console. More info at https://payloadcms.com/docs/email/overview.\u001b[39m\n"
+      },
+      "rawJobId": "1d83852b-dfaa-442f-bdb0-ec46a36fdbd4",
+      "payloadProcessing": true,
+      "restartRunResult": {
+        "noJobsRemaining": true,
+        "remainingJobsFromQueried": 0
+      }
+    },
+    {
+      "id": "nex-safe-boundary-manual-requeue-blocks-unknown-completion",
+      "passed": true,
+      "crash": {
+        "message": {
+          "type": "effect-applied",
+          "attemptId": "67e01ade-b711-445f-897a-6ec7f5c6a33f",
+          "result": {
+            "callId": "16bca67b-0f23-43fb-baed-08919c641b05",
+            "effectId": "f4ba084b-2add-4043-8137-4f7351769b06",
+            "applied": true
+          }
+        },
+        "exit": {
+          "code": null,
+          "signal": "SIGKILL"
+        },
+        "stderr": "",
+        "stdout": "[23:52:01] \u001b[33mWARN\u001b[39m: \u001b[36mNo email adapter provided. Email will be written to console. More info at https://payloadcms.com/docs/email/overview.\u001b[39m\n"
+      },
+      "payloadJobId": "2f79bc27-1adc-46e5-887b-b6fee715e750",
+      "recoveryQualification": "manual processing=false operator/reaper simulation; not native Payload recovery"
+    },
+    {
+      "id": "delayed-job",
+      "passed": true,
+      "payloadJobId": "40aa743b-8c42-4013-9175-cb556f4e101f"
+    },
+    {
+      "id": "cancel-before-execution",
+      "passed": true,
+      "payloadJobId": "97d9dfe9-dfcf-4aef-8731-243144e965b9"
+    },
+    {
+      "id": "multi-worker-race-5",
+      "passed": true,
+      "payloadJobId": "de472718-2e7c-41e1-808c-346a490e7258",
+      "workerCount": 5,
+      "providerCounts": {
+        "calls": 4,
+        "effects": 4
+      },
+      "duplicateObserved": true,
+      "qualification": "duplicate external mutation reproduced in this run"
+    }
+  ]
+}

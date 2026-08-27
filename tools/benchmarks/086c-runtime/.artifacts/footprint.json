@@ -1,0 +1,106 @@
+{
+  "measuredAt": "2026-08-27T02:53:23.952Z",
+  "scope": "PostgreSQL container snapshot after laboratory tests; not a host-wide RAM/CPU profiler.",
+  "databaseSizes": [
+    {
+      "database": "nex086c_jobstore",
+      "bytes": "8877759",
+      "pretty": "8670 kB"
+    },
+    {
+      "database": "nex086c_provider",
+      "bytes": "8140479",
+      "pretty": "7950 kB"
+    },
+    {
+      "database": "nex086c_pgboss",
+      "bytes": "8623807",
+      "pretty": "8422 kB"
+    },
+    {
+      "database": "nex086c_dbos",
+      "bytes": "8795839",
+      "pretty": "8590 kB"
+    },
+    {
+      "database": "nex086c_openworkflow",
+      "bytes": "8263359",
+      "pretty": "8070 kB"
+    },
+    {
+      "database": "nex086c_absurd",
+      "bytes": "8369855",
+      "pretty": "8174 kB"
+    },
+    {
+      "database": "nex086c_payload",
+      "bytes": "8812223",
+      "pretty": "8606 kB"
+    }
+  ],
+  "connections": [],
+  "databaseShapes": [
+    {
+      "database": "nex086c_jobstore",
+      "tables": 11,
+      "indexes": 21,
+      "schemas": [
+        "nex086c_graphile"
+      ]
+    },
+    {
+      "database": "nex086c_provider",
+      "tables": 3,
+      "indexes": 3,
+      "schemas": []
+    },
+    {
+      "database": "nex086c_pgboss",
+      "tables": 11,
+      "indexes": 25,
+      "schemas": [
+        "nex086c_pgboss"
+      ]
+    },
+    {
+      "database": "nex086c_dbos",
+      "tables": 12,
+      "indexes": 34,
+      "schemas": [
+        "nex086c_dbos"
+      ]
+    },
+    {
+      "database": "nex086c_openworkflow",
+      "tables": 4,
+      "indexes": 16,
+      "schemas": [
+        "nex086c_openworkflow"
+      ]
+    },
+    {
+      "database": "nex086c_absurd",
+      "tables": 6,
+      "indexes": 13,
+      "schemas": []
+    },
+    {
+      "database": "nex086c_payload",
+      "tables": 10,
+      "indexes": 43,
+      "schemas": []
+    }
+  ],
+  "topologyNotes": {
+    "graphileWorker": "The Graphile OSS harness uses schema nex086c_graphile inside nex086c_jobstore to prove same-PostgreSQL transactional enqueue.",
+    "absentCandidateDatabases": [
+      "nex086c_graphile"
+    ]
+  },
+  "dockerStats": {
+    "code": 0,
+    "signal": null,
+    "stdout": "{\"BlockIO\":\"73.7kB / 13.5MB\",\"CPUPerc\":\"0.05%\",\"Container\":\"nex086c-postgres\",\"ID\":\"965ec85b6c6f\",\"MemPerc\":\"0.39%\",\"MemUsage\":\"77.88MiB / 19.47GiB\",\"Name\":\"nex086c-postgres\",\"NetIO\":\"881kB / 695kB\",\"PIDs\":\"10\"}",
+    "stderr": ""
+  }
+}

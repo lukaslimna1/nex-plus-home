@@ -1,0 +1,65 @@
+{
+  "completedAt": "2026-08-27T02:51:44.295Z",
+  "version": "0.5.0",
+  "schemaVersion": "0.5.0",
+  "initializer": "official absurdctl bundled schema applied through node-postgres; absurdctl CLI requires unavailable host psql on Windows",
+  "results": [
+    {
+      "id": "raw-step-crash-recovery-repeats-non-idempotent-effect",
+      "passed": true,
+      "crash": {
+        "message": {
+          "type": "effect-applied",
+          "result": {
+            "callId": "3c668b15-c56c-4add-bae0-14949efc3ab1",
+            "effectId": "a1c369b2-bf3d-470c-8b82-df704b29f8d9",
+            "applied": true
+          }
+        },
+        "exit": {
+          "code": null,
+          "signal": "SIGKILL"
+        },
+        "stderr": "",
+        "stdout": ""
+      },
+      "recoveryMs": 1108,
+      "claimTimeoutSeconds": 1
+    },
+    {
+      "id": "nex-safe-boundary-step-recovery-blocks-unknown-completion",
+      "passed": true,
+      "crash": {
+        "message": {
+          "type": "effect-applied",
+          "attemptId": "0b64430f-e9cb-4595-9f61-25c7ab8ed6d4",
+          "result": {
+            "callId": "5535ff13-52ab-4756-abad-312092a72e76",
+            "effectId": "736179d9-de5c-486b-9cb4-84aa21570611",
+            "applied": true
+          }
+        },
+        "exit": {
+          "code": null,
+          "signal": "SIGKILL"
+        },
+        "stderr": "",
+        "stdout": ""
+      },
+      "recoveryMs": 1189,
+      "claimTimeoutSeconds": 1
+    },
+    {
+      "id": "event-before-waiter-is-persisted",
+      "passed": true
+    },
+    {
+      "id": "event-after-waiter-delivers",
+      "passed": true
+    },
+    {
+      "id": "durable-sleep",
+      "passed": true
+    }
+  ]
+}

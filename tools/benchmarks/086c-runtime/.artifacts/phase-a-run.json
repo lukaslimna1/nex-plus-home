@@ -1,0 +1,46 @@
+{
+  "completedAt": "2026-08-27T02:52:31.772Z",
+  "scope": "Correctness-first Phase A rerun; performance is intentionally a separate own-runner baseline.",
+  "runs": [
+    {
+      "script": "setup.mjs",
+      "passed": true,
+      "durationMs": 4438.7
+    },
+    {
+      "script": "run-own-runner.mjs",
+      "passed": true,
+      "durationMs": 4125.2
+    },
+    {
+      "script": "run-pg-boss.mjs",
+      "passed": true,
+      "durationMs": 10008.43
+    },
+    {
+      "script": "run-graphile-worker.mjs",
+      "passed": true,
+      "durationMs": 3979.72
+    },
+    {
+      "script": "run-dbos.mjs",
+      "passed": true,
+      "durationMs": 16941.4
+    },
+    {
+      "script": "run-openworkflow.mjs",
+      "passed": true,
+      "durationMs": 75298.68
+    },
+    {
+      "script": "run-absurd.mjs",
+      "passed": true,
+      "durationMs": 15559.22
+    },
+    {
+      "script": "run-payload.mjs",
+      "passed": true,
+      "durationMs": 37467.65
+    }
+  ]
+}

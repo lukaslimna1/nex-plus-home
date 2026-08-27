@@ -1,0 +1,75 @@
+{
+  "completedAt": "2026-08-27T02:50:06.474Z",
+  "version": "0.17.3",
+  "schema": "nex086c_graphile",
+  "results": [
+    {
+      "id": "transactional-add_job-rollback-same-postgres-transaction",
+      "passed": true
+    },
+    {
+      "id": "raw-engine-crash-redelivery-duplicates-non-idempotent-effect",
+      "passed": true,
+      "crash": {
+        "message": {
+          "type": "effect-applied",
+          "result": {
+            "callId": "95c43662-d2a3-40f2-b3ac-4d6b792099e8",
+            "effectId": "91da2184-9c22-4a5d-b3da-6d9102c91ae2",
+            "applied": true
+          }
+        },
+        "exit": {
+          "code": null,
+          "signal": "SIGKILL"
+        },
+        "stderr": "[core] WARNING: Executable file detection not yet supported on 'win32'.\n"
+      },
+      "observedLockedJob": {
+        "lockedAt": "2026-08-27T02:50:03.297Z",
+        "attempts": 1
+      },
+      "automaticRecoveryLockThreshold": "4 hours (hard-coded by OSS 0.17.3 reset query)",
+      "laboratoryRecovery": "locked_at deliberately aged past threshold"
+    },
+    {
+      "id": "nex-safe-boundary-crash-redelivery-blocks-unknown-completion",
+      "passed": true,
+      "crash": {
+        "message": {
+          "type": "effect-applied",
+          "attemptId": "5a63939a-c985-4ea4-bc13-53b322bc3d31",
+          "result": {
+            "callId": "28c9bb81-df0f-42b2-9ed6-e8b34d47922c",
+            "effectId": "91fc988f-6970-4730-ba8a-18f33c613e94",
+            "applied": true
+          }
+        },
+        "exit": {
+          "code": null,
+          "signal": "SIGKILL"
+        },
+        "stderr": "[core] WARNING: Executable file detection not yet supported on 'win32'.\n"
+      },
+      "observedLockedJob": {
+        "lockedAt": "2026-08-27T02:50:04.587Z",
+        "attempts": 1
+      },
+      "laboratoryRecovery": "locked_at deliberately aged past Graphile OSS 4-hour threshold"
+    },
+    {
+      "id": "multi-worker-duplicate-wake-2-nex-safe",
+      "passed": true,
+      "workers": 2,
+      "duplicateDeliveries": 2,
+      "outcomes": [
+        "in_flight_elsewhere",
+        "succeeded"
+      ]
+    },
+    {
+      "id": "delayed-job",
+      "passed": true
+    }
+  ]
+}

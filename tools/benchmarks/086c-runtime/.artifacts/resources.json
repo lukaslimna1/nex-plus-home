@@ -1,0 +1,25 @@
+{
+  "createdAt": "2026-08-27T02:49:48.371Z",
+  "container": "nex086c-postgres",
+  "volume": "nex086c_pgdata",
+  "image": "postgres:18.1-alpine",
+  "hostPort": 55432,
+  "databases": [
+    "nex086c_jobstore",
+    "nex086c_provider"
+  ],
+  "resources": {
+    "container": {
+      "code": 0,
+      "signal": null,
+      "stdout": "{\"Status\":\"running\",\"Running\":true,\"Paused\":false,\"Restarting\":false,\"OOMKilled\":false,\"Dead\":false,\"Pid\":17597,\"ExitCode\":0,\"Error\":\"\",\"StartedAt\":\"2026-08-27T02:49:45.077062772Z\",\"FinishedAt\":\"0001-01-01T00:00:00Z\"}",
+      "stderr": ""
+    },
+    "volume": {
+      "code": 0,
+      "signal": null,
+      "stdout": "{\"CreatedAt\":\"2026-08-27T02:49:44Z\",\"Driver\":\"local\",\"Labels\":null,\"Mountpoint\":\"/var/lib/docker/volumes/nex086c_pgdata/_data\",\"Name\":\"nex086c_pgdata\",\"Options\":null,\"Scope\":\"local\"}",
+      "stderr": ""
+    }
+  }
+}
