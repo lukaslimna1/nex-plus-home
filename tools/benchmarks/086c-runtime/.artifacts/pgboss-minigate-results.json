@@ -1,0 +1,582 @@
+{
+  "completedAt": "2026-08-27T04:02:55.984Z",
+  "verdict": "PG-BOSS SUBORDINADO PASSA MINI-GATE",
+  "version": "12.28.0",
+  "schemaVersion": 38,
+  "queue": "nex086c_minigate",
+  "candidateDatabase": "nex086c_pgboss",
+  "deliveryConfig": {
+    "expireInSeconds": 1,
+    "heartbeatSeconds": 10,
+    "retryLimit": 2,
+    "retryDelay": 0
+  },
+  "workerConfig": {
+    "pollingIntervalSeconds": 0.5,
+    "notifyPollingIntervalSeconds": 0.5,
+    "listenNotify": true,
+    "heartbeatRefreshSeconds": 2,
+    "localConcurrency": 1
+  },
+  "tests": [
+    {
+      "id": "t9-stale-worker-a-pgboss-redelivery-worker-b",
+      "jobId": "pgboss-minigate-t9-64e14f06-b09b-4668-b843-18cc92ed2e7e",
+      "deliveryId": "727ad4f7-8c23-4d82-bf74-cf66638a14dc",
+      "deliveryCreated": {
+        "pgboss": {
+          "id": "727ad4f7-8c23-4d82-bf74-cf66638a14dc",
+          "state": "created",
+          "retryCount": 0,
+          "retryLimit": 2,
+          "expireInSeconds": 1,
+          "heartbeatSeconds": 10,
+          "heartbeatOn": null,
+          "startedOn": null,
+          "completedOn": null
+        },
+        "nex": {
+          "job": {
+            "state": "queued",
+            "revision": 0,
+            "leaseOwner": null,
+            "leaseEpoch": 0,
+            "leaseUntil": null,
+            "attemptId": null,
+            "cancelRequested": false
+          },
+          "attempts": [],
+          "evidence": []
+        }
+      },
+      "beforeDispatch": {
+        "pgboss": {
+          "id": "727ad4f7-8c23-4d82-bf74-cf66638a14dc",
+          "state": "active",
+          "retryCount": 0,
+          "retryLimit": 2,
+          "expireInSeconds": 1,
+          "heartbeatSeconds": 10,
+          "heartbeatOn": "2026-08-27T04:02:51.384Z",
+          "startedOn": "2026-08-27T04:02:51.384Z",
+          "completedOn": null
+        },
+        "nex": {
+          "job": {
+            "state": "running",
+            "revision": 2,
+            "leaseOwner": "pgboss-minigate-stale-a-19524",
+            "leaseEpoch": 1,
+            "leaseUntil": "2026-08-27T04:02:51.603Z",
+            "attemptId": "f625f2e1-9a0f-494d-afce-c4a5f4966329",
+            "cancelRequested": false
+          },
+          "attempts": [
+            {
+              "id": "f625f2e1-9a0f-494d-afce-c4a5f4966329",
+              "state": "started"
+            }
+          ],
+          "evidence": []
+        }
+      },
+      "afterEffect": {
+        "pgboss": {
+          "id": "727ad4f7-8c23-4d82-bf74-cf66638a14dc",
+          "state": "active",
+          "retryCount": 0,
+          "retryLimit": 2,
+          "expireInSeconds": 1,
+          "heartbeatSeconds": 10,
+          "heartbeatOn": "2026-08-27T04:02:51.384Z",
+          "startedOn": "2026-08-27T04:02:51.384Z",
+          "completedOn": null
+        },
+        "nex": {
+          "job": {
+            "state": "running",
+            "revision": 2,
+            "leaseOwner": "pgboss-minigate-stale-a-19524",
+            "leaseEpoch": 1,
+            "leaseUntil": "2026-08-27T04:02:51.603Z",
+            "attemptId": "f625f2e1-9a0f-494d-afce-c4a5f4966329",
+            "cancelRequested": false
+          },
+          "attempts": [
+            {
+              "id": "f625f2e1-9a0f-494d-afce-c4a5f4966329",
+              "state": "started"
+            }
+          ],
+          "evidence": []
+        },
+        "providerCounts": {
+          "calls": 1,
+          "effects": 1
+        }
+      },
+      "beforeB": {
+        "pgboss": {
+          "id": "727ad4f7-8c23-4d82-bf74-cf66638a14dc",
+          "state": "retry",
+          "retryCount": 0,
+          "retryLimit": 2,
+          "expireInSeconds": 1,
+          "heartbeatSeconds": 10,
+          "heartbeatOn": null,
+          "startedOn": "2026-08-27T04:02:51.384Z",
+          "completedOn": null
+        },
+        "nex": {
+          "job": {
+            "state": "recovery_pending",
+            "revision": 4,
+            "leaseOwner": null,
+            "leaseEpoch": 1,
+            "leaseUntil": null,
+            "attemptId": "f625f2e1-9a0f-494d-afce-c4a5f4966329",
+            "cancelRequested": true
+          },
+          "attempts": [
+            {
+              "id": "f625f2e1-9a0f-494d-afce-c4a5f4966329",
+              "state": "started"
+            }
+          ],
+          "evidence": []
+        }
+      },
+      "pgbossRetry": {
+        "id": "727ad4f7-8c23-4d82-bf74-cf66638a14dc",
+        "state": "retry",
+        "retryCount": 0,
+        "retryLimit": 2,
+        "expireInSeconds": 1,
+        "heartbeatSeconds": 10,
+        "heartbeatOn": null,
+        "startedOn": "2026-08-27T04:02:51.384Z",
+        "completedOn": null
+      },
+      "duringB": {
+        "pgboss": {
+          "id": "727ad4f7-8c23-4d82-bf74-cf66638a14dc",
+          "state": "active",
+          "retryCount": 1,
+          "retryLimit": 2,
+          "expireInSeconds": 1,
+          "heartbeatSeconds": 10,
+          "heartbeatOn": "2026-08-27T04:02:52.975Z",
+          "startedOn": "2026-08-27T04:02:52.975Z",
+          "completedOn": null
+        },
+        "nex": {
+          "job": {
+            "state": "recovery_pending",
+            "revision": 4,
+            "leaseOwner": null,
+            "leaseEpoch": 1,
+            "leaseUntil": null,
+            "attemptId": "f625f2e1-9a0f-494d-afce-c4a5f4966329",
+            "cancelRequested": true
+          },
+          "attempts": [
+            {
+              "id": "f625f2e1-9a0f-494d-afce-c4a5f4966329",
+              "state": "started"
+            }
+          ],
+          "evidence": []
+        }
+      },
+      "afterB": {
+        "pgboss": {
+          "id": "727ad4f7-8c23-4d82-bf74-cf66638a14dc",
+          "state": "completed",
+          "retryCount": 1,
+          "retryLimit": 2,
+          "expireInSeconds": 1,
+          "heartbeatSeconds": 10,
+          "heartbeatOn": "2026-08-27T04:02:52.975Z",
+          "startedOn": "2026-08-27T04:02:52.975Z",
+          "completedOn": "2026-08-27T04:02:53.010Z"
+        },
+        "nex": {
+          "job": {
+            "state": "blocked_unknown",
+            "revision": 5,
+            "leaseOwner": null,
+            "leaseEpoch": 1,
+            "leaseUntil": null,
+            "attemptId": "f625f2e1-9a0f-494d-afce-c4a5f4966329",
+            "cancelRequested": true
+          },
+          "attempts": [
+            {
+              "id": "f625f2e1-9a0f-494d-afce-c4a5f4966329",
+              "state": "unknown_completion"
+            }
+          ],
+          "evidence": []
+        },
+        "providerCounts": {
+          "calls": 1,
+          "effects": 1
+        }
+      },
+      "final": {
+        "pgboss": {
+          "id": "727ad4f7-8c23-4d82-bf74-cf66638a14dc",
+          "state": "completed",
+          "retryCount": 1,
+          "retryLimit": 2,
+          "expireInSeconds": 1,
+          "heartbeatSeconds": 10,
+          "heartbeatOn": "2026-08-27T04:02:52.975Z",
+          "startedOn": "2026-08-27T04:02:52.975Z",
+          "completedOn": "2026-08-27T04:02:53.010Z"
+        },
+        "nex": {
+          "job": {
+            "state": "blocked_unknown",
+            "revision": 5,
+            "leaseOwner": null,
+            "leaseEpoch": 1,
+            "leaseUntil": null,
+            "attemptId": "f625f2e1-9a0f-494d-afce-c4a5f4966329",
+            "cancelRequested": true
+          },
+          "attempts": [
+            {
+              "id": "f625f2e1-9a0f-494d-afce-c4a5f4966329",
+              "state": "unknown_completion"
+            }
+          ],
+          "evidence": []
+        },
+        "providerCounts": {
+          "calls": 1,
+          "effects": 1
+        }
+      },
+      "staleWrite": {
+        "accepted": false,
+        "error": "fenced: worker no longer owns the current operational lease"
+      },
+      "cancelAfterDispatch": {
+        "state": "running",
+        "cancelRequested": true
+      },
+      "providerCounts": {
+        "calls": 1,
+        "effects": 1
+      },
+      "finalState": "blocked_unknown",
+      "passed": true
+    },
+    {
+      "jobId": "pgboss-minigate-t9-64e14f06-b09b-4668-b843-18cc92ed2e7e",
+      "pgboss": {
+        "id": "727ad4f7-8c23-4d82-bf74-cf66638a14dc",
+        "state": "completed",
+        "retryCount": 1,
+        "retryLimit": 2,
+        "expireInSeconds": 1,
+        "heartbeatSeconds": 10,
+        "heartbeatOn": "2026-08-27T04:02:52.975Z",
+        "startedOn": "2026-08-27T04:02:52.975Z",
+        "completedOn": "2026-08-27T04:02:53.010Z"
+      },
+      "nex": {
+        "job": {
+          "state": "blocked_unknown",
+          "revision": 5,
+          "leaseOwner": null,
+          "leaseEpoch": 1,
+          "leaseUntil": null,
+          "attemptId": "f625f2e1-9a0f-494d-afce-c4a5f4966329",
+          "cancelRequested": true
+        },
+        "attempts": [
+          {
+            "id": "f625f2e1-9a0f-494d-afce-c4a5f4966329",
+            "state": "unknown_completion"
+          }
+        ],
+        "evidence": []
+      },
+      "providerCounts": {
+        "calls": 1,
+        "effects": 1
+      },
+      "id": "cancel-after-dispatch-conservative-no-repeat",
+      "deliveryId": "727ad4f7-8c23-4d82-bf74-cf66638a14dc",
+      "derivedFrom": "t9-stale-worker-a-pgboss-redelivery-worker-b",
+      "cancelRequest": {
+        "state": "running",
+        "cancelRequested": true
+      },
+      "rule": "Cancellation does not imply that the already-issued provider effect did not happen; no automatic repeat is authorized.",
+      "finalState": "blocked_unknown",
+      "passed": true
+    },
+    {
+      "jobId": "pgboss-minigate-pre-9e1d442e-59a1-4d86-ab0c-ff670c98fd1f",
+      "pgboss": {
+        "id": "3b63da1e-89da-4eb3-adea-b1ceb6e445e5",
+        "state": "completed",
+        "retryCount": 0,
+        "retryLimit": 0,
+        "expireInSeconds": 1,
+        "heartbeatSeconds": 10,
+        "heartbeatOn": "2026-08-27T04:02:53.778Z",
+        "startedOn": "2026-08-27T04:02:53.778Z",
+        "completedOn": "2026-08-27T04:02:53.807Z"
+      },
+      "nex": {
+        "job": {
+          "state": "recovery_pending",
+          "revision": 3,
+          "leaseOwner": null,
+          "leaseEpoch": 1,
+          "leaseUntil": null,
+          "attemptId": "e9182d29-55bd-4983-b92d-b9b716a480b4",
+          "cancelRequested": false
+        },
+        "attempts": [
+          {
+            "id": "e9182d29-55bd-4983-b92d-b9b716a480b4",
+            "state": "started"
+          }
+        ],
+        "evidence": []
+      },
+      "providerCounts": {
+        "calls": 0,
+        "effects": 0
+      },
+      "id": "pre-dispatch-authority-loss-suppresses-provider",
+      "deliveryId": "3b63da1e-89da-4eb3-adea-b1ceb6e445e5",
+      "firstCheck": {
+        "state": "running",
+        "leaseOwner": "pgboss-minigate-pre-dispatch-7112",
+        "leaseEpoch": 1,
+        "leaseUntil": "2026-08-27T04:02:53.989Z",
+        "attemptId": null,
+        "cancelRequested": false
+      },
+      "finalCheck": {
+        "state": "recovery_pending",
+        "leaseOwner": null,
+        "leaseEpoch": 1,
+        "leaseUntil": null,
+        "attemptId": "e9182d29-55bd-4983-b92d-b9b716a480b4",
+        "cancelRequested": false
+      },
+      "raceQualification": "There is an inherent check-to-external-I/O race; the final NEX authority check suppresses dispatch when authority is already lost.",
+      "finalState": "recovery_pending",
+      "passed": true
+    },
+    {
+      "jobId": "pgboss-minigate-cancel-before-92bf707d-c83b-4120-b114-d15e0f4deada",
+      "pgboss": {
+        "id": "62c51816-d95c-43ac-af2f-db5dcee3da8f",
+        "state": "completed",
+        "retryCount": 0,
+        "retryLimit": 0,
+        "expireInSeconds": 1,
+        "heartbeatSeconds": 10,
+        "heartbeatOn": "2026-08-27T04:02:54.571Z",
+        "startedOn": "2026-08-27T04:02:54.571Z",
+        "completedOn": "2026-08-27T04:02:54.588Z"
+      },
+      "nex": {
+        "job": {
+          "state": "cancelled",
+          "revision": 1,
+          "leaseOwner": null,
+          "leaseEpoch": 0,
+          "leaseUntil": null,
+          "attemptId": null,
+          "cancelRequested": true
+        },
+        "attempts": [],
+        "evidence": []
+      },
+      "providerCounts": {
+        "calls": 0,
+        "effects": 0
+      },
+      "id": "cancel-before-dispatch-no-provider-effect",
+      "deliveryId": "62c51816-d95c-43ac-af2f-db5dcee3da8f",
+      "cancelCommit": {
+        "state": "cancelled",
+        "cancelRequested": true
+      },
+      "finalState": "cancelled",
+      "passed": true
+    },
+    {
+      "jobId": "pgboss-minigate-duplicate-485504c7-69ef-44e9-886f-8c5b463cfdfd",
+      "pgboss": [
+        {
+          "id": "ac4b9e28-7d2e-43aa-ac9a-a2f980f0ddff",
+          "state": "completed",
+          "retryCount": 0,
+          "retryLimit": 0,
+          "expireInSeconds": 1,
+          "heartbeatSeconds": 10,
+          "heartbeatOn": "2026-08-27T04:02:55.369Z",
+          "startedOn": "2026-08-27T04:02:55.369Z",
+          "completedOn": "2026-08-27T04:02:55.421Z"
+        },
+        {
+          "id": "cc215da9-b442-41df-8f96-47aed8e28b13",
+          "state": "completed",
+          "retryCount": 0,
+          "retryLimit": 0,
+          "expireInSeconds": 1,
+          "heartbeatSeconds": 10,
+          "heartbeatOn": "2026-08-27T04:02:55.369Z",
+          "startedOn": "2026-08-27T04:02:55.369Z",
+          "completedOn": "2026-08-27T04:02:55.391Z"
+        }
+      ],
+      "nex": {
+        "job": {
+          "state": "succeeded",
+          "revision": 3,
+          "leaseOwner": null,
+          "leaseEpoch": 1,
+          "leaseUntil": null,
+          "attemptId": "d203d078-9250-45a1-8130-a217b5e0e3f9",
+          "cancelRequested": false
+        },
+        "attempts": [
+          {
+            "id": "d203d078-9250-45a1-8130-a217b5e0e3f9",
+            "state": "succeeded"
+          }
+        ],
+        "evidence": [
+          {
+            "id": 1,
+            "attemptId": "d203d078-9250-45a1-8130-a217b5e0e3f9",
+            "providerCallId": "fd12d08c-f11c-43eb-9f31-20de8d9c1336"
+          }
+        ]
+      },
+      "providerCounts": {
+        "calls": 1,
+        "effects": 1
+      },
+      "id": "duplicate-delivery-one-nex-authority",
+      "deliveryIds": [
+        "ac4b9e28-7d2e-43aa-ac9a-a2f980f0ddff",
+        "cc215da9-b442-41df-8f96-47aed8e28b13"
+      ],
+      "outcomes": [
+        "succeeded",
+        "in_flight_elsewhere"
+      ],
+      "finalState": "succeeded",
+      "passed": true
+    }
+  ],
+  "authorityTable": [
+    {
+      "stage": "Delivery created",
+      "pgboss": "created",
+      "nexJob": "queued",
+      "nexAttempt": "none",
+      "worker": "none",
+      "leaseEpoch": 0,
+      "effectCount": 0
+    },
+    {
+      "stage": "A owns and passes first check",
+      "pgboss": "active",
+      "nexJob": "running",
+      "nexAttempt": "started",
+      "worker": "pgboss-minigate-stale-a-19524",
+      "leaseEpoch": 1,
+      "effectCount": 0
+    },
+    {
+      "stage": "A applied provider effect; Evidence held",
+      "pgboss": "active",
+      "nexJob": "running",
+      "nexAttempt": "started",
+      "worker": "pgboss-minigate-stale-a-19524",
+      "leaseEpoch": 1,
+      "effectCount": 1
+    },
+    {
+      "stage": "A authority expired; B is next",
+      "pgboss": "retry",
+      "nexJob": "recovery_pending",
+      "nexAttempt": "started",
+      "worker": "A stale / B not started",
+      "leaseEpoch": 1,
+      "effectCount": 1
+    },
+    {
+      "stage": "B redelivery rehydrates NEX",
+      "pgboss": "active",
+      "nexJob": "recovery_pending",
+      "nexAttempt": "started",
+      "worker": "B; A stale",
+      "leaseEpoch": 1,
+      "effectCount": 1
+    },
+    {
+      "stage": "B commits blocked_unknown before ack",
+      "pgboss": "completed",
+      "nexJob": "blocked_unknown",
+      "nexAttempt": "unknown_completion",
+      "worker": "B completed; A stale",
+      "leaseEpoch": 1,
+      "effectCount": 1
+    },
+    {
+      "stage": "A stale Evidence write rejected",
+      "pgboss": "completed",
+      "nexJob": "blocked_unknown",
+      "nexAttempt": "unknown_completion",
+      "worker": "A stale / B completed",
+      "leaseEpoch": 1,
+      "effectCount": 1
+    }
+  ],
+  "ackOrder": [
+    {
+      "event": "A handler begins",
+      "detail": "PG-BOSS delivery 727ad4f7-8c23-4d82-bf74-cf66638a14dc is active; NEX has lease_epoch=1."
+    },
+    {
+      "event": "A external effect",
+      "detail": "Provider count becomes calls=1/effects=1; NEX Evidence is intentionally not committed."
+    },
+    {
+      "event": "PG-BOSS retry/redelivery",
+      "detail": "The active delivery expires at 1s; observed state before B: retry."
+    },
+    {
+      "event": "B canonical decision",
+      "detail": "B rehydrates NEX, classifies blocked_unknown, and returns without a provider call."
+    },
+    {
+      "event": "B delivery completion",
+      "detail": "PG-BOSS reports completed; canonical NEX state is already blocked_unknown."
+    },
+    {
+      "event": "A late Evidence attempt",
+      "detail": "A's old lease_epoch=1 is rejected (fenced: worker no longer owns the current operational lease); Evidence count remains 0."
+    }
+  ],
+  "limitations": [
+    "This is an experimental spike only; it does not select the 0.86C-1 architecture and does not modify src/core/**, migrations, Notion, or main.",
+    "The provider fixture is an independent PostgreSQL database, so the external effect is deliberately outside the NEX JobStore transaction.",
+    "PG-BOSS expiration and NEX lease expiry are separate clocks. A real deployment must size and monitor both; PG-BOSS state is never treated as mutative authority.",
+    "The pre-dispatch test demonstrates the final-check suppression boundary, but no software can eliminate the inherent check-to-external-I/O race; only an external idempotency/commit protocol can change that fact."
+  ]
+}

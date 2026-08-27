@@ -12,6 +12,7 @@
     "lab:cleanup": "node scripts/cleanup.mjs",
     "test:own": "node scripts/run-own-runner.mjs",
     "test:pgboss": "node scripts/run-pg-boss.mjs",
+    "test:minigate:pgboss": "node scripts/run-pgboss-minigate.mjs",
     "test:graphile": "node scripts/run-graphile-worker.mjs",
     "test:dbos": "node scripts/run-dbos.mjs",
     "test:openworkflow": "node scripts/run-openworkflow.mjs",

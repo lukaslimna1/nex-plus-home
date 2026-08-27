@@ -24,3 +24,13 @@ npm run lab:cleanup
 ```
 
 `test:all` is intentionally correctness-first. It records raw-engine behavior separately from the NEX-safe boundary behavior. `test:performance` is an own-runner-only baseline, not a cross-runtime ranking. Generated raw results remain under `.artifacts/`; the reviewed synthesis is in [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md) and [SCORECARD.md](SCORECARD.md).
+
+The complementary PG-BOSS-only mini-gate is deliberately separate from the full benchmark:
+
+```powershell
+npm run lab:setup
+npm run test:minigate:pgboss
+npm run lab:cleanup
+```
+
+It validates subordinate delivery/heartbeat/retry behavior against the NEX-safe boundary for stale-worker, pre-dispatch, duplicate-delivery, and cancellation races. Its reviewed synthesis is [PG_BOSS_MINIGATE_REPORT.md](PG_BOSS_MINIGATE_REPORT.md); it is not a production implementation or an architecture selection.
