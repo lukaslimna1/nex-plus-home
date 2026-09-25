@@ -18,6 +18,7 @@ export const LAB = Object.freeze({
   providerDatabase: 'nex086c_provider',
   candidateDatabases: [
     'nex086c_pgboss',
+    'nex086c_pgboss_revalidation',
     'nex086c_graphile',
     'nex086c_dbos',
     'nex086c_openworkflow',

@@ -1,9 +1,10 @@
 {
-  "cleanedAt": "2026-08-27T03:02:27.104Z",
+  "cleanedAt": "2026-09-25T01:36:02.541Z",
   "removedDatabases": [
     "nex086c_jobstore",
     "nex086c_provider",
     "nex086c_pgboss",
+    "nex086c_pgboss_revalidation",
     "nex086c_graphile",
     "nex086c_dbos",
     "nex086c_openworkflow",

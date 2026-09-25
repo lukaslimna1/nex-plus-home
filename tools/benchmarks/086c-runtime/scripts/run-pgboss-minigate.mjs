@@ -208,7 +208,7 @@ function renderReport(result) {
     `This is a disposable, experimental spike under tools/benchmarks/086c-runtime. It does not implement 0.86C-1 or change src/core/**.\n\n` +
     `## Verdict\n\n${result.verdict}\n\n` +
     `## Scope and exact configuration\n\n` +
-    `- PG-BOSS: 12.28.0; schema: nex086c_pgboss; PostgreSQL: ${candidateDatabase}.\n` +
+    `- PG-BOSS: 12.34.0; schema: nex086c_pgboss; PostgreSQL: ${candidateDatabase}.\n` +
     `- queue: ${queue}; LISTEN/NOTIFY enabled; polling: ${workerConfig.pollingIntervalSeconds}s; notify polling: ${workerConfig.notifyPollingIntervalSeconds}s.\n` +
     `- delivery: expireInSeconds=${deliveryConfig.expireInSeconds}, heartbeatSeconds=${deliveryConfig.heartbeatSeconds}, retryLimit=${deliveryConfig.retryLimit}, retryDelay=${deliveryConfig.retryDelay}.\n` +
     `- worker: heartbeatRefreshSeconds=${workerConfig.heartbeatRefreshSeconds}, localConcurrency=${workerConfig.localConcurrency}.\n\n` +
@@ -245,7 +245,7 @@ try {
     deleteAfterSeconds: 3_600,
     notify: true,
   });
-  record(events, 'pgboss-started', { version: '12.28.0', queue, deliveryConfig, workerConfig });
+  record(events, 'pgboss-started', { version: '12.34.0', queue, deliveryConfig, workerConfig });
 
   // T9 main: A gets the delivery and NEX lease_epoch=1, applies the external
   // effect, then remains frozen while both authorities expire independently.
@@ -566,7 +566,7 @@ try {
   const result = {
     completedAt: new Date().toISOString(),
     verdict: 'PG-BOSS SUBORDINADO PASSA MINI-GATE',
-    version: '12.28.0',
+    version: '12.34.0',
     schemaVersion: await boss.schemaVersion(),
     queue,
     candidateDatabase,

@@ -8,7 +8,7 @@ PG-BOSS SUBORDINADO PASSA MINI-GATE
 
 ## Scope and exact configuration
 
-- PG-BOSS: 12.28.0; schema: nex086c_pgboss; PostgreSQL: nex086c_pgboss.
+- PG-BOSS: 12.34.0; schema: nex086c_pgboss; PostgreSQL: nex086c_pgboss.
 - queue: nex086c_minigate; LISTEN/NOTIFY enabled; polling: 0.5s; notify polling: 0.5s.
 - delivery: expireInSeconds=1, heartbeatSeconds=10, retryLimit=2, retryDelay=0.
 - worker: heartbeatRefreshSeconds=2, localConcurrency=1.
@@ -30,8 +30,8 @@ The redelivery trigger is the PG-BOSS active-delivery expiration. NEX's 200ms op
 | Stage | PG-BOSS state | NEX Job | NEX Attempt | Worker | lease_epoch | provider effects |
 |---|---|---|---|---|---:|---:|
 | Delivery created | created | queued | none | none | 0 | 0 |
-| A owns and passes first check | active | running | started | pgboss-minigate-stale-a-19524 | 1 | 0 |
-| A applied provider effect; Evidence held | active | running | started | pgboss-minigate-stale-a-19524 | 1 | 1 |
+| A owns and passes first check | active | running | started | pgboss-minigate-stale-a-31292 | 1 | 0 |
+| A applied provider effect; Evidence held | active | running | started | pgboss-minigate-stale-a-31292 | 1 | 1 |
 | A authority expired; B is next | retry | recovery_pending | started | A stale / B not started | 1 | 1 |
 | B redelivery rehydrates NEX | active | recovery_pending | started | B; A stale | 1 | 1 |
 | B commits blocked_unknown before ack | completed | blocked_unknown | unknown_completion | B completed; A stale | 1 | 1 |
@@ -39,7 +39,7 @@ The redelivery trigger is the PG-BOSS active-delivery expiration. NEX's 200ms op
 
 ## Ack and completion order
 
-1. **A handler begins** — PG-BOSS delivery 727ad4f7-8c23-4d82-bf74-cf66638a14dc is active; NEX has lease_epoch=1.
+1. **A handler begins** — PG-BOSS delivery 40ca98d3-0527-4838-a742-707d3eb355e3 is active; NEX has lease_epoch=1.
 2. **A external effect** — Provider count becomes calls=1/effects=1; NEX Evidence is intentionally not committed.
 3. **PG-BOSS retry/redelivery** — The active delivery expires at 1s; observed state before B: retry.
 4. **B canonical decision** — B rehydrates NEX, classifies blocked_unknown, and returns without a provider call.
