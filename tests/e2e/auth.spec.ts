@@ -343,4 +343,288 @@ test.describe('NEX+ Multiusuário · E2E Authentication Flow (0.8A Isolated Harn
       await expect(page.locator('text=Se existir uma conta associada')).toBeVisible();
     }
   });
+
+  test('E20-ContractA. Contrato A · Recuperação de senha com Sessões A e B ativas + Contexto C revoga todas as sessões, exige novo login e impede sessão automática prévia', async ({ browser }) => {
+    const payload = await getPayload({ config: configPromise });
+
+    // Criar usuário dedicado para E20 garantindo isolamento total contra o rate limiter do E19
+    const contractAEmail = `contract-a-${Date.now()}@nex-test.invalid`;
+    let currentContractAPassword = `ContractA_${crypto.randomBytes(16).toString('hex')}!Aa1`;
+    const contractADisplayName = 'Usuário Contrato A';
+
+    const userDocA = await payload.create({
+      collection: 'users',
+      data: {
+        email: contractAEmail,
+        password: currentContractAPassword,
+        displayName: contractADisplayName,
+      },
+    });
+    const contractAUserId = userDocA.id;
+
+    try {
+      // 1. Criar dois contextos isolados (Sessão A e Sessão B) e autenticar ambos
+      const contextA = await browser.newContext();
+      const contextB = await browser.newContext();
+      const pageA = await contextA.newPage();
+      const pageB = await contextB.newPage();
+
+      await pageA.goto('/login');
+      await pageA.fill('input#email', contractAEmail);
+      await pageA.fill('input#password', currentContractAPassword);
+      await pageA.click('button[type="submit"]');
+      await expect(pageA).toHaveURL(/\/home/);
+
+      const cookiesA = await contextA.cookies();
+      const authCookieA = cookiesA.find((c) => c.name === 'payload-token');
+      expect(authCookieA).toBeDefined();
+      const sessionIdA = authCookieA ? decodeJwt(authCookieA.value).sid : undefined;
+      expect(typeof sessionIdA).toBe('string');
+
+      await pageB.goto('/login');
+      await pageB.fill('input#email', contractAEmail);
+      await pageB.fill('input#password', currentContractAPassword);
+      await pageB.click('button[type="submit"]');
+      await expect(pageB).toHaveURL(/\/home/);
+
+      const cookiesB = await contextB.cookies();
+      const authCookieB = cookiesB.find((c) => c.name === 'payload-token');
+      expect(authCookieB).toBeDefined();
+      const sessionIdB = authCookieB ? decodeJwt(authCookieB.value).sid : undefined;
+      expect(typeof sessionIdB).toBe('string');
+      expect(sessionIdA).not.toBe(sessionIdB);
+
+      // 2. Terceiro contexto não autenticado (Contexto C) executa a recuperação de senha
+      const contextC = await browser.newContext();
+      const pageC = await contextC.newPage();
+
+      await pageC.goto('/forgot-password');
+      await pageC.fill('input#email', contractAEmail);
+      await pageC.click('button[type="submit"]');
+      await expect(pageC.locator('text=Solicitação Enviada')).toBeVisible();
+
+      // Obter token de reset de forma isolada e segura
+      const userInDb = await payload.findByID({
+        collection: 'users',
+        id: contractAUserId,
+        overrideAccess: true,
+        showHiddenFields: true,
+      });
+      const resetToken = (userInDb as any).resetPasswordToken;
+      expect(typeof resetToken).toBe('string');
+
+      // Executar redefinição no Contexto C
+      await pageC.goto(`/reset-password?token=${resetToken}`);
+      const newResetPassword = `Reset_${crypto.randomBytes(16).toString('hex')}!Aa1`;
+      await pageC.fill('input#password', newResetPassword);
+      await pageC.fill('input#confirmPassword', newResetPassword);
+      await pageC.click('button[type="submit"]');
+      await expect(pageC.locator('text=Senha Alterada')).toBeVisible();
+
+      // Prova Contrato A: Contexto C NÃO foi autenticado automaticamente (zero cookies)
+      const cookiesC = await contextC.cookies();
+      const authCookieC = cookiesC.find((c) => c.name === 'payload-token');
+      expect(authCookieC).toBeUndefined();
+
+      // Prova Contrato A: Estado final no servidor possui ZERO sessões ativas antes do login manual
+      const userAfterReset = await payload.findByID({
+        collection: 'users',
+        id: contractAUserId,
+        depth: 0,
+        overrideAccess: true,
+      });
+      const activeSessions = (userAfterReset.sessions || []) as Array<{ id?: string }>;
+      expect(activeSessions.length).toBe(0);
+
+      // Prova Contrato A: Sessão A e Sessão B tornaram-se inválidas
+      await pageA.reload();
+      await expect(pageA).toHaveURL(/\/login/);
+
+      await pageB.reload();
+      await expect(pageB).toHaveURL(/\/login/);
+
+      // Prova Contrato A: Tentativa de refresh com sessão revogada falha
+      const refreshResult = await pageB.request.post('/api/users/refresh-token');
+      expect(refreshResult.status()).not.toBe(200);
+
+      // Prova Contrato A: Cookies antigos de A e B são rejeitados pelo servidor
+      if (authCookieA) {
+        const contextVerifyA = await browser.newContext();
+        const pageVerifyA = await contextVerifyA.newPage();
+        await contextVerifyA.addCookies([authCookieA]);
+        await pageVerifyA.goto('/home');
+        await expect(pageVerifyA).toHaveURL(/\/login/);
+        await contextVerifyA.close();
+      }
+
+      if (authCookieB) {
+        const contextVerifyB = await browser.newContext();
+        const pageVerifyB = await contextVerifyB.newPage();
+        await contextVerifyB.addCookies([authCookieB]);
+        await pageVerifyB.goto('/home');
+        await expect(pageVerifyB).toHaveURL(/\/login/);
+        await contextVerifyB.close();
+      }
+
+      // Prova Contrato A: Token de reset é single-use (anti-reuso)
+      const attemptReusePassword = `Reuse_${crypto.randomBytes(8).toString('hex')}!Aa1`;
+      await pageC.goto(`/reset-password?token=${resetToken}`);
+      await pageC.fill('input#password', attemptReusePassword);
+      await pageC.fill('input#confirmPassword', attemptReusePassword);
+      await pageC.click('button[type="submit"]');
+      const reuseAlert = pageC.getByRole('alert').filter({ hasText: 'inválido ou já expirou' });
+      await expect(reuseAlert).toBeVisible();
+
+      // Prova Contrato A: Senha antiga falha no login
+      await pageA.goto('/login');
+      await pageA.fill('input#email', contractAEmail);
+      await pageA.fill('input#password', currentContractAPassword);
+      await pageA.click('button[type="submit"]');
+      const loginFailAlert = pageA.getByRole('alert').filter({ hasText: 'E-mail ou senha inválidos.' });
+      await expect(loginFailAlert).toBeVisible();
+
+      // Prova Contrato A: Nova senha autentica e cria nova sessão válida
+      await pageA.fill('input#password', newResetPassword);
+      await pageA.click('button[type="submit"]');
+      await expect(pageA).toHaveURL(/\/home/);
+      await expect(pageA.locator(`text=${contractADisplayName}`)).toBeVisible();
+
+      await contextA.close();
+      await contextB.close();
+      await contextC.close();
+    } finally {
+      await payload.delete({
+        collection: 'users',
+        id: contractAUserId,
+      }).catch(() => {});
+    }
+  });
+
+  test('E21-ContractB. Contrato B · Alteração autenticada de senha (API pública Payload): Sessão A permanece, Sessão B é revogada e futuros logins exigem nova senha', async ({ browser }) => {
+    const payload = await getPayload({ config: configPromise });
+
+    // Criar usuário dedicado para E21
+    const contractBEmail = `contract-b-${Date.now()}@nex-test.invalid`;
+    let currentContractBPassword = `ContractB_${crypto.randomBytes(16).toString('hex')}!Aa1`;
+    const contractBDisplayName = 'Usuário Contrato B';
+
+    const userDocB = await payload.create({
+      collection: 'users',
+      data: {
+        email: contractBEmail,
+        password: currentContractBPassword,
+        displayName: contractBDisplayName,
+      },
+    });
+    const contractBUserId = userDocB.id;
+
+    try {
+      // 1. Criar dois contextos isolados (Sessão A e Sessão B) com a senha atual
+      const contextA = await browser.newContext();
+      const contextB = await browser.newContext();
+      const pageA = await contextA.newPage();
+      const pageB = await contextB.newPage();
+
+      await pageA.goto('/login');
+      await pageA.fill('input#email', contractBEmail);
+      await pageA.fill('input#password', currentContractBPassword);
+      await pageA.click('button[type="submit"]');
+      await expect(pageA).toHaveURL(/\/home/);
+
+      const cookiesA = await contextA.cookies();
+      const authCookieA = cookiesA.find((c) => c.name === 'payload-token');
+      expect(authCookieA).toBeDefined();
+      const sessionIdA = authCookieA ? decodeJwt(authCookieA.value).sid : undefined;
+      expect(typeof sessionIdA).toBe('string');
+
+      await pageB.goto('/login');
+      await pageB.fill('input#email', contractBEmail);
+      await pageB.fill('input#password', currentContractBPassword);
+      await pageB.click('button[type="submit"]');
+      await expect(pageB).toHaveURL(/\/home/);
+
+      const cookiesB = await contextB.cookies();
+      const authCookieB = cookiesB.find((c) => c.name === 'payload-token');
+      expect(authCookieB).toBeDefined();
+      const sessionIdB = authCookieB ? decodeJwt(authCookieB.value).sid : undefined;
+      expect(typeof sessionIdB).toBe('string');
+      expect(sessionIdA).not.toBe(sessionIdB);
+
+      // 2. Autenticar usuário da Sessão A via API pública do Payload para obter o user autenticado
+      const authUserA = await payload.auth({
+        headers: new Headers({
+          cookie: `payload-token=${authCookieA?.value}`,
+          Origin: process.env.PAYLOAD_PUBLIC_SERVER_URL || 'http://127.0.0.1:3108',
+        }),
+      });
+      expect(authUserA.user).toBeDefined();
+      expect((authUserA.user as any)?._sid).toBe(sessionIdA);
+
+      // 3. Executar alteração de senha autenticada fornecendo o usuário autenticado da Sessão A
+      const newerPassword = `ContractB_${crypto.randomBytes(16).toString('hex')}!Aa1`;
+      await payload.update({
+        collection: 'users',
+        id: contractBUserId,
+        data: {
+          password: newerPassword,
+        },
+        user: authUserA.user,
+        overrideAccess: true,
+      });
+
+      // 4. Prova Contrato B no servidor: Sessão A continua ativa; Sessão B foi revogada
+      const userDocAfterUpdate = await payload.findByID({
+        collection: 'users',
+        id: contractBUserId,
+        depth: 0,
+        overrideAccess: true,
+      });
+      const activeSessionIds = ((userDocAfterUpdate.sessions || []) as Array<{ id?: string }>).map((s) => s.id);
+      expect(activeSessionIds.includes(sessionIdA as string)).toBe(true);
+      expect(activeSessionIds.includes(sessionIdB as string)).toBe(false);
+
+      // 5. Prova Contrato B: Dispositivo A continua perfeitamente autenticado e recarrega /home
+      await pageA.reload();
+      await expect(pageA).toHaveURL(/\/home/);
+      await expect(pageA.locator(`text=${contractBDisplayName}`)).toBeVisible();
+
+      // 6. Prova Contrato B: Dispositivo B foi revogado e é redirecionado para /login
+      await pageB.reload();
+      await expect(pageB).toHaveURL(/\/login/);
+
+      // 7. Prova Contrato B: Refresh token na Sessão B revogada falha
+      const refreshBResult = await pageB.request.post('/api/users/refresh-token');
+      expect(refreshBResult.status()).not.toBe(200);
+
+      // 8. Prova Contrato B: Cookie antigo de B não autentica em novo contexto
+      if (authCookieB) {
+        const contextVerifyB = await browser.newContext();
+        const pageVerifyB = await contextVerifyB.newPage();
+        await contextVerifyB.addCookies([authCookieB]);
+        await pageVerifyB.goto('/home');
+        await expect(pageVerifyB).toHaveURL(/\/login/);
+        await contextVerifyB.close();
+      }
+
+      // 9. Prova Contrato B: Nova senha é exigida para novos logins
+      await pageB.fill('input#email', contractBEmail);
+      await pageB.fill('input#password', currentContractBPassword);
+      await pageB.click('button[type="submit"]');
+      const alertFail = pageB.getByRole('alert').filter({ hasText: 'E-mail ou senha inválidos.' });
+      await expect(alertFail).toBeVisible();
+
+      await pageB.fill('input#password', newerPassword);
+      await pageB.click('button[type="submit"]');
+      await expect(pageB).toHaveURL(/\/home/);
+      await expect(pageB.locator(`text=${contractBDisplayName}`)).toBeVisible();
+
+      await contextA.close();
+      await contextB.close();
+    } finally {
+      await payload.delete({
+        collection: 'users',
+        id: contractBUserId,
+      }).catch(() => {});
+    }
+  });
 });

@@ -40,12 +40,11 @@ export const Users: CollectionConfig = {
         });
       },
     },
-    // Workaround deliberado para Payload 3.88.0:
-    // @payloadcms/next/auth login() depende de result.token para materializar o cookie HTTP-only.
-    // Quando removeTokenFromResponses é true na 3.88.0, o token é removido antes do helper Next criar o cookie.
-    // Omitir removeTokenFromResponses mantém o valor padrão (false) para que o cookie seja criado com sucesso.
-    // Nossa Server Action (src/auth/actions.ts) nunca repassa o token para o frontend.
-    // Revisar quando uma versão estável futura incorporar o fix upstream (commit b292343).
+    // Workaround preservado para Payload 3.90.2:
+    // O helper @payloadcms/next/auth na versão 3.90.2 aparentemente já materializa o cookie antes de remover result.token.
+    // Contudo, a remoção do workaround/hardening e habilitação de removeTokenFromResponses será avaliada em checkpoint separado.
+    // Esta rodada de manutenção de stack não mistura upgrade com simplificação de Auth; removeTokenFromResponses permanece false por padrão.
+    // Nossa Server Action (src/auth/actions.ts) continua nunca repassando o token para o frontend.
   },
   fields: [
     {

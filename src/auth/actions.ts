@@ -213,7 +213,7 @@ export async function resetPasswordAction(
 
   try {
     const payload = await getPayload({ config: configPromise });
-    await payload.resetPassword({
+    const resetResult = await payload.resetPassword({
       collection: 'users',
       data: {
         token,
@@ -221,6 +221,54 @@ export async function resetPasswordAction(
       },
       overrideAccess: true,
     });
+
+    const rawUserId = resetResult?.user?.id;
+    if (!rawUserId || typeof rawUserId === 'object') {
+      return {
+        success: false,
+        error: 'O link de recuperação é inválido ou já expirou. Solicite um novo link.',
+      };
+    }
+    const userId = String(rawUserId);
+
+    // Contrato A (Recuperação de Senha):
+    // No Payload 3.90.2, resetPassword invalida sessões anteriores, porém emite token e sessão automática.
+    // O NEX+ exige que nenhuma sessão automática permaneça utilizável e que o usuário realize novo login manual.
+    // Conforme documentado no Payload 3.90.2, um update de password via Local API sem usuário autenticado revoga todas as sessões.
+    await payload.update({
+      collection: 'users',
+      id: userId,
+      data: {
+        password,
+      },
+      overrideAccess: true,
+    });
+
+    // Verificação defensiva do estado final: garantir 0 sessões ativas
+    const verifiedUser = await payload.findByID({
+      collection: 'users',
+      id: userId,
+      depth: 0,
+      overrideAccess: true,
+    });
+
+    const remainingSessions = (verifiedUser.sessions || []) as Array<{ id?: string }>;
+    if (remainingSessions.length > 0) {
+      await payload.update({
+        collection: 'users',
+        id: userId,
+        data: {
+          sessions: [],
+        },
+        overrideAccess: true,
+      });
+    }
+
+    // Garantir que nenhum cookie de sessão seja mantido no contexto local
+    try {
+      const cookieStore = await cookies();
+      cookieStore.delete('payload-token');
+    } catch {}
 
     return {
       success: true,
@@ -269,7 +317,7 @@ export async function logoutAction(): Promise<LogoutActionResult> {
       });
       const latestSessions = (latestUser.sessions || []) as PayloadUserSession[];
 
-      // Payload upstream #16061 / PR #16165: logout leaves the current sid persisted.
+      // Payload upstream #16061 / PR #16165: logout leaves the current sid persisted (comportamento continua observado em 3.90.2).
       const sessionsWithoutCurrent = await removeCurrentSessionIfPersisted(latestSessions, currentSid);
       if (sessionsWithoutCurrent) {
         await payload.update({

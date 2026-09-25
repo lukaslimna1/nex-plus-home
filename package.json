@@ -25,12 +25,12 @@
     "test:context:server-boundary:positive": "node --conditions=react-server --import tsx --experimental-test-module-mocks --test src/core/context/__tests__/server-boundary.positive.test.ts"
   },
   "dependencies": {
-    "@payloadcms/db-postgres": "3.88.0",
-    "@payloadcms/next": "3.88.0",
+    "@payloadcms/db-postgres": "3.90.2",
+    "@payloadcms/next": "3.90.2",
     "@phosphor-icons/react": "2.1.10",
     "graphql": "16.14.2",
-    "next": "16.3.1",
-    "payload": "3.88.0",
+    "next": "16.3.6",
+    "payload": "3.90.2",
     "pg": "8.20.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
@@ -42,7 +42,7 @@
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
     "eslint": "9.39.5",
-    "eslint-config-next": "16.3.1",
+    "eslint-config-next": "16.3.6",
     "typescript": "6.0.3"
   },
   "overrides": {
