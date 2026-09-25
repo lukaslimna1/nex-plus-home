@@ -71,6 +71,9 @@ export async function executeAtomicPasswordReset(params: {
     // No Payload 3.90.2, resetPassword invalida sessões anteriores, porém emite token e sessão automática.
     // O NEX+ exige que nenhuma sessão automática permaneça utilizável e que o usuário realize novo login manual.
     // Conforme documentado no Payload 3.90.2, um update de password via Local API sem usuário autenticado revoga todas as sessões.
+    // Como resetPassword pode popular req.user, definimos explicitamente user = null para assegurar contexto não autenticado:
+    transactionalReq.user = null;
+
     // Executado sob a MESMA transação:
     await payload.update({
       collection: 'users',
