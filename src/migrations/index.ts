@@ -7,6 +7,7 @@ import * as migration_20260824_190000_session_operational_state from './20260824
 import * as migration_20260824_210000_input_record_and_ingress from './20260824_210000_input_record_and_ingress';
 import * as migration_20260825_030000_material_context_pin from './20260825_030000_material_context_pin';
 import * as migration_20260925_110223_stack_payload_3902_auth_security from './20260925_110223_stack_payload_3902_auth_security';
+import * as migration_20260925_200000_durable_execution_ledger from './20260925_200000_durable_execution_ledger';
 
 export const migrations = [
   {
@@ -52,6 +53,11 @@ export const migrations = [
   {
     up: migration_20260925_110223_stack_payload_3902_auth_security.up,
     down: migration_20260925_110223_stack_payload_3902_auth_security.down,
-    name: '20260925_110223_stack_payload_3902_auth_security'
+    name: '20260925_110223_stack_payload_3902_auth_security',
+  },
+  {
+    up: migration_20260925_200000_durable_execution_ledger.up,
+    down: migration_20260925_200000_durable_execution_ledger.down,
+    name: '20260925_200000_durable_execution_ledger',
   },
 ];

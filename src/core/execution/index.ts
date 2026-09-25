@@ -8,3 +8,4 @@ export * from './evidence';
 export * from './outcome';
 export * from './receipt';
 export * from './ledger';
+export * from './persistence';
