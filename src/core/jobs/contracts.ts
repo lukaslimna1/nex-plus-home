@@ -102,7 +102,7 @@ export interface JobState {
   // Linhagem causal de tentativas (AttemptId apenas)
   readonly attemptLineage: readonly AttemptId[];
 
-  // Estado contextual de espera (apenas quando status === 'waiting')
+  // Estado contextual de espera (presente quando status === 'waiting', ou 'paused' se a pausa suspendeu uma espera ainda não resolvida)
   readonly waitingCause?: JobWaitingCause;
 
   // Intenção de controle solicitada (pause requested != paused; cancel requested != cancelled)

@@ -11,6 +11,7 @@ import type {
   JobWaitingCause,
 } from './contracts';
 import type { AttemptId } from '../execution/contracts';
+import { isCanonicalUtcInstant } from '../context/invariants';
 
 // ============================================================================
 // 1. CÓDIGOS DE ERRO RECONHECÍVEIS & TESTÁVEIS
@@ -22,7 +23,8 @@ export type JobErrorCode =
   | 'JOB_DUPLICATE_ATTEMPT'
   | 'JOB_INVALID_WAITING_CAUSE'
   | 'JOB_INVALID_PROGRESS'
-  | 'JOB_CONTROL_OVERWRITE_FORBIDDEN'
+  | 'JOB_INVALID_TIMESTAMP'
+  | 'JOB_TEMPORAL_ORDER_VIOLATION'
   | 'JOB_ID_MISMATCH'
   | 'JOB_INVALID_PAYLOAD';
 
@@ -110,6 +112,53 @@ export function assertUniqueAttempt(
 }
 
 /**
+ * INV-JOB-TEMPORAL-01: Asserção de formato temporal ISO 8601 UTC estritamente terminado em 'Z'.
+ * Reutiliza o validador canônico compartilhado do Core (isCanonicalUtcInstant).
+ */
+export function assertCanonicalUtcInstant(
+  val: unknown,
+  fieldName: string,
+  jobId?: JobId,
+): asserts val is string {
+  if (!isCanonicalUtcInstant(val)) {
+    throw new JobLifecycleError({
+      code: 'JOB_INVALID_TIMESTAMP',
+      message: `[Job Lifecycle] Field '${fieldName}' must be a valid ISO 8601 UTC instant ending in 'Z'. Received: '${String(val)}'${jobId ? ` in Job '${jobId}'` : ''}.`,
+      jobId,
+    });
+  }
+}
+
+/**
+ * Converte timestamp canônico já validado para epoch milliseconds (determinístico, sem I/O ou clock atual).
+ */
+export function parseCanonicalUtcInstant(timestamp: string): number {
+  return new Date(timestamp).getTime();
+}
+
+/**
+ * INV-JOB-TEMPORAL-02: Asserção de ordem monotônica de timestamps já canônicos (laterTimestamp >= earlierTimestamp).
+ */
+export function assertMonotonicOrder(
+  earlierTimestamp: string,
+  laterTimestamp: string,
+  earlierFieldName: string,
+  laterFieldName: string,
+  jobId?: JobId,
+): void {
+  const earlierMs = parseCanonicalUtcInstant(earlierTimestamp);
+  const laterMs = parseCanonicalUtcInstant(laterTimestamp);
+
+  if (laterMs < earlierMs) {
+    throw new JobLifecycleError({
+      code: 'JOB_TEMPORAL_ORDER_VIOLATION',
+      message: `[Job Lifecycle] Temporal order violation: '${laterFieldName}' (${laterTimestamp}) cannot be earlier than '${earlierFieldName}' (${earlierTimestamp})${jobId ? ` in Job '${jobId}'` : ''}.`,
+      jobId,
+    });
+  }
+}
+
+/**
  * INV-JOB-04: Causa de waiting deve ser material, reconhecida e consistente.
  */
 export function assertValidWaitingCause(cause: JobWaitingCause, jobId: JobId): void {
@@ -137,27 +186,23 @@ export function assertValidWaitingCause(cause: JobWaitingCause, jobId: JobId): v
     });
   }
 
-  if (!cause.requestedAt || typeof cause.requestedAt !== 'string' || cause.requestedAt.trim().length === 0) {
-    throw new JobLifecycleError({
-      code: 'JOB_INVALID_WAITING_CAUSE',
-      message: `[Job Lifecycle] Waiting cause must have a valid requestedAt ISO timestamp in Job '${jobId}'.`,
-      jobId,
-    });
-  }
+  assertCanonicalUtcInstant(cause.requestedAt, 'waitingCause.requestedAt', jobId);
 
   if (cause.kind === 'temporal') {
-    if (!cause.resumeAfter || typeof cause.resumeAfter !== 'string' || cause.resumeAfter.trim().length === 0) {
-      throw new JobLifecycleError({
-        code: 'JOB_INVALID_WAITING_CAUSE',
-        message: `[Job Lifecycle] Temporal waiting cause must specify a valid resumeAfter timestamp in Job '${jobId}'.`,
-        jobId,
-      });
+    assertCanonicalUtcInstant(cause.resumeAfter, 'waitingCause.resumeAfter', jobId);
+    assertMonotonicOrder(cause.requestedAt, cause.resumeAfter, 'requestedAt', 'resumeAfter', jobId);
+  }
+
+  if (cause.kind === 'human') {
+    if (cause.deadline !== undefined) {
+      assertCanonicalUtcInstant(cause.deadline, 'waitingCause.deadline', jobId);
+      assertMonotonicOrder(cause.requestedAt, cause.deadline, 'requestedAt', 'deadline', jobId);
     }
   }
 }
 
 /**
- * INV-JOB-05: Progresso não pode ser negativo; se total definido, completed <= total.
+ * INV-JOB-05: Progresso não pode ser negativo; completed e total finitos; se total definido, completed <= total.
  */
 export function assertValidProgress(progress: JobProgress, jobId: JobId): void {
   if (!progress || typeof progress !== 'object') {
@@ -168,19 +213,27 @@ export function assertValidProgress(progress: JobProgress, jobId: JobId): void {
     });
   }
 
-  if (typeof progress.completed !== 'number' || isNaN(progress.completed) || progress.completed < 0) {
+  if (
+    typeof progress.completed !== 'number' ||
+    !Number.isFinite(progress.completed) ||
+    progress.completed < 0
+  ) {
     throw new JobLifecycleError({
       code: 'JOB_INVALID_PROGRESS',
-      message: `[Job Lifecycle] Progress completed must be a non-negative number in Job '${jobId}'. Received: ${progress.completed}`,
+      message: `[Job Lifecycle] Progress completed must be a non-negative finite number in Job '${jobId}'. Received: ${progress.completed}`,
       jobId,
     });
   }
 
   if (progress.total !== undefined) {
-    if (typeof progress.total !== 'number' || isNaN(progress.total) || progress.total < 0) {
+    if (
+      typeof progress.total !== 'number' ||
+      !Number.isFinite(progress.total) ||
+      progress.total < 0
+    ) {
       throw new JobLifecycleError({
         code: 'JOB_INVALID_PROGRESS',
-        message: `[Job Lifecycle] Progress total must be a non-negative number when specified in Job '${jobId}'. Received: ${progress.total}`,
+        message: `[Job Lifecycle] Progress total must be a non-negative finite number when specified in Job '${jobId}'. Received: ${progress.total}`,
         jobId,
       });
     }
@@ -194,11 +247,5 @@ export function assertValidProgress(progress: JobProgress, jobId: JobId): void {
     }
   }
 
-  if (!progress.updatedAt || typeof progress.updatedAt !== 'string' || progress.updatedAt.trim().length === 0) {
-    throw new JobLifecycleError({
-      code: 'JOB_INVALID_PROGRESS',
-      message: `[Job Lifecycle] Progress updatedAt must be a valid timestamp in Job '${jobId}'.`,
-      jobId,
-    });
-  }
+  assertCanonicalUtcInstant(progress.updatedAt, 'progress.updatedAt', jobId);
 }

@@ -883,4 +883,515 @@ describe('NEX+ · 0.86C-1 · Job Lifecycle Core', () => {
       assert.equal(s5.revision, 6);
     });
   });
+
+  // --------------------------------------------------------------------------
+  // GRUPO 10: L-01 · PROGRESS NÃO FINITO
+  // --------------------------------------------------------------------------
+  describe('10. L-01 · Validação de Finitude de Progresso', () => {
+    it('45. completed: Infinity é rejeitado com JOB_INVALID_PROGRESS', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobProgressUpdated',
+            jobId: TEST_JOB_ID,
+            progress: { completed: Infinity, updatedAt: T2 },
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PROGRESS',
+      );
+    });
+
+    it('46. completed: -Infinity é rejeitado com JOB_INVALID_PROGRESS', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobProgressUpdated',
+            jobId: TEST_JOB_ID,
+            progress: { completed: -Infinity, updatedAt: T2 },
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PROGRESS',
+      );
+    });
+
+    it('47. total: Infinity é rejeitado com JOB_INVALID_PROGRESS', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobProgressUpdated',
+            jobId: TEST_JOB_ID,
+            progress: { completed: 10, total: Infinity, updatedAt: T2 },
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PROGRESS',
+      );
+    });
+
+    it('48. total: -Infinity é rejeitado com JOB_INVALID_PROGRESS', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobProgressUpdated',
+            jobId: TEST_JOB_ID,
+            progress: { completed: 10, total: -Infinity, updatedAt: T2 },
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PROGRESS',
+      );
+    });
+
+    it('49. completed: Infinity e total: Infinity são rejeitados com JOB_INVALID_PROGRESS', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobProgressUpdated',
+            jobId: TEST_JOB_ID,
+            progress: { completed: Infinity, total: Infinity, updatedAt: T2 },
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PROGRESS',
+      );
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // GRUPO 11: L-02 · FORMATO TEMPORAL CANÔNICO (UTC 'Z')
+  // --------------------------------------------------------------------------
+  describe('11. L-02 · Validação de Formato Temporal Canônico (UTC "Z")', () => {
+    it('50. createdAt inválido é rejeitado com JOB_INVALID_TIMESTAMP', () => {
+      assert.throws(
+        () => createBaseJob({ createdAt: 'not-a-timestamp' }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_TIMESTAMP',
+      );
+
+      assert.throws(
+        () => createBaseJob({ createdAt: '2026-09-25T12:00:00+03:00' }), // offset não 'Z'
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_TIMESTAMP',
+      );
+    });
+
+    it('51. startedAt inválido é rejeitado com JOB_INVALID_TIMESTAMP', () => {
+      const job = createBaseJob();
+      assert.throws(
+        () => reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: 'bad' }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_TIMESTAMP',
+      );
+    });
+
+    it('52. progress.updatedAt inválido é rejeitado com JOB_INVALID_TIMESTAMP', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobProgressUpdated',
+            jobId: TEST_JOB_ID,
+            progress: { completed: 1, updatedAt: 'not-a-timestamp' },
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_TIMESTAMP',
+      );
+    });
+
+    it('53. waiting requestedAt inválido é rejeitado com JOB_INVALID_TIMESTAMP', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobWaiting',
+            jobId: TEST_JOB_ID,
+            cause: { kind: 'human', reasonCode: 'APPROVAL', requestedAt: 'invalid' },
+            transitionedAt: T2,
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_TIMESTAMP',
+      );
+    });
+
+    it('54. temporal waiting resumeAfter inválido é rejeitado com JOB_INVALID_TIMESTAMP', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobWaiting',
+            jobId: TEST_JOB_ID,
+            cause: { kind: 'temporal', reasonCode: 'BACKOFF', requestedAt: T2, resumeAfter: 'invalid-resume' },
+            transitionedAt: T2,
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_TIMESTAMP',
+      );
+    });
+
+    it('55. human waiting deadline inválido é rejeitado com JOB_INVALID_TIMESTAMP', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobWaiting',
+            jobId: TEST_JOB_ID,
+            cause: { kind: 'human', reasonCode: 'APPROVAL', requestedAt: T2, deadline: 'bad-deadline' },
+            transitionedAt: T2,
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_TIMESTAMP',
+      );
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // GRUPO 12: SEMÂNTICA TEMPORAL LOCAL & MONOTONICIDADE
+  // --------------------------------------------------------------------------
+  describe('12. Semântica Temporal Local & Monotonicidade', () => {
+    it('56. startedAt anterior a createdAt é rejeitado com JOB_TEMPORAL_ORDER_VIOLATION', () => {
+      const job = createBaseJob({ createdAt: T1 });
+      assert.throws(
+        () => reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T0 }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_TEMPORAL_ORDER_VIOLATION',
+      );
+    });
+
+    it('57. Evento posterior com timestamp anterior a state.updatedAt é rejeitado', () => {
+      const job = createBaseJob({ createdAt: T0 });
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T2 });
+      assert.equal(running.updatedAt, T2);
+
+      // Attempt com correlatedAt = T1 (< T2)
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobAttemptCorrelated',
+            jobId: TEST_JOB_ID,
+            attemptId: 'att_backwards' as AttemptId,
+            correlatedAt: T1,
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_TEMPORAL_ORDER_VIOLATION',
+      );
+    });
+
+    it('58. Progress com updatedAt anterior a state.updatedAt é rejeitado (progress regressivo)', () => {
+      const job = createBaseJob({ createdAt: T0 });
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T2 });
+
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobProgressUpdated',
+            jobId: TEST_JOB_ID,
+            progress: { completed: 5, updatedAt: T1 }, // T1 < T2
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_TEMPORAL_ORDER_VIOLATION',
+      );
+    });
+
+    it('59. temporal waiting com resumeAfter < requestedAt é rejeitado com JOB_TEMPORAL_ORDER_VIOLATION', () => {
+      const job = createBaseJob({ createdAt: T0 });
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobWaiting',
+            jobId: TEST_JOB_ID,
+            cause: { kind: 'temporal', reasonCode: 'BACKOFF', requestedAt: T3, resumeAfter: T2 },
+            transitionedAt: T3,
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_TEMPORAL_ORDER_VIOLATION',
+      );
+    });
+
+    it('60. human waiting com deadline < requestedAt é rejeitado com JOB_TEMPORAL_ORDER_VIOLATION', () => {
+      const job = createBaseJob({ createdAt: T0 });
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobWaiting',
+            jobId: TEST_JOB_ID,
+            cause: { kind: 'human', reasonCode: 'REVIEW', requestedAt: T3, deadline: T2 },
+            transitionedAt: T3,
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_TEMPORAL_ORDER_VIOLATION',
+      );
+    });
+
+    it('61. waiting requestedAt posterior ao transitionedAt é rejeitado com JOB_TEMPORAL_ORDER_VIOLATION', () => {
+      const job = createBaseJob({ createdAt: T0 });
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobWaiting',
+            jobId: TEST_JOB_ID,
+            cause: { kind: 'human', reasonCode: 'REVIEW', requestedAt: T3 },
+            transitionedAt: T2, // transitionedAt < requestedAt
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_TEMPORAL_ORDER_VIOLATION',
+      );
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // GRUPO 13: L-03 · WAITING PRESERVADO EM PAUSE / RESUME
+  // --------------------------------------------------------------------------
+  describe('13. L-03 · Waiting Preservado em Pause & Resume', () => {
+    it('62. human waiting → pause preserva waitingCause', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+      const waitingCause = {
+        kind: 'human' as const,
+        reasonCode: 'SUPERVISOR_ACTION',
+        description: 'Aguardando liberação de cota',
+        requestedAt: T2,
+        deadline: T5,
+      };
+
+      const waiting = reduceJob(running, {
+        type: 'JobWaiting',
+        jobId: TEST_JOB_ID,
+        cause: waitingCause,
+        transitionedAt: T2,
+      });
+
+      const paused = reduceJob(waiting, { type: 'JobPaused', jobId: TEST_JOB_ID, pausedAt: T3 });
+
+      assert.equal(paused.status, 'paused');
+      assert.deepEqual(paused.waitingCause, waitingCause);
+      assert.equal(paused.updatedAt, T3);
+    });
+
+    it('63. human waiting → pause → resume retorna para "waiting" preservando causa', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+      const waitingCause = {
+        kind: 'human' as const,
+        reasonCode: 'SUPERVISOR_ACTION',
+        requestedAt: T2,
+      };
+      const waiting = reduceJob(running, {
+        type: 'JobWaiting',
+        jobId: TEST_JOB_ID,
+        cause: waitingCause,
+        transitionedAt: T2,
+      });
+      const paused = reduceJob(waiting, { type: 'JobPaused', jobId: TEST_JOB_ID, pausedAt: T3 });
+
+      const resumed = reduceJob(paused, { type: 'JobResumed', jobId: TEST_JOB_ID, resumedAt: T4 });
+
+      assert.equal(resumed.status, 'waiting');
+      assert.deepEqual(resumed.waitingCause, waitingCause);
+      assert.equal(resumed.updatedAt, T4);
+    });
+
+    it('64. JobYieldedWaiting após resume de waiting resolve para "queued" e limpa waitingCause', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+      const waiting = reduceJob(running, {
+        type: 'JobWaiting',
+        jobId: TEST_JOB_ID,
+        cause: { kind: 'human', reasonCode: 'DATA_INPUT', requestedAt: T2 },
+        transitionedAt: T2,
+      });
+      const paused = reduceJob(waiting, { type: 'JobPaused', jobId: TEST_JOB_ID, pausedAt: T3 });
+      const resumed = reduceJob(paused, { type: 'JobResumed', jobId: TEST_JOB_ID, resumedAt: T4 });
+
+      // Agora resolução explícita da espera: JobYieldedWaiting
+      const queued = reduceJob(resumed, { type: 'JobYieldedWaiting', jobId: TEST_JOB_ID, resumedAt: T5 });
+
+      assert.equal(queued.status, 'queued');
+      assert.equal(queued.waitingCause, undefined);
+      assert.equal(queued.updatedAt, T5);
+    });
+
+    it('65. temporal waiting → pause preserva resumeAfter e causa temporal', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+      const temporalCause = {
+        kind: 'temporal' as const,
+        reasonCode: 'RATE_LIMIT_COOLDOWN',
+        resumeAfter: T5,
+        requestedAt: T2,
+      };
+      const waiting = reduceJob(running, {
+        type: 'JobWaiting',
+        jobId: TEST_JOB_ID,
+        cause: temporalCause,
+        transitionedAt: T2,
+      });
+
+      const paused = reduceJob(waiting, { type: 'JobPaused', jobId: TEST_JOB_ID, pausedAt: T3 });
+
+      assert.equal(paused.status, 'paused');
+      assert.equal(paused.waitingCause?.kind, 'temporal');
+      assert.equal((paused.waitingCause as any)?.resumeAfter, T5);
+    });
+
+    it('66. paused originado de running (sem waitingCause) continua resumindo para "queued"', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+      const paused = reduceJob(running, { type: 'JobPaused', jobId: TEST_JOB_ID, pausedAt: T2 });
+
+      assert.equal(paused.status, 'paused');
+      assert.equal(paused.waitingCause, undefined);
+
+      const resumed = reduceJob(paused, { type: 'JobResumed', jobId: TEST_JOB_ID, resumedAt: T3 });
+
+      assert.equal(resumed.status, 'queued');
+      assert.equal(resumed.waitingCause, undefined);
+      assert.equal(resumed.updatedAt, T3);
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // GRUPO 14: L-04 · DEFENSIVE BOUNDARY DE PAYLOADS ANINHADOS
+  // --------------------------------------------------------------------------
+  describe('14. L-04 · Hardening de Payloads Aninhados', () => {
+    it('67. Actor com propriedade extra/arbitrária é rejeitado com JOB_INVALID_PAYLOAD', () => {
+      assert.throws(
+        () =>
+          createBaseJob({
+            actor: {
+              kind: 'human',
+              humanId: 'user_01',
+              injectedField: 'malicious',
+            } as any,
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PAYLOAD',
+      );
+    });
+
+    it('68. Actor é reconstruído canonicamente e congelado (sem protótipos ou vazamentos)', () => {
+      const customActor: Actor = {
+        kind: 'human',
+        humanId: 'user_02',
+        role: 'reviewer',
+      };
+
+      const job = createBaseJob({ actor: customActor });
+
+      assert.equal(job.actor.kind, 'human');
+      assert.equal(job.actor.humanId, 'user_02');
+      assert.equal(job.actor.role, 'reviewer');
+      assert.equal(Object.isFrozen(job.actor), true);
+      // Garantir que é um objeto limpo sem propriedades espúrias
+      assert.deepEqual(Object.keys(job.actor).sort(), ['humanId', 'kind', 'role'].sort());
+    });
+
+    it('69. ContextSubjectRef com chave extra é rejeitado com JOB_INVALID_PAYLOAD', () => {
+      assert.throws(
+        () =>
+          createBaseJob({
+            contextSubjectRef: {
+              subjectType: 'brand' as any,
+              subjectId: 'brand_01' as any,
+              extraKey: 'leak_secret',
+            } as any,
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PAYLOAD',
+      );
+    });
+
+    it('70. ContextSubjectRef reconstruído explicitamente apenas com subjectType e subjectId', () => {
+      const job = createBaseJob({
+        contextSubjectRef: {
+          subjectType: 'user' as any,
+          subjectId: 'user_456' as any,
+        },
+      });
+
+      assert.equal(job.contextSubjectRef?.subjectType, 'user');
+      assert.equal(job.contextSubjectRef?.subjectId, 'user_456');
+      assert.equal(Object.isFrozen(job.contextSubjectRef), true);
+      assert.deepEqual(Object.keys(job.contextSubjectRef!), ['subjectType', 'subjectId']);
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // GRUPO 15: PRESERVAÇÃO DE CONTROL INTENT (Item 10)
+  // --------------------------------------------------------------------------
+  describe('15. Preservação de Control Intent em Transições Estruturais', () => {
+    it('71. cancel intent permanece preservado em transições estruturais do C1 (sem apagar silenciosamente)', () => {
+      const job = createBaseJob();
+
+      // Solicita cancelamento enquanto queued
+      const withCancel = reduceJob(job, {
+        type: 'JobControlRequested',
+        jobId: TEST_JOB_ID,
+        intent: 'cancel',
+        requestedAt: T1,
+      });
+      assert.equal(withCancel.status, 'queued');
+      assert.equal(withCancel.controlIntent, 'cancel');
+
+      // JobStarted ocorre (C1 não antecipa bloqueio de dispatch do C3/C4; preserva intent)
+      const running = reduceJob(withCancel, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T2 });
+      assert.equal(running.status, 'running');
+      assert.equal(running.controlIntent, 'cancel');
+
+      // Attempt correlated preserva cancel intent
+      const correlated = reduceJob(running, {
+        type: 'JobAttemptCorrelated',
+        jobId: TEST_JOB_ID,
+        attemptId: 'att_01' as AttemptId,
+        correlatedAt: T3,
+      });
+      assert.equal(correlated.controlIntent, 'cancel');
+
+      // JobWaiting preserva cancel intent
+      const waiting = reduceJob(correlated, {
+        type: 'JobWaiting',
+        jobId: TEST_JOB_ID,
+        cause: { kind: 'human', reasonCode: 'AWAIT', requestedAt: T4 },
+        transitionedAt: T4,
+      });
+      assert.equal(waiting.controlIntent, 'cancel');
+
+      // JobYieldedWaiting preserva cancel intent
+      const resumedToQueued = reduceJob(waiting, {
+        type: 'JobYieldedWaiting',
+        jobId: TEST_JOB_ID,
+        resumedAt: T5,
+      });
+      assert.equal(resumedToQueued.controlIntent, 'cancel');
+    });
+
+    it('72. cancelamento resolve a espera, limpa controlIntent e alcança estado terminal', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+      const waiting = reduceJob(running, {
+        type: 'JobWaiting',
+        jobId: TEST_JOB_ID,
+        cause: { kind: 'human', reasonCode: 'NEED_INPUT', requestedAt: T2 },
+        transitionedAt: T2,
+      });
+
+      // Cancelamento em waiting
+      const cancelled = reduceJob(waiting, {
+        type: 'JobCancelled',
+        jobId: TEST_JOB_ID,
+        finishedAt: T3,
+        reasonCode: 'USER_ABORTED',
+      });
+
+      assert.equal(cancelled.status, 'cancelled');
+      assert.equal(cancelled.waitingCause, undefined);
+      assert.equal(cancelled.controlIntent, undefined);
+      assert.equal(cancelled.updatedAt, T3);
+    });
+  });
 });

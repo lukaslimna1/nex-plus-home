@@ -12,11 +12,15 @@
 
 import type {
   JobId,
+  JobStatus,
   JobState,
   JobEvent,
   CreateJobParams,
   JobControlIntent,
 } from './contracts';
+
+import type { Actor } from '../observations/contracts';
+import type { ContextSubjectRef } from '../context/contracts';
 
 import {
   assertNotTerminal,
@@ -24,11 +28,59 @@ import {
   assertUniqueAttempt,
   assertValidWaitingCause,
   assertValidProgress,
+  assertCanonicalUtcInstant,
+  assertMonotonicOrder,
   JobLifecycleError,
 } from './invariants';
 
+import {
+  validateActor,
+  validateContextSubjectRef,
+} from '../context/invariants';
+
 // ============================================================================
-// 1. FACTORY DETERMINÍSTICA DE CRIAÇÃO (Novo Job -> 'queued')
+// 1. RECONSTRUÇÃO DEFENSIVA CANÔNICA DE PAYLOADS ANINHADOS
+// ============================================================================
+
+function sanitizeActor(actor: Actor): Actor {
+  switch (actor.kind) {
+    case 'human':
+      return Object.freeze({
+        kind: 'human',
+        humanId: actor.humanId,
+        ...(actor.role !== undefined ? { role: actor.role } : {}),
+        ...(actor.authorityRef !== undefined ? { authorityRef: actor.authorityRef } : {}),
+      });
+    case 'max':
+      return Object.freeze({
+        kind: 'max',
+        maxVersion: actor.maxVersion,
+        ...(actor.sessionRef !== undefined ? { sessionRef: actor.sessionRef } : {}),
+      });
+    case 'system':
+      return Object.freeze({
+        kind: 'system',
+        component: actor.component,
+        ...(actor.version !== undefined ? { version: actor.version } : {}),
+      });
+    case 'integration':
+      return Object.freeze({
+        kind: 'integration',
+        provider: actor.provider,
+        ...(actor.integrationId !== undefined ? { integrationId: actor.integrationId } : {}),
+      });
+  }
+}
+
+function sanitizeContextSubjectRef(ref: ContextSubjectRef): ContextSubjectRef {
+  return Object.freeze({
+    subjectType: ref.subjectType,
+    subjectId: ref.subjectId,
+  });
+}
+
+// ============================================================================
+// 2. FACTORY DETERMINÍSTICA DE CRIAÇÃO (Novo Job -> 'queued')
 // ============================================================================
 
 export function createJob(params: CreateJobParams): JobState {
@@ -47,23 +99,43 @@ export function createJob(params: CreateJobParams): JobState {
     });
   }
 
-  if (!params.createdAt || typeof params.createdAt !== 'string' || params.createdAt.trim().length === 0) {
+  try {
+    validateActor(params.actor);
+  } catch (err: any) {
     throw new JobLifecycleError({
       code: 'JOB_INVALID_PAYLOAD',
-      message: `[Job Lifecycle] createdAt timestamp is required to create Job '${params.jobId}'.`,
+      message: `[Job Lifecycle] Invalid Actor in Job '${params.jobId}': ${err?.message ?? String(err)}`,
       jobId: params.jobId,
     });
   }
+
+  const sanitizedActor = sanitizeActor(params.actor);
+
+  let sanitizedContextSubjectRef: ContextSubjectRef | undefined;
+  if (params.contextSubjectRef !== undefined) {
+    try {
+      validateContextSubjectRef(params.contextSubjectRef);
+    } catch (err: any) {
+      throw new JobLifecycleError({
+        code: 'JOB_INVALID_PAYLOAD',
+        message: `[Job Lifecycle] Invalid ContextSubjectRef in Job '${params.jobId}': ${err?.message ?? String(err)}`,
+        jobId: params.jobId,
+      });
+    }
+    sanitizedContextSubjectRef = sanitizeContextSubjectRef(params.contextSubjectRef);
+  }
+
+  assertCanonicalUtcInstant(params.createdAt, 'createdAt', params.jobId);
 
   return Object.freeze({
     jobId: params.jobId,
     status: 'queued',
     revision: 1,
 
-    actor: Object.freeze({ ...params.actor }),
+    actor: sanitizedActor,
     userId: params.userId,
     sessionRef: params.sessionRef,
-    contextSubjectRef: params.contextSubjectRef ? Object.freeze({ ...params.contextSubjectRef }) : undefined,
+    contextSubjectRef: sanitizedContextSubjectRef,
     correlationId: params.correlationId,
     materialContextPinId: params.materialContextPinId,
 
@@ -75,7 +147,7 @@ export function createJob(params: CreateJobParams): JobState {
 }
 
 // ============================================================================
-// 2. REDUCER DETERMINÍSTICO PURO DO LIFECYCLE
+// 3. REDUCER DETERMINÍSTICO PURO DO LIFECYCLE
 // ============================================================================
 
 export function reduceJob(state: JobState, event: JobEvent): JobState {
@@ -103,6 +175,9 @@ export function reduceJob(state: JobState, event: JobEvent): JobState {
           attemptedEvent: event.type,
         });
       }
+
+      assertCanonicalUtcInstant(event.startedAt, 'startedAt', state.jobId);
+      assertMonotonicOrder(state.updatedAt, event.startedAt, 'state.updatedAt', 'startedAt', state.jobId);
 
       let nextAttemptLineage = state.attemptLineage;
       if (event.attemptId) {
@@ -134,6 +209,9 @@ export function reduceJob(state: JobState, event: JobEvent): JobState {
         });
       }
 
+      assertCanonicalUtcInstant(event.correlatedAt, 'correlatedAt', state.jobId);
+      assertMonotonicOrder(state.updatedAt, event.correlatedAt, 'state.updatedAt', 'correlatedAt', state.jobId);
+
       assertUniqueAttempt(state.attemptLineage, event.attemptId, state.jobId);
       const nextAttemptLineage = Object.freeze([...state.attemptLineage, event.attemptId]);
 
@@ -160,7 +238,11 @@ export function reduceJob(state: JobState, event: JobEvent): JobState {
         });
       }
 
+      assertCanonicalUtcInstant(event.transitionedAt, 'transitionedAt', state.jobId);
+      assertMonotonicOrder(state.updatedAt, event.transitionedAt, 'state.updatedAt', 'transitionedAt', state.jobId);
+
       assertValidWaitingCause(event.cause, state.jobId);
+      assertMonotonicOrder(event.cause.requestedAt, event.transitionedAt, 'cause.requestedAt', 'transitionedAt', state.jobId);
 
       return Object.freeze({
         ...state,
@@ -186,6 +268,9 @@ export function reduceJob(state: JobState, event: JobEvent): JobState {
         });
       }
 
+      assertCanonicalUtcInstant(event.resumedAt, 'resumedAt', state.jobId);
+      assertMonotonicOrder(state.updatedAt, event.resumedAt, 'state.updatedAt', 'resumedAt', state.jobId);
+
       return Object.freeze({
         ...state,
         status: 'queued',
@@ -199,6 +284,9 @@ export function reduceJob(state: JobState, event: JobEvent): JobState {
     // E. JobControlRequested: solicita pause ou cancel (Controle != Estado)
     // ------------------------------------------------------------------------
     case 'JobControlRequested': {
+      assertCanonicalUtcInstant(event.requestedAt, 'requestedAt', state.jobId);
+      assertMonotonicOrder(state.updatedAt, event.requestedAt, 'state.updatedAt', 'requestedAt', state.jobId);
+
       // Regra de precedência: 'cancel' tem precedência absoluta sobre 'pause'.
       // Um pedido de pause nunca pode apagar ou substituir um pedido de cancelamento já ativo.
       let nextControlIntent: JobControlIntent;
@@ -244,21 +332,27 @@ export function reduceJob(state: JobState, event: JobEvent): JobState {
         });
       }
 
+      assertCanonicalUtcInstant(event.pausedAt, 'pausedAt', state.jobId);
+      assertMonotonicOrder(state.updatedAt, event.pausedAt, 'state.updatedAt', 'pausedAt', state.jobId);
+
       // Se a intenção era 'pause', ela foi efetivada e é resolvida. Se era 'cancel', permanece ativa.
       const nextControlIntent = state.controlIntent === 'pause' ? undefined : state.controlIntent;
+
+      // Preservar waitingCause se a pausa ocorreu durante espera (waiting)
+      const nextWaitingCause = state.status === 'waiting' ? state.waitingCause : undefined;
 
       return Object.freeze({
         ...state,
         status: 'paused',
         revision: nextRevision,
-        waitingCause: undefined,
+        waitingCause: nextWaitingCause,
         controlIntent: nextControlIntent,
         updatedAt: event.pausedAt,
       });
     }
 
     // ------------------------------------------------------------------------
-    // G. JobResumed: paused -> queued (retorno estrutural ao lifecycle elegível)
+    // G. JobResumed: paused -> queued | waiting (retorno estrutural ao lifecycle elegível)
     // ------------------------------------------------------------------------
     case 'JobResumed': {
       if (state.status !== 'paused') {
@@ -267,15 +361,23 @@ export function reduceJob(state: JobState, event: JobEvent): JobState {
           message: `[Job Lifecycle] Cannot resume Job '${state.jobId}' from status '${state.status}'. Expected 'paused'.`,
           jobId: state.jobId,
           currentStatus: state.status,
-          targetStatus: 'queued',
+          targetStatus: state.waitingCause ? 'waiting' : 'queued',
           attemptedEvent: event.type,
         });
       }
 
+      assertCanonicalUtcInstant(event.resumedAt, 'resumedAt', state.jobId);
+      assertMonotonicOrder(state.updatedAt, event.resumedAt, 'state.updatedAt', 'resumedAt', state.jobId);
+
+      // Se Job pausado possuía waitingCause pendente, volta estruturalmente para 'waiting' preservando a causa.
+      // Se não possuía, transiciona para 'queued'.
+      const nextStatus: JobStatus = state.waitingCause ? 'waiting' : 'queued';
+
       return Object.freeze({
         ...state,
-        status: 'queued',
+        status: nextStatus,
         revision: nextRevision,
+        waitingCause: state.waitingCause,
         updatedAt: event.resumedAt,
       });
     }
@@ -295,6 +397,7 @@ export function reduceJob(state: JobState, event: JobEvent): JobState {
       }
 
       assertValidProgress(event.progress, state.jobId);
+      assertMonotonicOrder(state.updatedAt, event.progress.updatedAt, 'state.updatedAt', 'progress.updatedAt', state.jobId);
 
       return Object.freeze({
         ...state,
@@ -318,6 +421,9 @@ export function reduceJob(state: JobState, event: JobEvent): JobState {
           attemptedEvent: event.type,
         });
       }
+
+      assertCanonicalUtcInstant(event.finishedAt, 'finishedAt', state.jobId);
+      assertMonotonicOrder(state.updatedAt, event.finishedAt, 'state.updatedAt', 'finishedAt', state.jobId);
 
       return Object.freeze({
         ...state,
@@ -346,6 +452,9 @@ export function reduceJob(state: JobState, event: JobEvent): JobState {
         });
       }
 
+      assertCanonicalUtcInstant(event.finishedAt, 'finishedAt', state.jobId);
+      assertMonotonicOrder(state.updatedAt, event.finishedAt, 'state.updatedAt', 'finishedAt', state.jobId);
+
       return Object.freeze({
         ...state,
         status: 'failed',
@@ -362,7 +471,11 @@ export function reduceJob(state: JobState, event: JobEvent): JobState {
     // K. JobCancelled: queued | running | waiting | paused -> cancelled (terminal)
     // ------------------------------------------------------------------------
     case 'JobCancelled': {
-      // Estado terminal cancelado é aceito a partir de qualquer estado não-terminal
+      assertCanonicalUtcInstant(event.finishedAt, 'finishedAt', state.jobId);
+      assertMonotonicOrder(state.updatedAt, event.finishedAt, 'state.updatedAt', 'finishedAt', state.jobId);
+
+      // Estado terminal cancelado é aceito a partir de qualquer estado não-terminal.
+      // Cancelamento resolve explicitamente a espera e limpa intenção de controle.
       return Object.freeze({
         ...state,
         status: 'cancelled',
