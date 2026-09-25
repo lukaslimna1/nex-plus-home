@@ -112,6 +112,40 @@ export function assertUniqueAttempt(
 }
 
 /**
+ * INV-JOB-SCALAR-01: Asserção de campo string escalar.
+ */
+export function assertStringField(
+  val: unknown,
+  fieldName: string,
+  jobId?: JobId,
+): asserts val is string {
+  if (typeof val !== 'string') {
+    throw new JobLifecycleError({
+      code: 'JOB_INVALID_PAYLOAD',
+      message: `[Job Lifecycle] Field '${fieldName}' must be a string${jobId ? ` in Job '${jobId}'` : ''}. Received: ${typeof val}`,
+      jobId,
+    });
+  }
+}
+
+/**
+ * INV-JOB-SCALAR-02: Asserção de campo string não-vazia escalar.
+ */
+export function assertNonEmptyStringField(
+  val: unknown,
+  fieldName: string,
+  jobId?: JobId,
+): asserts val is string {
+  if (typeof val !== 'string' || val.trim().length === 0) {
+    throw new JobLifecycleError({
+      code: 'JOB_INVALID_PAYLOAD',
+      message: `[Job Lifecycle] Field '${fieldName}' must be a non-empty string${jobId ? ` in Job '${jobId}'` : ''}.`,
+      jobId,
+    });
+  }
+}
+
+/**
  * INV-JOB-TEMPORAL-01: Asserção de formato temporal ISO 8601 UTC estritamente terminado em 'Z'.
  * Reutiliza o validador canônico compartilhado do Core (isCanonicalUtcInstant).
  */

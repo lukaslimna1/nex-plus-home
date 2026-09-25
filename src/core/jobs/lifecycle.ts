@@ -32,6 +32,8 @@ import {
   assertValidProgress,
   assertCanonicalUtcInstant,
   assertMonotonicOrder,
+  assertStringField,
+  assertNonEmptyStringField,
   JobLifecycleError,
 } from './invariants';
 
@@ -39,6 +41,9 @@ import {
   validateActor,
   validateContextSubjectRef,
 } from '../context/invariants';
+
+import { isValidSessionRef } from '../../auth/session-ref.types';
+import { validateMaterialContextPinId } from '../material-context/invariants';
 
 // ============================================================================
 // 1. RECONSTRUÇÃO DEFENSIVA CANÔNICA DE PAYLOADS ANINHADOS
@@ -115,12 +120,7 @@ function sanitizeProgress(progress: JobProgress): JobProgress {
 // ============================================================================
 
 export function createJob(params: CreateJobParams): JobState {
-  if (!params.jobId || typeof params.jobId !== 'string' || params.jobId.trim().length === 0) {
-    throw new JobLifecycleError({
-      code: 'JOB_INVALID_PAYLOAD',
-      message: '[Job Lifecycle] JobId must be a valid non-empty string.',
-    });
-  }
+  assertNonEmptyStringField(params.jobId, 'jobId');
 
   if (!params.actor || typeof params.actor !== 'object') {
     throw new JobLifecycleError({
@@ -154,6 +154,36 @@ export function createJob(params: CreateJobParams): JobState {
       });
     }
     sanitizedContextSubjectRef = sanitizeContextSubjectRef(params.contextSubjectRef);
+  }
+
+  if (params.userId !== undefined) {
+    assertNonEmptyStringField(params.userId, 'userId', params.jobId);
+  }
+
+  if (params.sessionRef !== undefined) {
+    if (!isValidSessionRef(params.sessionRef)) {
+      throw new JobLifecycleError({
+        code: 'JOB_INVALID_PAYLOAD',
+        message: `[Job Lifecycle] Field 'sessionRef' must be a valid SessionRef in Job '${params.jobId}'.`,
+        jobId: params.jobId,
+      });
+    }
+  }
+
+  if (params.correlationId !== undefined) {
+    assertNonEmptyStringField(params.correlationId, 'correlationId', params.jobId);
+  }
+
+  if (params.materialContextPinId !== undefined) {
+    try {
+      validateMaterialContextPinId(params.materialContextPinId);
+    } catch (err: any) {
+      throw new JobLifecycleError({
+        code: 'JOB_INVALID_PAYLOAD',
+        message: `[Job Lifecycle] Invalid materialContextPinId in Job '${params.jobId}': ${err?.message ?? String(err)}`,
+        jobId: params.jobId,
+      });
+    }
   }
 
   assertCanonicalUtcInstant(params.createdAt, 'createdAt', params.jobId);
@@ -211,7 +241,8 @@ export function reduceJob(state: JobState, event: JobEvent): JobState {
       assertMonotonicOrder(state.updatedAt, event.startedAt, 'state.updatedAt', 'startedAt', state.jobId);
 
       let nextAttemptLineage = state.attemptLineage;
-      if (event.attemptId) {
+      if (event.attemptId !== undefined) {
+        assertNonEmptyStringField(event.attemptId, 'attemptId', state.jobId);
         assertUniqueAttempt(state.attemptLineage, event.attemptId, state.jobId);
         nextAttemptLineage = Object.freeze([...state.attemptLineage, event.attemptId]);
       }
@@ -240,6 +271,7 @@ export function reduceJob(state: JobState, event: JobEvent): JobState {
         });
       }
 
+      assertNonEmptyStringField(event.attemptId, 'attemptId', state.jobId);
       assertCanonicalUtcInstant(event.correlatedAt, 'correlatedAt', state.jobId);
       assertMonotonicOrder(state.updatedAt, event.correlatedAt, 'state.updatedAt', 'correlatedAt', state.jobId);
 
@@ -453,6 +485,10 @@ export function reduceJob(state: JobState, event: JobEvent): JobState {
         });
       }
 
+      if (event.terminalReason !== undefined) {
+        assertStringField(event.terminalReason, 'terminalReason', state.jobId);
+      }
+
       assertCanonicalUtcInstant(event.finishedAt, 'finishedAt', state.jobId);
       assertMonotonicOrder(state.updatedAt, event.finishedAt, 'state.updatedAt', 'finishedAt', state.jobId);
 
@@ -483,6 +519,12 @@ export function reduceJob(state: JobState, event: JobEvent): JobState {
         });
       }
 
+      assertNonEmptyStringField(event.reasonCode, 'reasonCode', state.jobId);
+
+      if (event.terminalReason !== undefined) {
+        assertStringField(event.terminalReason, 'terminalReason', state.jobId);
+      }
+
       assertCanonicalUtcInstant(event.finishedAt, 'finishedAt', state.jobId);
       assertMonotonicOrder(state.updatedAt, event.finishedAt, 'state.updatedAt', 'finishedAt', state.jobId);
 
@@ -502,6 +544,14 @@ export function reduceJob(state: JobState, event: JobEvent): JobState {
     // K. JobCancelled: queued | running | waiting | paused -> cancelled (terminal)
     // ------------------------------------------------------------------------
     case 'JobCancelled': {
+      if (event.reasonCode !== undefined) {
+        assertNonEmptyStringField(event.reasonCode, 'reasonCode', state.jobId);
+      }
+
+      if (event.terminalReason !== undefined) {
+        assertStringField(event.terminalReason, 'terminalReason', state.jobId);
+      }
+
       assertCanonicalUtcInstant(event.finishedAt, 'finishedAt', state.jobId);
       assertMonotonicOrder(state.updatedAt, event.finishedAt, 'state.updatedAt', 'finishedAt', state.jobId);
 

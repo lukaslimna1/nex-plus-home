@@ -48,7 +48,7 @@ const TEST_ACTOR: Actor = {
   role: 'operator',
 };
 
-const TEST_SESSION_REF = 'sess_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' as SessionRef;
+const TEST_SESSION_REF = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' as SessionRef;
 const TEST_CORRELATION_ID = 'corr_test_01' as CorrelationId;
 const TEST_PIN_ID = 'pin_test_01' as MaterialContextPinId;
 const TEST_SUBJECT_REF: ContextSubjectRef = {
@@ -1638,6 +1638,276 @@ describe('NEX+ · 0.86C-1 · Job Lifecycle Core', () => {
       assert.equal(progressed.progress?.completed, 10);
       assert.equal(progressed.progress?.message, 'Step 1');
       assert.equal((progressed.progress as any).extraProperty, undefined);
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // GRUPO 17: MICROFIX L-05 · RUNTIME SCALAR GUARDS (PAYLOAD-SCALAR-01)
+  // --------------------------------------------------------------------------
+  describe('17. Microfix L-05 · Runtime Scalar Guards Adversariais', () => {
+    // ------------------------------------------------------------------------
+    // CreateJob: userId, sessionRef, correlationId, materialContextPinId
+    // ------------------------------------------------------------------------
+    it('83. CreateJob rejeita userId com objeto adversarial ({ secret: "x" }) com JOB_INVALID_PAYLOAD', () => {
+      assert.throws(
+        () => createBaseJob({ userId: { secret: 'x' } as any }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PAYLOAD',
+      );
+    });
+
+    it('84. CreateJob rejeita userId com string vazia ou whitespace com JOB_INVALID_PAYLOAD', () => {
+      assert.throws(
+        () => createBaseJob({ userId: '   ' as any }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PAYLOAD',
+      );
+    });
+
+    it('85. CreateJob rejeita sessionRef com objeto adversarial ({ secret: "x" }) com JOB_INVALID_PAYLOAD', () => {
+      assert.throws(
+        () => createBaseJob({ sessionRef: { secret: 'x' } as any }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PAYLOAD',
+      );
+    });
+
+    it('86. CreateJob rejeita sessionRef inválido (não-conforme regex 64 hex minúsculo) com JOB_INVALID_PAYLOAD', () => {
+      assert.throws(
+        () => createBaseJob({ sessionRef: 'not_a_valid_64_hex_session_ref' as any }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PAYLOAD',
+      );
+      assert.throws(
+        () => createBaseJob({ sessionRef: '' as any }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PAYLOAD',
+      );
+    });
+
+    it('87. CreateJob rejeita correlationId com objeto adversarial ({ secret: "x" }) com JOB_INVALID_PAYLOAD', () => {
+      assert.throws(
+        () => createBaseJob({ correlationId: { secret: 'x' } as any }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PAYLOAD',
+      );
+    });
+
+    it('88. CreateJob rejeita correlationId com string vazia ou whitespace com JOB_INVALID_PAYLOAD', () => {
+      assert.throws(
+        () => createBaseJob({ correlationId: '   ' as any }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PAYLOAD',
+      );
+    });
+
+    it('89. CreateJob rejeita materialContextPinId com objeto adversarial ({ secret: "x" }) com JOB_INVALID_PAYLOAD', () => {
+      assert.throws(
+        () => createBaseJob({ materialContextPinId: { secret: 'x' } as any }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PAYLOAD',
+      );
+    });
+
+    it('90. CreateJob rejeita materialContextPinId com string vazia ou whitespace com JOB_INVALID_PAYLOAD', () => {
+      assert.throws(
+        () => createBaseJob({ materialContextPinId: '   ' as any }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PAYLOAD',
+      );
+    });
+
+    // ------------------------------------------------------------------------
+    // Attempt: JobStarted e JobAttemptCorrelated
+    // ------------------------------------------------------------------------
+    it('91. JobStarted rejeita attemptId com objeto adversarial ({ secret: "x" }) e não insere na lineage', () => {
+      const job = createBaseJob();
+      assert.throws(
+        () =>
+          reduceJob(job, {
+            type: 'JobStarted',
+            jobId: TEST_JOB_ID,
+            startedAt: T1,
+            attemptId: { secret: 'x' } as any,
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PAYLOAD',
+      );
+      assert.equal(job.attemptLineage.length, 0);
+    });
+
+    it('92. JobStarted rejeita attemptId com string vazia ou whitespace e não insere na lineage', () => {
+      const job = createBaseJob();
+      assert.throws(
+        () =>
+          reduceJob(job, {
+            type: 'JobStarted',
+            jobId: TEST_JOB_ID,
+            startedAt: T1,
+            attemptId: '   ' as any,
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PAYLOAD',
+      );
+      assert.equal(job.attemptLineage.length, 0);
+    });
+
+    it('93. JobAttemptCorrelated rejeita attemptId com objeto adversarial ({ secret: "x" }) com JOB_INVALID_PAYLOAD', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobAttemptCorrelated',
+            jobId: TEST_JOB_ID,
+            attemptId: { secret: 'x' } as any,
+            correlatedAt: T2,
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PAYLOAD',
+      );
+      assert.equal(running.attemptLineage.length, 0);
+    });
+
+    it('94. JobAttemptCorrelated rejeita attemptId com string vazia ou whitespace com JOB_INVALID_PAYLOAD', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobAttemptCorrelated',
+            jobId: TEST_JOB_ID,
+            attemptId: '   ' as any,
+            correlatedAt: T2,
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PAYLOAD',
+      );
+      assert.equal(running.attemptLineage.length, 0);
+    });
+
+    // ------------------------------------------------------------------------
+    // Terminal: JobSucceeded, JobFailed, JobCancelled
+    // ------------------------------------------------------------------------
+    it('95. JobSucceeded rejeita terminalReason com objeto adversarial ({ secret: "x" }) com JOB_INVALID_PAYLOAD', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobSucceeded',
+            jobId: TEST_JOB_ID,
+            finishedAt: T2,
+            terminalReason: { secret: 'x' } as any,
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PAYLOAD',
+      );
+    });
+
+    it('96. JobFailed rejeita reasonCode com objeto adversarial ({ secret: "x" }) ou vazio com JOB_INVALID_PAYLOAD', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobFailed',
+            jobId: TEST_JOB_ID,
+            finishedAt: T2,
+            reasonCode: { secret: 'x' } as any,
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PAYLOAD',
+      );
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobFailed',
+            jobId: TEST_JOB_ID,
+            finishedAt: T2,
+            reasonCode: '   ',
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PAYLOAD',
+      );
+    });
+
+    it('97. JobFailed rejeita terminalReason com objeto adversarial ({ secret: "x" }) com JOB_INVALID_PAYLOAD', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobFailed',
+            jobId: TEST_JOB_ID,
+            finishedAt: T2,
+            reasonCode: 'ERR_FAIL',
+            terminalReason: { secret: 'x' } as any,
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PAYLOAD',
+      );
+    });
+
+    it('98. JobCancelled rejeita reasonCode com objeto adversarial ({ secret: "x" }) ou vazio com JOB_INVALID_PAYLOAD', () => {
+      const job = createBaseJob();
+      assert.throws(
+        () =>
+          reduceJob(job, {
+            type: 'JobCancelled',
+            jobId: TEST_JOB_ID,
+            finishedAt: T1,
+            reasonCode: { secret: 'x' } as any,
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PAYLOAD',
+      );
+      assert.throws(
+        () =>
+          reduceJob(job, {
+            type: 'JobCancelled',
+            jobId: TEST_JOB_ID,
+            finishedAt: T1,
+            reasonCode: '   ',
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PAYLOAD',
+      );
+    });
+
+    it('99. JobCancelled rejeita terminalReason com objeto adversarial ({ secret: "x" }) com JOB_INVALID_PAYLOAD', () => {
+      const job = createBaseJob();
+      assert.throws(
+        () =>
+          reduceJob(job, {
+            type: 'JobCancelled',
+            jobId: TEST_JOB_ID,
+            finishedAt: T1,
+            terminalReason: { secret: 'x' } as any,
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PAYLOAD',
+      );
+    });
+
+    it('100. Valores escalares primitivos válidos continuam sendo aceitos e preservados no JobState', () => {
+      const job = createBaseJob({
+        userId: 'usr_valid_123',
+        sessionRef: TEST_SESSION_REF,
+        correlationId: TEST_CORRELATION_ID,
+        materialContextPinId: TEST_PIN_ID,
+      });
+
+      assert.equal(job.userId, 'usr_valid_123');
+      assert.equal(job.sessionRef, TEST_SESSION_REF);
+      assert.equal(job.correlationId, TEST_CORRELATION_ID);
+      assert.equal(job.materialContextPinId, TEST_PIN_ID);
+
+      const running = reduceJob(job, {
+        type: 'JobStarted',
+        jobId: TEST_JOB_ID,
+        startedAt: T1,
+        attemptId: 'att_01' as AttemptId,
+      });
+      assert.deepEqual(running.attemptLineage, ['att_01']);
+
+      const correlated = reduceJob(running, {
+        type: 'JobAttemptCorrelated',
+        jobId: TEST_JOB_ID,
+        attemptId: 'att_02' as AttemptId,
+        correlatedAt: T2,
+      });
+      assert.deepEqual(running.attemptLineage, ['att_01']);
+      assert.deepEqual(correlated.attemptLineage, ['att_01', 'att_02']);
+
+      const succeeded = reduceJob(correlated, {
+        type: 'JobSucceeded',
+        jobId: TEST_JOB_ID,
+        finishedAt: T3,
+        terminalReason: 'Processed completely',
+      });
+      assert.equal(succeeded.status, 'succeeded');
+      assert.equal(succeeded.terminalReason, 'Processed completely');
     });
   });
 });
