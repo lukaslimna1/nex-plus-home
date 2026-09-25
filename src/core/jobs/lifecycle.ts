@@ -17,6 +17,8 @@ import type {
   JobEvent,
   CreateJobParams,
   JobControlIntent,
+  JobWaitingCause,
+  JobProgress,
 } from './contracts';
 
 import type { Actor } from '../observations/contracts';
@@ -76,6 +78,35 @@ function sanitizeContextSubjectRef(ref: ContextSubjectRef): ContextSubjectRef {
   return Object.freeze({
     subjectType: ref.subjectType,
     subjectId: ref.subjectId,
+  });
+}
+
+function sanitizeWaitingCause(cause: JobWaitingCause): JobWaitingCause {
+  if (cause.kind === 'human') {
+    return Object.freeze({
+      kind: 'human',
+      reasonCode: cause.reasonCode,
+      ...(cause.description !== undefined ? { description: cause.description } : {}),
+      requestedAt: cause.requestedAt,
+      ...(cause.deadline !== undefined ? { deadline: cause.deadline } : {}),
+    });
+  }
+
+  return Object.freeze({
+    kind: 'temporal',
+    reasonCode: cause.reasonCode,
+    resumeAfter: cause.resumeAfter,
+    requestedAt: cause.requestedAt,
+  });
+}
+
+function sanitizeProgress(progress: JobProgress): JobProgress {
+  return Object.freeze({
+    completed: progress.completed,
+    ...(progress.total !== undefined ? { total: progress.total } : {}),
+    ...(progress.unit !== undefined ? { unit: progress.unit } : {}),
+    ...(progress.message !== undefined ? { message: progress.message } : {}),
+    updatedAt: progress.updatedAt,
   });
 }
 
@@ -248,7 +279,7 @@ export function reduceJob(state: JobState, event: JobEvent): JobState {
         ...state,
         status: 'waiting',
         revision: nextRevision,
-        waitingCause: Object.freeze({ ...event.cause }),
+        waitingCause: sanitizeWaitingCause(event.cause),
         updatedAt: event.transitionedAt,
       });
     }
@@ -402,7 +433,7 @@ export function reduceJob(state: JobState, event: JobEvent): JobState {
       return Object.freeze({
         ...state,
         revision: nextRevision,
-        progress: Object.freeze({ ...event.progress }),
+        progress: sanitizeProgress(event.progress),
         updatedAt: event.progress.updatedAt,
       });
     }

@@ -1394,4 +1394,250 @@ describe('NEX+ · 0.86C-1 · Job Lifecycle Core', () => {
       assert.equal(cancelled.updatedAt, T3);
     });
   });
+
+  // --------------------------------------------------------------------------
+  // GRUPO 16: MICROFIX FINAL L-04 · RUNTIME ALLOWLIST & RECONSTRUÇÃO CANÔNICA
+  // --------------------------------------------------------------------------
+  describe('16. Microfix Final L-04 · Runtime Allowlist & Reconstrução Canônica', () => {
+    it('73. HumanWaitingCause com propriedade extra (ex: secret) é rejeitado com JOB_INVALID_WAITING_CAUSE', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobWaiting',
+            jobId: TEST_JOB_ID,
+            cause: {
+              kind: 'human',
+              reasonCode: 'SUPERVISOR_REVIEW',
+              requestedAt: T2,
+              secret: 'x',
+            } as any,
+            transitionedAt: T2,
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_WAITING_CAUSE',
+      );
+    });
+
+    it('74. HumanWaitingCause com description inválida (não-string) é rejeitado com JOB_INVALID_WAITING_CAUSE', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobWaiting',
+            jobId: TEST_JOB_ID,
+            cause: {
+              kind: 'human',
+              reasonCode: 'SUPERVISOR_REVIEW',
+              requestedAt: T2,
+              description: { secret: 'x' } as any,
+            },
+            transitionedAt: T2,
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_WAITING_CAUSE',
+      );
+    });
+
+    it('75. HumanWaitingCause válido é reconstruído canonicamente contendo apenas chaves permitidas', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+
+      const waiting = reduceJob(running, {
+        type: 'JobWaiting',
+        jobId: TEST_JOB_ID,
+        cause: {
+          kind: 'human',
+          reasonCode: 'APPROVAL',
+          description: 'Aprovacao pendente',
+          requestedAt: T2,
+          deadline: T3,
+        },
+        transitionedAt: T2,
+      });
+
+      assert.equal(waiting.status, 'waiting');
+      assert.deepEqual(Object.keys(waiting.waitingCause!).sort(), ['deadline', 'description', 'kind', 'reasonCode', 'requestedAt'].sort());
+      assert.equal(Object.isFrozen(waiting.waitingCause), true);
+    });
+
+    it('76. TemporalWaitingCause com chave extra é rejeitado com JOB_INVALID_WAITING_CAUSE', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobWaiting',
+            jobId: TEST_JOB_ID,
+            cause: {
+              kind: 'temporal',
+              reasonCode: 'RATE_LIMIT',
+              requestedAt: T2,
+              resumeAfter: T3,
+              leakData: 'secret_leak',
+            } as any,
+            transitionedAt: T2,
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_WAITING_CAUSE',
+      );
+    });
+
+    it('77. TemporalWaitingCause é reconstruído contendo exclusivamente kind, reasonCode, requestedAt, resumeAfter', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+
+      const waiting = reduceJob(running, {
+        type: 'JobWaiting',
+        jobId: TEST_JOB_ID,
+        cause: {
+          kind: 'temporal',
+          reasonCode: 'RATE_LIMIT',
+          requestedAt: T2,
+          resumeAfter: T3,
+        },
+        transitionedAt: T2,
+      });
+
+      assert.equal(waiting.status, 'waiting');
+      assert.deepEqual(Object.keys(waiting.waitingCause!).sort(), ['kind', 'reasonCode', 'requestedAt', 'resumeAfter'].sort());
+      assert.equal(Object.isFrozen(waiting.waitingCause), true);
+    });
+
+    it('78. JobProgress com chave extra (ex: secret) é rejeitado com JOB_INVALID_PROGRESS', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobProgressUpdated',
+            jobId: TEST_JOB_ID,
+            progress: {
+              completed: 10,
+              updatedAt: T2,
+              secret: 'x',
+            } as any,
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PROGRESS',
+      );
+    });
+
+    it('79. JobProgress com unit inválida (não-string) é rejeitado com JOB_INVALID_PROGRESS', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobProgressUpdated',
+            jobId: TEST_JOB_ID,
+            progress: {
+              completed: 10,
+              updatedAt: T2,
+              unit: { secret: 'x' } as any,
+            },
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PROGRESS',
+      );
+    });
+
+    it('80. JobProgress com message inválida (não-string) é rejeitado com JOB_INVALID_PROGRESS', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+
+      assert.throws(
+        () =>
+          reduceJob(running, {
+            type: 'JobProgressUpdated',
+            jobId: TEST_JOB_ID,
+            progress: {
+              completed: 10,
+              updatedAt: T2,
+              message: ['unexpected'] as any,
+            },
+          }),
+        (err: any) => err instanceof JobLifecycleError && err.code === 'JOB_INVALID_PROGRESS',
+      );
+    });
+
+    it('81. JobProgress válido é reconstruído canonicamente contendo apenas propriedades fornecidas e é congelado', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+
+      const withProgress = reduceJob(running, {
+        type: 'JobProgressUpdated',
+        jobId: TEST_JOB_ID,
+        progress: {
+          completed: 50,
+          total: 100,
+          unit: 'percent',
+          message: 'Processando lote',
+          updatedAt: T2,
+        },
+      });
+
+      assert.deepEqual(Object.keys(withProgress.progress!).sort(), ['completed', 'message', 'total', 'unit', 'updatedAt'].sort());
+      assert.equal(Object.isFrozen(withProgress.progress), true);
+    });
+
+    it('82. Mutação posterior no objeto de evento não afeta o JobState (independência de referência externa)', () => {
+      const job = createBaseJob();
+      const running = reduceJob(job, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T1 });
+
+      const externalCause = {
+        kind: 'human' as const,
+        reasonCode: 'VALIDATION',
+        description: 'Original description',
+        requestedAt: T2,
+      };
+
+      const waiting = reduceJob(running, {
+        type: 'JobWaiting',
+        jobId: TEST_JOB_ID,
+        cause: externalCause,
+        transitionedAt: T2,
+      });
+
+      // Muta o objeto externo
+      (externalCause as any).description = 'Mutated externally!';
+      (externalCause as any).extraProperty = 'injected!';
+
+      assert.equal((waiting.waitingCause as any).description, 'Original description');
+      assert.equal((waiting.waitingCause as any).extraProperty, undefined);
+
+      // Progresso
+      const externalProgress = {
+        completed: 10,
+        total: 100,
+        unit: 'records',
+        message: 'Step 1',
+        updatedAt: T5,
+      };
+
+      const withProgress = reduceJob(waiting, {
+        type: 'JobYieldedWaiting',
+        jobId: TEST_JOB_ID,
+        resumedAt: T3,
+      });
+      const runningAgain = reduceJob(withProgress, { type: 'JobStarted', jobId: TEST_JOB_ID, startedAt: T4 });
+
+      const progressed = reduceJob(runningAgain, {
+        type: 'JobProgressUpdated',
+        jobId: TEST_JOB_ID,
+        progress: externalProgress,
+      });
+
+      // Muta o objeto externo de progresso
+      (externalProgress as any).completed = 999;
+      (externalProgress as any).message = 'Tampered!';
+      (externalProgress as any).extraProperty = 'tampered!';
+
+      assert.equal(progressed.progress?.completed, 10);
+      assert.equal(progressed.progress?.message, 'Step 1');
+      assert.equal((progressed.progress as any).extraProperty, undefined);
+    });
+  });
 });

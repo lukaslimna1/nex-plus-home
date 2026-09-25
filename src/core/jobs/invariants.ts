@@ -158,6 +158,25 @@ export function assertMonotonicOrder(
   }
 }
 
+function assertAllowedKeys(
+  candidate: Record<string, unknown>,
+  allowedKeys: readonly string[],
+  errorCode: JobErrorCode,
+  description: string,
+  jobId?: JobId,
+): void {
+  const allowedSet = new Set(allowedKeys);
+  for (const key of Object.keys(candidate)) {
+    if (!allowedSet.has(key)) {
+      throw new JobLifecycleError({
+        code: errorCode,
+        message: `[Job Lifecycle] ${description} contains forbidden/unexpected property '${key}'${jobId ? ` in Job '${jobId}'` : ''}.`,
+        jobId,
+      });
+    }
+  }
+}
+
 /**
  * INV-JOB-04: Causa de waiting deve ser material, reconhecida e consistente.
  */
@@ -170,7 +189,9 @@ export function assertValidWaitingCause(cause: JobWaitingCause, jobId: JobId): v
     });
   }
 
-  if (cause.kind !== 'human' && cause.kind !== 'temporal') {
+  const candidate = cause as unknown as Record<string, unknown>;
+
+  if (candidate.kind !== 'human' && candidate.kind !== 'temporal') {
     throw new JobLifecycleError({
       code: 'JOB_INVALID_WAITING_CAUSE',
       message: `[Job Lifecycle] Invalid waiting cause kind in Job '${jobId}'. Expected 'human' or 'temporal'.`,
@@ -178,26 +199,57 @@ export function assertValidWaitingCause(cause: JobWaitingCause, jobId: JobId): v
     });
   }
 
-  if (!cause.reasonCode || typeof cause.reasonCode !== 'string' || cause.reasonCode.trim().length === 0) {
-    throw new JobLifecycleError({
-      code: 'JOB_INVALID_WAITING_CAUSE',
-      message: `[Job Lifecycle] Waiting cause must have a non-empty reasonCode in Job '${jobId}'.`,
-      jobId,
-    });
-  }
-
-  assertCanonicalUtcInstant(cause.requestedAt, 'waitingCause.requestedAt', jobId);
-
-  if (cause.kind === 'temporal') {
-    assertCanonicalUtcInstant(cause.resumeAfter, 'waitingCause.resumeAfter', jobId);
-    assertMonotonicOrder(cause.requestedAt, cause.resumeAfter, 'requestedAt', 'resumeAfter', jobId);
-  }
-
   if (cause.kind === 'human') {
+    assertAllowedKeys(
+      candidate,
+      ['kind', 'reasonCode', 'description', 'requestedAt', 'deadline'],
+      'JOB_INVALID_WAITING_CAUSE',
+      'HumanWaitingCause',
+      jobId,
+    );
+
+    if (typeof cause.reasonCode !== 'string' || cause.reasonCode.trim().length === 0) {
+      throw new JobLifecycleError({
+        code: 'JOB_INVALID_WAITING_CAUSE',
+        message: `[Job Lifecycle] Waiting cause must have a non-empty reasonCode in Job '${jobId}'.`,
+        jobId,
+      });
+    }
+
+    assertCanonicalUtcInstant(cause.requestedAt, 'waitingCause.requestedAt', jobId);
+
+    if (cause.description !== undefined && typeof cause.description !== 'string') {
+      throw new JobLifecycleError({
+        code: 'JOB_INVALID_WAITING_CAUSE',
+        message: `[Job Lifecycle] Human waiting cause description must be a string when provided in Job '${jobId}'.`,
+        jobId,
+      });
+    }
+
     if (cause.deadline !== undefined) {
       assertCanonicalUtcInstant(cause.deadline, 'waitingCause.deadline', jobId);
       assertMonotonicOrder(cause.requestedAt, cause.deadline, 'requestedAt', 'deadline', jobId);
     }
+  } else if (cause.kind === 'temporal') {
+    assertAllowedKeys(
+      candidate,
+      ['kind', 'reasonCode', 'resumeAfter', 'requestedAt'],
+      'JOB_INVALID_WAITING_CAUSE',
+      'TemporalWaitingCause',
+      jobId,
+    );
+
+    if (typeof cause.reasonCode !== 'string' || cause.reasonCode.trim().length === 0) {
+      throw new JobLifecycleError({
+        code: 'JOB_INVALID_WAITING_CAUSE',
+        message: `[Job Lifecycle] Waiting cause must have a non-empty reasonCode in Job '${jobId}'.`,
+        jobId,
+      });
+    }
+
+    assertCanonicalUtcInstant(cause.requestedAt, 'waitingCause.requestedAt', jobId);
+    assertCanonicalUtcInstant(cause.resumeAfter, 'waitingCause.resumeAfter', jobId);
+    assertMonotonicOrder(cause.requestedAt, cause.resumeAfter, 'requestedAt', 'resumeAfter', jobId);
   }
 }
 
@@ -212,6 +264,15 @@ export function assertValidProgress(progress: JobProgress, jobId: JobId): void {
       jobId,
     });
   }
+
+  const candidate = progress as unknown as Record<string, unknown>;
+  assertAllowedKeys(
+    candidate,
+    ['completed', 'total', 'unit', 'message', 'updatedAt'],
+    'JOB_INVALID_PROGRESS',
+    'JobProgress',
+    jobId,
+  );
 
   if (
     typeof progress.completed !== 'number' ||
@@ -245,6 +306,22 @@ export function assertValidProgress(progress: JobProgress, jobId: JobId): void {
         jobId,
       });
     }
+  }
+
+  if (progress.unit !== undefined && typeof progress.unit !== 'string') {
+    throw new JobLifecycleError({
+      code: 'JOB_INVALID_PROGRESS',
+      message: `[Job Lifecycle] Progress unit must be a string when provided in Job '${jobId}'.`,
+      jobId,
+    });
+  }
+
+  if (progress.message !== undefined && typeof progress.message !== 'string') {
+    throw new JobLifecycleError({
+      code: 'JOB_INVALID_PROGRESS',
+      message: `[Job Lifecycle] Progress message must be a string when provided in Job '${jobId}'.`,
+      jobId,
+    });
   }
 
   assertCanonicalUtcInstant(progress.updatedAt, 'progress.updatedAt', jobId);
