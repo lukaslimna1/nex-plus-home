@@ -18,6 +18,7 @@ import {
   type LogoutActionResult,
 } from './identity';
 import { forgotPasswordRateLimiter } from './rate-limiter';
+import { executeAtomicPasswordReset } from './atomic-reset';
 
 export interface LoginActionResult {
   readonly success: boolean;
@@ -211,75 +212,24 @@ export async function resetPasswordAction(
     };
   }
 
-  try {
-    const payload = await getPayload({ config: configPromise });
-    const resetResult = await payload.resetPassword({
-      collection: 'users',
-      data: {
-        token,
-        password,
-      },
-      overrideAccess: true,
-    });
-
-    const rawUserId = resetResult?.user?.id;
-    if (!rawUserId || typeof rawUserId === 'object') {
-      return {
-        success: false,
-        error: 'O link de recuperação é inválido ou já expirou. Solicite um novo link.',
-      };
-    }
-    const userId = String(rawUserId);
-
-    // Contrato A (Recuperação de Senha):
-    // No Payload 3.90.2, resetPassword invalida sessões anteriores, porém emite token e sessão automática.
-    // O NEX+ exige que nenhuma sessão automática permaneça utilizável e que o usuário realize novo login manual.
-    // Conforme documentado no Payload 3.90.2, um update de password via Local API sem usuário autenticado revoga todas as sessões.
-    await payload.update({
-      collection: 'users',
-      id: userId,
-      data: {
-        password,
-      },
-      overrideAccess: true,
-    });
-
-    // Verificação defensiva do estado final: garantir 0 sessões ativas
-    const verifiedUser = await payload.findByID({
-      collection: 'users',
-      id: userId,
-      depth: 0,
-      overrideAccess: true,
-    });
-
-    const remainingSessions = (verifiedUser.sessions || []) as Array<{ id?: string }>;
-    if (remainingSessions.length > 0) {
-      await payload.update({
-        collection: 'users',
-        id: userId,
-        data: {
-          sessions: [],
-        },
-        overrideAccess: true,
-      });
-    }
-
-    // Garantir que nenhum cookie de sessão seja mantido no contexto local
-    try {
-      const cookieStore = await cookies();
-      cookieStore.delete('payload-token');
-    } catch {}
-
-    return {
-      success: true,
-      message: 'Sua senha foi redefinida com sucesso. Você já pode entrar com sua nova senha.',
-    };
-  } catch {
+  const result = await executeAtomicPasswordReset({ token, password });
+  if (!result.success) {
     return {
       success: false,
-      error: 'O link de recuperação é inválido ou já expirou. Solicite um novo link.',
+      error: result.error || 'O link de recuperação é inválido ou já expirou. Solicite um novo link.',
     };
   }
+
+  // Garantir que nenhum cookie de sessão seja mantido no contexto local do navegador
+  try {
+    const cookieStore = await cookies();
+    cookieStore.delete('payload-token');
+  } catch {}
+
+  return {
+    success: true,
+    message: 'Sua senha foi redefinida com sucesso. Você já pode entrar com sua nova senha.',
+  };
 }
 
 /**

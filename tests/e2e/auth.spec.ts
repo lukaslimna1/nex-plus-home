@@ -3,6 +3,7 @@ import { getPayload } from 'payload';
 import configPromise from '../../src/payload.config';
 import crypto from 'node:crypto';
 import { decodeJwt } from 'jose';
+import { executeAtomicPasswordReset } from '../../src/auth/atomic-reset';
 
 test.describe('NEX+ Multiusuário · E2E Authentication Flow (0.8A Isolated Harness)', () => {
   let testUserId: string;
@@ -624,6 +625,194 @@ test.describe('NEX+ Multiusuário · E2E Authentication Flow (0.8A Isolated Harn
       await payload.delete({
         collection: 'users',
         id: contractBUserId,
+      }).catch(() => {});
+    }
+  });
+
+  test('E22-AtomicRollback. Prova de atomicidade e rollback por fault injection: falha intermediária reverte integralmente o reset, preserva sessões existentes e permite reuso do token', async ({ browser }) => {
+    const payload = await getPayload({ config: configPromise });
+
+    // Criar usuário dedicado para E22 garantindo isolamento total
+    const adversarialEmail = `adversarial-${Date.now()}@nex-test.invalid`;
+    const oldPassword = `OldPass_${crypto.randomBytes(16).toString('hex')}!Aa1`;
+    const newerPassword = `NewerPass_${crypto.randomBytes(16).toString('hex')}!Aa1`;
+    const adversarialDisplayName = 'Usuário Atomic Fault';
+
+    const userDoc = await payload.create({
+      collection: 'users',
+      data: {
+        email: adversarialEmail,
+        password: oldPassword,
+        displayName: adversarialDisplayName,
+      },
+    });
+    const adversarialUserId = userDoc.id;
+
+    const originalUpdate = payload.update.bind(payload);
+    let injectFault = false;
+
+    try {
+      // 1. Criar dois contextos isolados (Sessão A e Sessão B) com a senha antiga
+      const contextA = await browser.newContext();
+      const contextB = await browser.newContext();
+      const pageA = await contextA.newPage();
+      const pageB = await contextB.newPage();
+
+      await pageA.goto('/login');
+      await pageA.fill('input#email', adversarialEmail);
+      await pageA.fill('input#password', oldPassword);
+      await pageA.click('button[type="submit"]');
+      await expect(pageA).toHaveURL(/\/home/);
+
+      await pageB.goto('/login');
+      await pageB.fill('input#email', adversarialEmail);
+      await pageB.fill('input#password', oldPassword);
+      await pageB.click('button[type="submit"]');
+      await expect(pageB).toHaveURL(/\/home/);
+
+      // Verificar que ambas as sessões estão ativas no banco de dados
+      const userBeforeReset = await payload.findByID({
+        collection: 'users',
+        id: adversarialUserId,
+        depth: 0,
+        overrideAccess: true,
+      });
+      const initialSessions = (userBeforeReset.sessions || []) as Array<{ id?: string }>;
+      expect(initialSessions.length).toBe(2);
+      const initialSessionIds = initialSessions.map((s) => s.id).sort();
+
+      // 2. Gerar token de recuperação válido
+      await payload.forgotPassword({
+        collection: 'users',
+        data: {
+          email: adversarialEmail,
+        },
+        overrideAccess: true,
+      });
+
+      const userWithToken = await payload.findByID({
+        collection: 'users',
+        id: adversarialUserId,
+        depth: 0,
+        overrideAccess: true,
+        showHiddenFields: true,
+      });
+      const resetToken = (userWithToken as any).resetPasswordToken;
+      expect(typeof resetToken).toBe('string');
+      expect(resetToken.length).toBeGreaterThan(0);
+
+      // 3. Injetar falha estritamente na segunda etapa do resetPasswordAction:
+      // A falha ocorrerá após payload.resetPassword e antes da conclusão/commit da transação
+      injectFault = true;
+      payload.update = (async (args: any) => {
+        if (injectFault && args.collection === 'users' && String(args.id) === String(adversarialUserId)) {
+          throw new Error('[FAULT_INJECTION] Falha induzida de teste entre resetPassword e update');
+        }
+        return originalUpdate(args);
+      }) as any;
+
+      // Executar a operação atômica de recuperação com a falha injetada
+      const failResult = await executeAtomicPasswordReset({
+        token: resetToken,
+        password: newerPassword,
+      });
+      expect(failResult.success).toBe(false);
+
+      // 4. Provar atomicidade e integridade após rollback:
+      // a) As sessões A e B continuam ativas e nenhuma sessão residual foi criada
+      const userAfterRollback = await payload.findByID({
+        collection: 'users',
+        id: adversarialUserId,
+        depth: 0,
+        overrideAccess: true,
+        showHiddenFields: true,
+      });
+      const sessionsAfterRollback = (userAfterRollback.sessions || []) as Array<{ id?: string }>;
+      expect(sessionsAfterRollback.length).toBe(2);
+      expect(sessionsAfterRollback.map((s) => s.id).sort()).toEqual(initialSessionIds);
+
+      // b) O token de reset permaneceu utilizável (não foi consumido nem corrompido)
+      expect((userAfterRollback as any).resetPasswordToken).toBe(resetToken);
+
+      // c) Sessão A e Sessão B continuam perfeitamente funcionais e autenticadas no navegador
+      await pageA.reload();
+      await expect(pageA).toHaveURL(/\/home/);
+      await expect(pageA.locator(`text=${adversarialDisplayName}`)).toBeVisible();
+
+      await pageB.reload();
+      await expect(pageB).toHaveURL(/\/home/);
+      await expect(pageB.locator(`text=${adversarialDisplayName}`)).toBeVisible();
+
+      // d) A nova senha NÃO foi persistida (login com nova senha falha)
+      const contextVerify = await browser.newContext();
+      const pageVerify = await contextVerify.newPage();
+      await pageVerify.goto('/login');
+      await pageVerify.fill('input#email', adversarialEmail);
+      await pageVerify.fill('input#password', newerPassword);
+      await pageVerify.click('button[type="submit"]');
+      await expect(pageVerify.getByRole('alert').filter({ hasText: 'E-mail ou senha inválidos.' })).toBeVisible();
+
+      // e) A senha antiga continua válida no login
+      await pageVerify.fill('input#password', oldPassword);
+      await pageVerify.click('button[type="submit"]');
+      await expect(pageVerify).toHaveURL(/\/home/);
+      await contextVerify.close();
+
+      // 5. Remover a falha e provar que o mesmo resetToken conclui com sucesso
+      injectFault = false;
+
+      const successResult = await executeAtomicPasswordReset({
+        token: resetToken,
+        password: newerPassword,
+      });
+      expect(successResult.success).toBe(true);
+
+      // 6. Provar estado final após conclusão bem-sucedida do recovery:
+      // a) Zero sessões ativas no banco de dados antes de novo login manual
+      const userAfterSuccess = await payload.findByID({
+        collection: 'users',
+        id: adversarialUserId,
+        depth: 0,
+        overrideAccess: true,
+        showHiddenFields: true,
+      });
+      const remainingSessions = (userAfterSuccess.sessions || []) as Array<{ id?: string }>;
+      expect(remainingSessions.length).toBe(0);
+
+      // b) Token foi consumido e expirado (prova de anti-reuso funcional)
+      const reuseAttempt = await executeAtomicPasswordReset({
+        token: resetToken,
+        password: newerPassword,
+      });
+      expect(reuseAttempt.success).toBe(false);
+
+      // c) Sessões A e B tornaram-se inválidas no navegador
+      await pageA.reload();
+      await expect(pageA).toHaveURL(/\/login/);
+
+      await pageB.reload();
+      await expect(pageB).toHaveURL(/\/login/);
+
+      // d) Senha antiga agora falha
+      await pageA.goto('/login');
+      await pageA.fill('input#email', adversarialEmail);
+      await pageA.fill('input#password', oldPassword);
+      await pageA.click('button[type="submit"]');
+      await expect(pageA.getByRole('alert').filter({ hasText: 'E-mail ou senha inválidos.' })).toBeVisible();
+
+      // e) Nova senha funciona e cria nova sessão válida
+      await pageA.fill('input#password', newerPassword);
+      await pageA.click('button[type="submit"]');
+      await expect(pageA).toHaveURL(/\/home/);
+      await expect(pageA.locator(`text=${adversarialDisplayName}`)).toBeVisible();
+
+      await contextA.close();
+      await contextB.close();
+    } finally {
+      payload.update = originalUpdate;
+      await payload.delete({
+        collection: 'users',
+        id: adversarialUserId,
       }).catch(() => {});
     }
   });
