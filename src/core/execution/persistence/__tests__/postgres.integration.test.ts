@@ -35,6 +35,9 @@ import type {
   ReceiptId,
   ExecutionOutcomeReceipt,
   PolicyDenialReceipt,
+  AuthorizationDenialReceipt,
+  CancelledReceipt,
+  NoEligibleRouteReceipt,
 } from '../../contracts';
 import type {
   CapabilityRevisionId,
@@ -1870,6 +1873,461 @@ describe('0.86C-2A · Persistência PostgreSQL de Execution Ledger L0', { skip: 
       assert.deepEqual(
         pgAss.map((a) => a.assessmentId),
         memAss.map((a) => a.assessmentId),
+      );
+    });
+
+    it('C5 Pós-Restart: Persiste Attempts, Signals, Evidence, OutcomeAssessments e Receipts em ordem de append conhecida com timestamps iguais/não-monotônicos, encerra Pool/Store e reidrata provando append_sequence em todas as listagens', async () => {
+      // 1. Store e Pool de Escrita dedicado
+      const poolWriter = new Pool({ connectionString: databaseUrl, max: 5 });
+      const storeWriter = createPostgresExecutionLedgerStore(poolWriter);
+
+      const decC5 = `dec_c5_restart_${Date.now()}` as DecisionId;
+      const attA = `att_c5_rst_a_${Date.now()}` as AttemptId;
+      const attB = `att_c5_rst_b_${Date.now()}` as AttemptId;
+      const attC = `att_c5_rst_c_${Date.now()}` as AttemptId;
+
+      // A. Attempts: append em ordem A, B, C com timestamps não-monotônicos e iguais
+      await storeWriter.appendAttemptEvent({
+        type: 'AttemptCreated',
+        attemptId: attA,
+        decisionId: decC5,
+        routeEvaluationId: ROUTE_EVAL_A,
+        capabilityRevisionId: CAP_REV_A,
+        bindingRevisionId: BIND_REV_A,
+        routeRevisionId: ROUTE_REV_A,
+        createdAt: T3, // Futuro
+      });
+
+      await storeWriter.appendAttemptEvent({
+        type: 'AttemptCreated',
+        attemptId: attB,
+        decisionId: decC5,
+        routeEvaluationId: ROUTE_EVAL_A,
+        capabilityRevisionId: CAP_REV_A,
+        bindingRevisionId: BIND_REV_A,
+        routeRevisionId: ROUTE_REV_A,
+        createdAt: T1, // Passado (não monotônico)
+      });
+
+      await storeWriter.appendAttemptEvent({
+        type: 'AttemptCreated',
+        attemptId: attC,
+        decisionId: decC5,
+        routeEvaluationId: ROUTE_EVAL_A,
+        capabilityRevisionId: CAP_REV_A,
+        bindingRevisionId: BIND_REV_A,
+        routeRevisionId: ROUTE_REV_A,
+        createdAt: T1, // Timestamp idêntico a attB
+      });
+
+      // B. Events de attA com timestamps iguais e transições de ciclo de vida
+      await storeWriter.appendAttemptEvent({
+        type: 'AttemptStarted',
+        attemptId: attA,
+        startedAt: T0,
+      });
+
+      await storeWriter.appendAttemptEvent({
+        type: 'AttemptTerminal',
+        attemptId: attA,
+        terminalStatus: 'succeeded',
+        finishedAt: T0, // Idêntico a startedAt
+      });
+
+      // C. Signals em attA: ordem de append sig1, sig2, sig3, sig4 com timestamps não-monotônicos e iguais
+      const sig1 = `sig_c5_rst_1_${Date.now()}` as ExecutionSignalId;
+      const sig2 = `sig_c5_rst_2_${Date.now()}` as ExecutionSignalId;
+      const sig3 = `sig_c5_rst_3_${Date.now()}` as ExecutionSignalId;
+      const sig4 = `sig_c5_rst_4_${Date.now()}` as ExecutionSignalId;
+
+      await storeWriter.appendExecutionSignal({
+        signalId: sig1,
+        attemptId: attA,
+        kind: 'effect_observed',
+        safeMetadata: { seq: 1 },
+        provenance: PROVENANCE_TEST,
+        observedAt: T4, // Mais recente
+      });
+
+      await storeWriter.appendExecutionSignal({
+        signalId: sig2,
+        attemptId: attA,
+        kind: 'effect_observed',
+        safeMetadata: { seq: 2 },
+        provenance: PROVENANCE_TEST,
+        observedAt: T1, // Anterior (não monotônico)
+      });
+
+      await storeWriter.appendExecutionSignal({
+        signalId: sig3,
+        attemptId: attA,
+        kind: 'effect_observed',
+        safeMetadata: { seq: 3 },
+        provenance: PROVENANCE_TEST,
+        observedAt: T2,
+      });
+
+      await storeWriter.appendExecutionSignal({
+        signalId: sig4,
+        attemptId: attA,
+        kind: 'effect_observed',
+        safeMetadata: { seq: 4 },
+        provenance: PROVENANCE_TEST,
+        observedAt: T2, // Timestamp idêntico a sig3
+      });
+
+      // D. Evidence em attA: ordem evi1, evi2, evi3, evi4 com timestamps não-monotônicos e iguais
+      const evi1 = `evi_c5_rst_1_${Date.now()}` as ExecutionEvidenceId;
+      const evi2 = `evi_c5_rst_2_${Date.now()}` as ExecutionEvidenceId;
+      const evi3 = `evi_c5_rst_3_${Date.now()}` as ExecutionEvidenceId;
+      const evi4 = `evi_c5_rst_4_${Date.now()}` as ExecutionEvidenceId;
+
+      await storeWriter.appendExecutionEvidence({
+        evidenceId: evi1,
+        attemptId: attA,
+        signalRefs: [sig1],
+        kind: 'effect_observed',
+        safeFacts: { seq: 1 },
+        provenance: PROVENANCE_TEST,
+        recordedAt: T4,
+      });
+
+      await storeWriter.appendExecutionEvidence({
+        evidenceId: evi2,
+        attemptId: attA,
+        signalRefs: [sig2],
+        kind: 'effect_observed',
+        safeFacts: { seq: 2 },
+        provenance: PROVENANCE_TEST,
+        recordedAt: T1, // Não monotônico
+      });
+
+      await storeWriter.appendExecutionEvidence({
+        evidenceId: evi3,
+        attemptId: attA,
+        signalRefs: [sig3],
+        kind: 'effect_observed',
+        safeFacts: { seq: 3 },
+        provenance: PROVENANCE_TEST,
+        recordedAt: T2,
+      });
+
+      await storeWriter.appendExecutionEvidence({
+        evidenceId: evi4,
+        attemptId: attA,
+        signalRefs: [sig4],
+        kind: 'effect_observed',
+        safeFacts: { seq: 4 },
+        provenance: PROVENANCE_TEST,
+        recordedAt: T2, // Timestamp idêntico
+      });
+
+      // E. OutcomeAssessments em attA: ordem ass1, ass2, ass3 com timestamps não-monotônicos
+      const ass1 = `ass_c5_rst_1_${Date.now()}` as OutcomeAssessmentId;
+      const ass2 = `ass_c5_rst_2_${Date.now()}` as OutcomeAssessmentId;
+      const ass3 = `ass_c5_rst_3_${Date.now()}` as OutcomeAssessmentId;
+
+      await storeWriter.appendOutcomeAssessment({
+        assessmentId: ass1,
+        attemptId: attA,
+        evidenceRefs: [evi1],
+        verdict: 'indeterminate',
+        reasonCode: 'INITIAL_PASS',
+        assessedAt: T4,
+      });
+
+      await storeWriter.appendOutcomeAssessment({
+        assessmentId: ass2,
+        attemptId: attA,
+        evidenceRefs: [evi2],
+        verdict: 'confirmed_mutation',
+        reasonCode: 'SECOND_PASS',
+        supersedesAssessmentId: ass1,
+        assessedAt: T1, // Não monotônico
+      });
+
+      await storeWriter.appendOutcomeAssessment({
+        assessmentId: ass3,
+        attemptId: attA,
+        evidenceRefs: [evi3, evi4],
+        verdict: 'confirmed_mutation',
+        reasonCode: 'FINAL_PASS',
+        supersedesAssessmentId: ass2,
+        assessedAt: T2,
+      });
+
+      // F. Receipts em decC5: ordem rcp1..rcp5 com timestamps variados/iguais
+      const rcp1 = `rcp_c5_rst_1_${Date.now()}` as ReceiptId;
+      const rcp2 = `rcp_c5_rst_2_${Date.now()}` as ReceiptId;
+      const rcp3 = `rcp_c5_rst_3_${Date.now()}` as ReceiptId;
+      const rcp4 = `rcp_c5_rst_4_${Date.now()}` as ReceiptId;
+      const rcp5 = `rcp_c5_rst_5_${Date.now()}` as ReceiptId;
+
+      await storeWriter.appendReceipt({
+        receiptId: rcp1,
+        decisionId: decC5,
+        kind: 'policy_denial',
+        verdictSummary: 'denied',
+        reasonCode: 'POLICY_LIMIT',
+        safeStructuredFacts: { seq: 1 },
+        materializedAt: T3,
+      });
+
+      await storeWriter.appendReceipt({
+        receiptId: rcp2,
+        decisionId: decC5,
+        kind: 'authorization_denial',
+        verdictSummary: 'auth_denied',
+        reasonCode: 'AUTH_REQUIRED',
+        safeStructuredFacts: { seq: 2 },
+        materializedAt: T1, // Não monotônico
+      });
+
+      await storeWriter.appendReceipt({
+        receiptId: rcp3,
+        decisionId: decC5,
+        kind: 'cancelled',
+        verdictSummary: 'cancelled_user',
+        reasonCode: 'USER_ABORT',
+        safeStructuredFacts: { seq: 3 },
+        materializedAt: T4,
+      });
+
+      await storeWriter.appendReceipt({
+        receiptId: rcp4,
+        decisionId: decC5,
+        kind: 'no_eligible_route',
+        verdictSummary: 'no_route',
+        reasonCode: 'CAPABILITY_UNAVAILABLE',
+        safeStructuredFacts: { seq: 4 },
+        materializedAt: T2,
+      });
+
+      await storeWriter.appendReceipt({
+        receiptId: rcp5,
+        decisionId: decC5,
+        kind: 'execution_outcome',
+        routeEvaluationId: ROUTE_EVAL_A,
+        attemptId: attA,
+        outcomeAssessmentId: ass3,
+        verdictSummary: 'confirmed_mutation',
+        reasonCode: 'MUTATION_EXECUTED',
+        safeStructuredFacts: { seq: 5 },
+        materializedAt: T2, // Timestamp idêntico a rcp4
+      });
+
+      // 7. DESCARTE / ENCERRAMENTO COMPLETO da instância/pool de escrita
+      await poolWriter.end();
+
+      // 8. CRIAÇÃO DE NOVA POOL/STORE INDEPENDENTE para reidratação exclusiva do PostgreSQL
+      const poolReader = new Pool({ connectionString: databaseUrl, max: 5 });
+      try {
+        const storeReader = createPostgresExecutionLedgerStore(poolReader);
+
+        // A. Prova de Attempts (listAttempts preserva append_sequence)
+        const rehydratedAttempts = await storeReader.listAttempts(decC5);
+        assert.deepEqual(
+          rehydratedAttempts.map((a) => a.attemptId),
+          [attA, attB, attC],
+          'listAttempts deve preservar estritamente a ordem de append via append_sequence.',
+        );
+
+        // B. Prova de Attempt Events (listAttemptEvents preserva sequence_number)
+        const rehydratedEvents = await storeReader.listAttemptEvents(attA);
+        assert.deepEqual(
+          rehydratedEvents.map((e) => e.type),
+          ['AttemptCreated', 'AttemptStarted', 'AttemptTerminal'],
+          'listAttemptEvents deve preservar estritamente a sequência histórica.',
+        );
+
+        // C. Prova de Signals (listExecutionSignals preserva append_sequence)
+        const rehydratedSignals = await storeReader.listExecutionSignals(attA);
+        assert.deepEqual(
+          rehydratedSignals.map((s) => s.signalId),
+          [sig1, sig2, sig3, sig4],
+          'listExecutionSignals deve preservar estritamente a ordem de append via append_sequence.',
+        );
+
+        // D. Prova de Evidence (listExecutionEvidence preserva append_sequence)
+        const rehydratedEvidence = await storeReader.listExecutionEvidence(attA);
+        assert.deepEqual(
+          rehydratedEvidence.map((e) => e.evidenceId),
+          [evi1, evi2, evi3, evi4],
+          'listExecutionEvidence deve preservar estritamente a ordem de append via append_sequence.',
+        );
+
+        // E. Prova de OutcomeAssessments (listOutcomeAssessments preserva append_sequence)
+        const rehydratedAssessments = await storeReader.listOutcomeAssessments(attA);
+        assert.deepEqual(
+          rehydratedAssessments.map((a) => a.assessmentId),
+          [ass1, ass2, ass3],
+          'listOutcomeAssessments deve preservar estritamente a ordem de append via append_sequence.',
+        );
+
+        const latestAssessment = await storeReader.getLatestOutcomeAssessment(attA);
+        assert.equal(
+          latestAssessment?.assessmentId,
+          ass3,
+          'getLatestOutcomeAssessment deve retornar a head mais recente da linhagem.',
+        );
+
+        // F. Prova de Receipts (listReceipts preserva append_sequence)
+        const rehydratedReceipts = await storeReader.listReceipts(decC5);
+        assert.deepEqual(
+          rehydratedReceipts.map((r) => r.receiptId),
+          [rcp1, rcp2, rcp3, rcp4, rcp5],
+          'listReceipts deve preservar estritamente a ordem de append via append_sequence.',
+        );
+      } finally {
+        await poolReader.end();
+      }
+    });
+  });
+
+  // ==========================================================================
+  // 10. HARDENING ADICIONAL DE RECEIPTS & FAIL-CLOSED
+  // ==========================================================================
+  describe('10. Hardening Adicional de Receipts & Fail-Closed', () => {
+    it('Roundtrip de policy_denial, authorization_denial, cancelled e no_eligible_route confirmando materializedAt e refs ausentes', async () => {
+      const decId = `dec_roundtrip_${Date.now()}` as DecisionId;
+
+      const nonOutcomeReceipts: Receipt[] = [
+        {
+          receiptId: `rcp_pol_${Date.now()}` as ReceiptId,
+          decisionId: decId,
+          kind: 'policy_denial',
+          verdictSummary: 'policy_violation',
+          reasonCode: 'POLICY_DISALLOWED',
+          safeStructuredFacts: { rule: 'P01' },
+          materializedAt: T1,
+        },
+        {
+          receiptId: `rcp_auth_${Date.now()}` as ReceiptId,
+          decisionId: decId,
+          kind: 'authorization_denial',
+          verdictSummary: 'auth_required',
+          reasonCode: 'INSUFFICIENT_SCOPE',
+          safeStructuredFacts: { scope: 'admin' },
+          materializedAt: T2,
+        },
+        {
+          receiptId: `rcp_canc_${Date.now()}` as ReceiptId,
+          decisionId: decId,
+          kind: 'cancelled',
+          verdictSummary: 'user_cancelled',
+          reasonCode: 'ABORTED',
+          safeStructuredFacts: { caller: 'client' },
+          materializedAt: T3,
+        },
+        {
+          receiptId: `rcp_noroute_${Date.now()}` as ReceiptId,
+          decisionId: decId,
+          kind: 'no_eligible_route',
+          verdictSummary: 'no_route_found',
+          reasonCode: 'ROUTING_FAILED',
+          safeStructuredFacts: { attemptedCandidates: 0 },
+          materializedAt: T4,
+        },
+      ];
+
+      for (const rcp of nonOutcomeReceipts) {
+        await store.appendReceipt(rcp);
+
+        const loaded = await store.getReceipt(rcp.receiptId);
+        assert.ok(loaded, `Receipt ${rcp.receiptId} deve ser encontrado no PostgreSQL`);
+        assert.equal(loaded.receiptId, rcp.receiptId);
+        assert.equal(loaded.decisionId, decId);
+        assert.equal(loaded.kind, rcp.kind);
+        assert.equal(loaded.verdictSummary, rcp.verdictSummary);
+        assert.equal(loaded.reasonCode, rcp.reasonCode);
+        assert.equal(loaded.materializedAt, rcp.materializedAt);
+        assert.deepEqual(loaded.safeStructuredFacts, rcp.safeStructuredFacts);
+
+        // Confirma estritamente ausência de referências a Attempt
+        const untyped = loaded as any;
+        assert.equal(untyped.attemptId, undefined, `Receipt ${rcp.kind} não deve ter attemptId`);
+        assert.equal(untyped.outcomeAssessmentId, undefined, `Receipt ${rcp.kind} não deve ter outcomeAssessmentId`);
+        assert.equal(untyped.routeEvaluationId, undefined, `Receipt ${rcp.kind} não deve ter routeEvaluationId`);
+      }
+    });
+
+    it('Fail-closed do getLatestOutcomeAssessment para head estruturalmente incoerente', async () => {
+      const attId = 'att_stub_incoherent' as AttemptId;
+
+      // 1. Head aponta para assessment_id inexistente (null retornado pelo LEFT JOIN)
+      const stubExecutorMissingAss: PgTransactionalExecutor = {
+        async query<T = any>(sql: string, params?: unknown[]): Promise<PgQueryResult<T>> {
+          if (sql.includes('nex_execution_outcome_heads')) {
+            return {
+              rows: [{
+                latest_assessment_id: 'ass_ghost_id',
+                assessment_id: null,
+                assessment_attempt_id: null,
+              }] as any,
+              rowCount: 1,
+            };
+          }
+          return { rows: [], rowCount: 0 };
+        },
+        async connect(): Promise<PgTransactionalClient> {
+          return {
+            async query<T = any>(sql: string, params?: unknown[]): Promise<PgQueryResult<T>> {
+              return { rows: [], rowCount: 0 };
+            },
+            release() {},
+          };
+        },
+      };
+
+      const storeMissingAss = new PostgresExecutionLedgerStore(stubExecutorMissingAss);
+      await assert.rejects(
+        async () => {
+          await storeMissingAss.getLatestOutcomeAssessment(attId);
+        },
+        (err: any) => {
+          assert.ok(err instanceof CorruptedLedgerRowError);
+          assert.equal(err.table, 'nex_execution_outcome_heads');
+          assert.equal(err.entityId, attId);
+          assert.match(err.message, /references non-existent assessment/i);
+          return true;
+        },
+      );
+
+      // 2. Head aponta para assessment pertencente a outro attempt
+      const stubExecutorCrossAttempt: PgTransactionalExecutor = {
+        async query<T = any>(sql: string, params?: unknown[]): Promise<PgQueryResult<T>> {
+          if (sql.includes('nex_execution_outcome_heads')) {
+            return {
+              rows: [{
+                latest_assessment_id: 'ass_alien_id',
+                assessment_id: 'ass_alien_id',
+                assessment_attempt_id: 'att_other_alien_attempt',
+              }] as any,
+              rowCount: 1,
+            };
+          }
+          return { rows: [], rowCount: 0 };
+        },
+        async connect(): Promise<PgTransactionalClient> {
+          return {
+            async query<T = any>(sql: string, params?: unknown[]): Promise<PgQueryResult<T>> {
+              return { rows: [], rowCount: 0 };
+            },
+            release() {},
+          };
+        },
+      };
+
+      const storeCrossAttempt = new PostgresExecutionLedgerStore(stubExecutorCrossAttempt);
+      await assert.rejects(
+        async () => {
+          await storeCrossAttempt.getLatestOutcomeAssessment(attId);
+        },
+        (err: any) => {
+          assert.ok(err instanceof CrossAttemptReferenceError);
+          assert.match(err.message, /Outcome head for Attempt.*points to assessment.*belonging to Attempt/i);
+          return true;
+        },
       );
     });
   });

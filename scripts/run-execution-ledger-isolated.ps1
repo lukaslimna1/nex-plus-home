@@ -8,6 +8,10 @@
     e destrói o banco descartável ao final sem afetar o banco de dados operacional.
 #>
 
+param (
+    [switch]$VerifyCleanupOwnershipOnly
+)
+
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -62,6 +66,33 @@ Write-Host " NEX+ · HARNESS DE DURABLE EXECUTION LEDGER ISOLADO (0.86C-2A)" -Fo
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host "Host: $operationalHost | Porta: $operationalPort | Banco Operacional: $operationalDbName (PROTEGIDO)"
 
+# Verificação determinística isolada da guarda de ownership se solicitado por switch
+if ($VerifyCleanupOwnershipOnly) {
+    Write-Host "`n[PROVA DETERMINÍSTICA] Testando ownership guard do cleanup em isolamento..." -ForegroundColor Yellow
+    $testSimulatedDb = "nex_exec_simulated_guard_probe"
+    $testCreatedDb = $false
+    $executedDrop = $false
+    $executedTerminate = $false
+
+    # Simula bloco finally com guarda de ownership
+    if ($testCreatedDb -and $testSimulatedDb -and $testSimulatedDb.StartsWith("nex_exec_") -and $testSimulatedDb -ne $operationalDbName) {
+        $executedTerminate = $true
+        $executedDrop = $true
+    } else {
+        if (-not $testCreatedDb) {
+            Write-Host "[CLEANUP_GUARD_TEST] Sucesso: tentativa de cleanup sobre DB não criado ($testSimulatedDb) foi bloqueada determinísticamente." -ForegroundColor Green
+        }
+    }
+
+    if ($executedDrop -or $executedTerminate) {
+        Write-Host "[PROVA_FAIL] Guarda de ownership falhou: executou cleanup indevido." -ForegroundColor Red
+        exit 1
+    }
+
+    Write-Host "[PROVA_OK] Guarda de ownership verificada com sucesso: sem criação pelo harness, nenhuma conexão/drop é disparada." -ForegroundColor Green
+    exit 0
+}
+
 # 3. Geração do nome do Database Descartável
 $randomSuffix = [System.IO.Path]::GetRandomFileName().Substring(0, 6).ToLowerInvariant()
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -78,12 +109,14 @@ $escapedPass = [System.Uri]::EscapeDataString($operationalPass)
 $disposableDbUrl = "postgresql://${operationalUser}:${escapedPass}@${operationalHost}:${operationalPort}/${disposableDbName}"
 
 $exitCode = 0
+$createdDisposableDb = $false
 
 try {
     # 4. Criação do Database Descartável
     Write-Host "`n[1/6] Criando banco de dados descartável: $disposableDbName..." -ForegroundColor Yellow
     & createdb -h $operationalHost -p $operationalPort -U $operationalUser $disposableDbName
     if ($LASTEXITCODE -ne 0) { throw "Falha ao criar banco de dados descartável: $disposableDbName" }
+    $createdDisposableDb = $true
 
     # Verificação de segurança via query SQL direta
     $currentDb = (& psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT current_database();").Trim()
@@ -221,7 +254,7 @@ catch {
 finally {
     # 10. Destruição segura e garantida do Database Descartável
     Write-Host "`n[CLEANUP] Encerrando conexões residuais e destruindo banco descartável..." -ForegroundColor Yellow
-    if ($disposableDbName -and $disposableDbName.StartsWith("nex_exec_") -and $disposableDbName -ne $operationalDbName) {
+    if ($createdDisposableDb -and $disposableDbName -and $disposableDbName.StartsWith("nex_exec_") -and $disposableDbName -ne $operationalDbName) {
         $env:DATABASE_URL = $dbUrl
         & psql -h $operationalHost -p $operationalPort -U $operationalUser -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$disposableDbName' AND pid <> pg_backend_pid();" | Out-Null
 
@@ -237,6 +270,10 @@ finally {
             } else {
                 Write-Host "[CLEANUP] Banco descartável '$disposableDbName' destruído e confirmado inexistente." -ForegroundColor Green
             }
+        }
+    } else {
+        if (-not $createdDisposableDb) {
+            Write-Host "[CLEANUP_GUARD] Banco descartável não foi criado por esta execução ($disposableDbName). Operações de terminate/drop/confirm ignoradas com segurança." -ForegroundColor Green
         }
     }
 

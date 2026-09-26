@@ -90,6 +90,15 @@ export function assertPlainObject(
       entityId,
     );
   }
+  const proto = Object.getPrototypeOf(val);
+  if (proto !== Object.prototype && proto !== null) {
+    const protoName = (val as any)?.constructor?.name ?? 'unknown';
+    throw new CorruptedLedgerRowError(
+      table,
+      `Field '${fieldName}' must be a non-null plain JSON object. Received non-plain object or class instance (${protoName}).`,
+      entityId,
+    );
+  }
   return deepCloneAndFreeze(val as Record<string, unknown>);
 }
 
