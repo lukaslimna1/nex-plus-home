@@ -45,7 +45,11 @@ import type {
 import {
   PostgresExecutionLedgerStore,
   createPostgresExecutionLedgerStore,
+  type PgTransactionalExecutor,
+  type PgTransactionalClient,
+  type PgQueryResult,
 } from '../postgres';
+import { createExecutionLedgerStore } from '../../ledger';
 import {
   DuplicateIdError,
   InvalidAttemptTransitionError,
@@ -61,6 +65,10 @@ import {
 
 const { Pool } = pg;
 const databaseUrl = process.env.DATABASE_URL;
+
+if (process.env.NEX_REQUIRE_EXECUTION_LEDGER_DB === '1' && !databaseUrl) {
+  throw new Error('NEX_REQUIRE_EXECUTION_LEDGER_DB=1 is set but DATABASE_URL is missing. Aborting test suite to prevent accidental green skip.');
+}
 
 describe('0.86C-2A · Persistência PostgreSQL de Execution Ledger L0', { skip: !databaseUrl }, () => {
   let pool: pg.Pool;
@@ -779,6 +787,262 @@ describe('0.86C-2A · Persistência PostgreSQL de Execution Ledger L0', { skip: 
         (err: any) => err instanceof InvalidReceiptStructureError,
       );
     });
+
+    it('Receipt execution_outcome com decisionId divergente lança InvalidReceiptStructureError (C3)', async () => {
+      const attId = `att_rcp_dec_mismatch_${Date.now()}` as AttemptId;
+      const assId = `ass_rcp_dec_mismatch_${Date.now()}` as OutcomeAssessmentId;
+
+      await store.appendAttemptEvent({
+        type: 'AttemptCreated',
+        attemptId: attId,
+        decisionId: DECISION_A,
+        routeEvaluationId: ROUTE_EVAL_A,
+        capabilityRevisionId: CAP_REV_A,
+        bindingRevisionId: BIND_REV_A,
+        routeRevisionId: ROUTE_REV_A,
+        createdAt: T0,
+      });
+
+      await store.appendOutcomeAssessment({
+        assessmentId: assId,
+        attemptId: attId,
+        evidenceRefs: [],
+        verdict: 'confirmed_mutation',
+        reasonCode: 'MUTATED',
+        assessedAt: T1,
+      });
+
+      await assert.rejects(
+        async () => {
+          await store.appendReceipt({
+            receiptId: `rcp_err_dec_${Date.now()}` as ReceiptId,
+            decisionId: 'dec_divergent' as DecisionId,
+            kind: 'execution_outcome',
+            routeEvaluationId: ROUTE_EVAL_A,
+            attemptId: attId,
+            outcomeAssessmentId: assId,
+            verdictSummary: 'confirmed_mutation',
+            reasonCode: 'MUTATED',
+            safeStructuredFacts: {},
+            materializedAt: T2,
+          });
+        },
+        (err: any) => err instanceof InvalidReceiptStructureError,
+      );
+    });
+
+    it('SQL direto tentando inserir Receipt com decision_id ou route_evaluation_id divergente é rejeitado pelo DB via FK composta (C3)', async () => {
+      const attId = `att_c3_fk_${Date.now()}` as AttemptId;
+      const assId = `ass_c3_fk_${Date.now()}` as OutcomeAssessmentId;
+
+      await store.appendAttemptEvent({
+        type: 'AttemptCreated',
+        attemptId: attId,
+        decisionId: DECISION_A,
+        routeEvaluationId: ROUTE_EVAL_A,
+        capabilityRevisionId: CAP_REV_A,
+        bindingRevisionId: BIND_REV_A,
+        routeRevisionId: ROUTE_REV_A,
+        createdAt: T0,
+      });
+
+      await store.appendOutcomeAssessment({
+        assessmentId: assId,
+        attemptId: attId,
+        evidenceRefs: [],
+        verdict: 'confirmed_mutation',
+        reasonCode: 'MUT',
+        assessedAt: T1,
+      });
+
+      // SQL direto com decision_id divergente ('dec_divergent')
+      await assert.rejects(
+        async () => {
+          await pool.query(
+            `INSERT INTO "nex_execution_receipts"
+             ("receipt_id", "decision_id", "kind", "route_evaluation_id", "attempt_id", "outcome_assessment_id", "verdict_summary", "reason_code", "safe_structured_facts", "materialized_at")
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+            [
+              `rcp_c3_bad_dec_${Date.now()}`,
+              'dec_divergent',
+              'execution_outcome',
+              ROUTE_EVAL_A,
+              attId,
+              assId,
+              'confirmed_mutation',
+              'MUT',
+              JSON.stringify({}),
+              T2,
+            ],
+          );
+        },
+        (err: any) => err?.code === '23503',
+      );
+
+      // SQL direto com route_evaluation_id divergente ('rte_divergent')
+      await assert.rejects(
+        async () => {
+          await pool.query(
+            `INSERT INTO "nex_execution_receipts"
+             ("receipt_id", "decision_id", "kind", "route_evaluation_id", "attempt_id", "outcome_assessment_id", "verdict_summary", "reason_code", "safe_structured_facts", "materialized_at")
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+            [
+              `rcp_c3_bad_rte_${Date.now()}`,
+              DECISION_A,
+              'execution_outcome',
+              'rte_divergent',
+              attId,
+              assId,
+              'confirmed_mutation',
+              'MUT',
+              JSON.stringify({}),
+              T2,
+            ],
+          );
+        },
+        (err: any) => err?.code === '23503',
+      );
+    });
+
+    it('SQL direto tentando apontar outcome head de Attempt A para assessment de Attempt B é rejeitado pelo DB via FK composta (C2)', async () => {
+      const attA = `att_c2_a_${Date.now()}` as AttemptId;
+      const attB = `att_c2_b_${Date.now()}` as AttemptId;
+      const assA = `ass_c2_a_${Date.now()}` as OutcomeAssessmentId;
+      const assB = `ass_c2_b_${Date.now()}` as OutcomeAssessmentId;
+
+      for (const att of [attA, attB]) {
+        await store.appendAttemptEvent({
+          type: 'AttemptCreated',
+          attemptId: att,
+          decisionId: DECISION_A,
+          routeEvaluationId: ROUTE_EVAL_A,
+          capabilityRevisionId: CAP_REV_A,
+          bindingRevisionId: BIND_REV_A,
+          routeRevisionId: ROUTE_REV_A,
+          createdAt: T0,
+        });
+      }
+
+      await store.appendOutcomeAssessment({
+        assessmentId: assA,
+        attemptId: attA,
+        evidenceRefs: [],
+        verdict: 'confirmed_no_mutation',
+        reasonCode: 'A_OK',
+        assessedAt: T1,
+      });
+
+      await store.appendOutcomeAssessment({
+        assessmentId: assB,
+        attemptId: attB,
+        evidenceRefs: [],
+        verdict: 'confirmed_no_mutation',
+        reasonCode: 'B_OK',
+        assessedAt: T1,
+      });
+
+      // Tenta apontar head de attA para assB (que pertence a attB)
+      await assert.rejects(
+        async () => {
+          await pool.query(
+            `UPDATE "nex_execution_outcome_heads"
+             SET "latest_assessment_id" = $1
+             WHERE "attempt_id" = $2`,
+            [assB, attA],
+          );
+        },
+        (err: any) => err?.code === '23503',
+      );
+    });
+
+    it('Refs repetidas em signalRefs e evidenceRefs preservam posição e reidratam identicamente ao in-memory (C7)', async () => {
+      const attId = `att_c7_dup_refs_${Date.now()}` as AttemptId;
+      const sig1 = `sig_c7_1_${Date.now()}` as ExecutionSignalId;
+      const sig2 = `sig_c7_2_${Date.now()}` as ExecutionSignalId;
+      const evi1 = `evi_c7_1_${Date.now()}` as ExecutionEvidenceId;
+      const ass1 = `ass_c7_1_${Date.now()}` as OutcomeAssessmentId;
+
+      await store.appendAttemptEvent({
+        type: 'AttemptCreated',
+        attemptId: attId,
+        decisionId: DECISION_A,
+        routeEvaluationId: ROUTE_EVAL_A,
+        capabilityRevisionId: CAP_REV_A,
+        bindingRevisionId: BIND_REV_A,
+        routeRevisionId: ROUTE_REV_A,
+        createdAt: T0,
+      });
+
+      for (const sId of [sig1, sig2]) {
+        await store.appendExecutionSignal({
+          signalId: sId,
+          attemptId: attId,
+          kind: 'effect_observed',
+          safeMetadata: {},
+          provenance: PROVENANCE_TEST,
+          observedAt: T1,
+        });
+      }
+
+      // Evidence com signalRefs contendo duplicatas preservando posição: [sig1, sig2, sig1]
+      await store.appendExecutionEvidence({
+        evidenceId: evi1,
+        attemptId: attId,
+        signalRefs: [sig1, sig2, sig1],
+        kind: 'effect_observed',
+        safeFacts: {},
+        provenance: PROVENANCE_TEST,
+        recordedAt: T2,
+      });
+
+      const rehydratedEvi = await store.getExecutionEvidence(evi1);
+      assert.ok(rehydratedEvi);
+      assert.deepEqual(rehydratedEvi.signalRefs, [sig1, sig2, sig1]);
+
+      // Assessment com evidenceRefs contendo duplicatas preservando posição: [evi1, evi1]
+      await store.appendOutcomeAssessment({
+        assessmentId: ass1,
+        attemptId: attId,
+        evidenceRefs: [evi1, evi1],
+        verdict: 'confirmed_mutation',
+        reasonCode: 'REPEAT_OK',
+        assessedAt: T3,
+      });
+
+      const rehydratedAss = await store.getOutcomeAssessment(ass1);
+      assert.ok(rehydratedAss);
+      assert.deepEqual(rehydratedAss.evidenceRefs, [evi1, evi1]);
+    });
+
+    it('SQL direto não consegue inserir event de Attempt inexistente (FK violation) (C8)', async () => {
+      const ghostAttemptId = 'att_ghost_non_existent' as AttemptId;
+      await assert.rejects(
+        async () => {
+          await pool.query(
+            `INSERT INTO "nex_execution_attempt_events"
+             ("attempt_id", "sequence_number", "event_type", "event_payload", "occurred_at")
+             VALUES ($1, $2, $3, $4, $5)`,
+            [
+              ghostAttemptId,
+              1,
+              'AttemptCreated',
+              JSON.stringify({
+                type: 'AttemptCreated',
+                attemptId: ghostAttemptId,
+                decisionId: DECISION_A,
+                routeEvaluationId: ROUTE_EVAL_A,
+                capabilityRevisionId: CAP_REV_A,
+                bindingRevisionId: BIND_REV_A,
+                routeRevisionId: ROUTE_REV_A,
+                createdAt: T0,
+              }),
+              T0,
+            ],
+          );
+        },
+        (err: any) => err?.code === '23503',
+      );
+    });
   });
 
   // ==========================================================================
@@ -852,17 +1116,85 @@ describe('0.86C-2A · Persistência PostgreSQL de Execution Ledger L0', { skip: 
       assert.ok(latest);
       assert.ok(latest.assessmentId === assCandidateA.assessmentId || latest.assessmentId === assCandidateB.assessmentId);
     });
+
+    it('Duas primeiras assessments concorrentes sem supersedes: exatamente uma vence e head fica unívoca (C9)', async () => {
+      const attId = `att_race_first_${Date.now()}` as AttemptId;
+      await store.appendAttemptEvent({
+        type: 'AttemptCreated',
+        attemptId: attId,
+        decisionId: DECISION_A,
+        routeEvaluationId: ROUTE_EVAL_A,
+        capabilityRevisionId: CAP_REV_A,
+        bindingRevisionId: BIND_REV_A,
+        routeRevisionId: ROUTE_REV_A,
+        createdAt: T0,
+      });
+
+      const assCandidateA: OutcomeAssessment = {
+        assessmentId: `ass_first_A_${Date.now()}` as OutcomeAssessmentId,
+        attemptId: attId,
+        evidenceRefs: [],
+        verdict: 'confirmed_mutation',
+        reasonCode: 'FIRST_A',
+        assessedAt: T1,
+      };
+
+      const assCandidateB: OutcomeAssessment = {
+        assessmentId: `ass_first_B_${Date.now()}` as OutcomeAssessmentId,
+        attemptId: attId,
+        evidenceRefs: [],
+        verdict: 'confirmed_no_mutation',
+        reasonCode: 'FIRST_B',
+        assessedAt: T1,
+      };
+
+      // Dispara em paralelo como duas primeiras assessments (ambas sem supersedesAssessmentId)
+      const results = await Promise.allSettled([
+        store.appendOutcomeAssessment(assCandidateA),
+        store.appendOutcomeAssessment(assCandidateB),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+
+      assert.equal(fulfilled.length, 1, 'Exatamente uma primeira assessment deve vencer.');
+      assert.equal(rejected.length, 1, 'A concorrente deve falhar deterministicamente.');
+
+      const err = (rejected[0] as PromiseRejectedResult).reason;
+      assert.ok(
+        err instanceof InvalidAssessmentLineageError || err?.code === '23505',
+        `Esperado erro de lineage ou unique na head, recebido: ${err?.message}`,
+      );
+
+      // Confirma que existe uma única head
+      const latest = await store.getLatestOutcomeAssessment(attId);
+      assert.ok(latest);
+      assert.ok(latest.assessmentId === assCandidateA.assessmentId || latest.assessmentId === assCandidateB.assessmentId);
+
+      // Confirma que assessment_count e histórico estão coerentes (exatamente 1 assessment registrada)
+      const allAssessments = await store.listOutcomeAssessments(attId);
+      assert.equal(allAssessments.length, 1);
+      assert.equal(allAssessments[0].assessmentId, latest.assessmentId);
+
+      const headRow = await pool.query(
+        `SELECT assessment_count, latest_assessment_id FROM nex_execution_outcome_heads WHERE attempt_id = $1`,
+        [attId],
+      );
+      assert.equal(headRow.rows.length, 1);
+      assert.equal(headRow.rows[0].assessment_count, 1);
+      assert.equal(headRow.rows[0].latest_assessment_id, latest.assessmentId);
+    });
   });
 
   // ==========================================================================
-  // 6. ATOMICIDADE DE TRANSAÇÃO
+  // 6. ATOMICIDADE DE TRANSAÇÃO (FAULT INJECTION REAL) (C6)
   // ==========================================================================
-  describe('6. Atomicidade de Transação', () => {
-    it('Falha deliberada no meio da inserção de Evidence desfaz todas as escritas parciais', async () => {
-      const attId = `att_atomic_${Date.now()}` as AttemptId;
-      const sigId1 = `sig_atom_1_${Date.now()}` as ExecutionSignalId;
-      const sigGhost = `sig_ghost_${Date.now()}` as ExecutionSignalId;
-      const eviId = `evi_atomic_${Date.now()}` as ExecutionEvidenceId;
+  describe('6. Atomicidade de Transação (Fault Injection Real)', () => {
+    it('Fault injection real na segunda relation desfaz integralmente o header e a primeira relation (C6)', async () => {
+      const attId = `att_fault_inj_${Date.now()}` as AttemptId;
+      const sigId1 = `sig_fault_1_${Date.now()}` as ExecutionSignalId;
+      const sigId2 = `sig_fault_2_${Date.now()}` as ExecutionSignalId;
+      const eviId = `evi_fault_atomic_${Date.now()}` as ExecutionEvidenceId;
 
       await store.appendAttemptEvent({
         type: 'AttemptCreated',
@@ -875,97 +1207,104 @@ describe('0.86C-2A · Persistência PostgreSQL de Execution Ledger L0', { skip: 
         createdAt: T0,
       });
 
-      await store.appendExecutionSignal({
-        signalId: sigId1,
-        attemptId: attId,
-        kind: 'effect_observed',
-        safeMetadata: {},
-        provenance: PROVENANCE_TEST,
-        observedAt: T1,
-      });
+      for (const sId of [sigId1, sigId2]) {
+        await store.appendExecutionSignal({
+          signalId: sId,
+          attemptId: attId,
+          kind: 'effect_observed',
+          safeMetadata: {},
+          provenance: PROVENANCE_TEST,
+          observedAt: T1,
+        });
+      }
 
-      // Tenta gravar Evidence com 2 signals: um válido e um fantasma.
-      // A transação deve falhar e não deixar Evidence nem a relação do signal 1 persistida.
+      // Cria executor com fault injection real:
+      // Permite o INSERT do header de Evidence e o INSERT da primeira relation de sinal.
+      // No INSERT da segunda relation dentro da mesma transação, injeta falha sintética.
+      const faultExecutor: PgTransactionalExecutor = {
+        query: async <T = any>(sql: string, params?: unknown[]): Promise<PgQueryResult<T>> => {
+          const res = await pool.query<any>(sql, params as any[]);
+          return { rows: res.rows, rowCount: res.rowCount };
+        },
+        connect: async (): Promise<PgTransactionalClient> => {
+          const client = await pool.connect();
+          let relationCount = 0;
+          const origQuery = client.query.bind(client);
+
+          const wrappedClient: PgTransactionalClient = {
+            query: async <T = any>(sql: string, params?: unknown[]): Promise<PgQueryResult<T>> => {
+              if (sql.includes('nex_execution_evidence_signals')) {
+                relationCount++;
+                if (relationCount === 2) {
+                  // Falha forçada na segunda relation, após header e primeira relation terem sido enviados
+                  throw new Error('FAULT_INJECTION_MID_TRANSACTION_SECOND_RELATION');
+                }
+              }
+              const res = await (origQuery as any)(sql, params);
+              return { rows: res.rows, rowCount: res.rowCount };
+            },
+            release: () => client.release(),
+          };
+
+          return wrappedClient;
+        },
+      };
+
+      const faultStore = new PostgresExecutionLedgerStore(faultExecutor);
+
       await assert.rejects(
         async () => {
-          await store.appendExecutionEvidence({
+          await faultStore.appendExecutionEvidence({
             evidenceId: eviId,
             attemptId: attId,
-            signalRefs: [sigId1, sigGhost],
+            signalRefs: [sigId1, sigId2],
             kind: 'effect_observed',
             safeFacts: {},
             provenance: PROVENANCE_TEST,
             recordedAt: T2,
           });
         },
-        (err: any) => err instanceof InvalidSignalReferenceError,
+        (err: any) => err?.message === 'FAULT_INJECTION_MID_TRANSACTION_SECOND_RELATION',
       );
 
-      // Prova que rollback foi 100% integral
-      const eviCheck = await store.getExecutionEvidence(eviId);
-      assert.equal(eviCheck, undefined);
+      // Prova com consulta direta fora da transação que o rollback foi 100% integral:
+      // O header de evidence não existe
+      const rawHeader = await pool.query(
+        `SELECT * FROM "nex_execution_evidence" WHERE "evidence_id" = $1`,
+        [eviId],
+      );
+      assert.equal(rawHeader.rows.length, 0, 'Header de Evidence deve ter sido removido pelo rollback.');
 
-      const rawRows = await pool.query(
+      // A primeira relation (que havia sido executada antes do erro) também foi removida pelo rollback
+      const rawRelations = await pool.query(
         `SELECT * FROM "nex_execution_evidence_signals" WHERE "evidence_id" = $1`,
         [eviId],
       );
-      assert.equal(rawRows.rows.length, 0);
+      assert.equal(rawRelations.rows.length, 0, 'Relations parciais devem ter sido removidas pelo rollback.');
     });
   });
 
   // ==========================================================================
-  // 7. PROTEÇÃO APPEND-ONLY ESTRUTURAL NO POSTGRESQL
+  // 7. PROTEÇÃO APPEND-ONLY ESTRUTURAL NO POSTGRESQL (C10)
   // ==========================================================================
-  describe('7. Proteção Estrutural Append-Only', () => {
-    it('Trigger bloqueia UPDATE, DELETE e TRUNCATE em nex_execution_attempt_events', async () => {
-      const attId = `att_trg_${Date.now()}` as AttemptId;
-      await store.appendAttemptEvent({
-        type: 'AttemptCreated',
-        attemptId: attId,
-        decisionId: DECISION_A,
-        routeEvaluationId: ROUTE_EVAL_A,
-        capabilityRevisionId: CAP_REV_A,
-        bindingRevisionId: BIND_REV_A,
-        routeRevisionId: ROUTE_REV_A,
-        createdAt: T0,
-      });
+  describe('7. Proteção Estrutural Append-Only em Todas as 7 Tabelas (C10)', () => {
+    const historicalTables = [
+      { name: 'nex_execution_attempt_events', identCol: 'attempt_id' },
+      { name: 'nex_execution_signals', identCol: 'signal_id' },
+      { name: 'nex_execution_evidence', identCol: 'evidence_id' },
+      { name: 'nex_execution_evidence_signals', identCol: 'position' },
+      { name: 'nex_execution_outcome_assessments', identCol: 'assessment_id' },
+      { name: 'nex_execution_outcome_evidence', identCol: 'position' },
+      { name: 'nex_execution_receipts', identCol: 'receipt_id' },
+    ];
 
-      // UPDATE rejeitado
-      await assert.rejects(
-        async () => {
-          await pool.query(
-            `UPDATE "nex_execution_attempt_events" SET "sequence_number" = 999 WHERE "attempt_id" = $1`,
-            [attId],
-          );
-        },
-        /APPEND_ONLY_VIOLATION|strictly forbidden|nex_reject_append_only_mutation/i,
-      );
-
-      // DELETE rejeitado
-      await assert.rejects(
-        async () => {
-          await pool.query(
-            `DELETE FROM "nex_execution_attempt_events" WHERE "attempt_id" = $1`,
-            [attId],
-          );
-        },
-        /APPEND_ONLY_VIOLATION|strictly forbidden|nex_reject_append_only_mutation/i,
-      );
-
-      // TRUNCATE rejeitado
-      await assert.rejects(
-        async () => {
-          await pool.query(
-            `TRUNCATE "nex_execution_attempt_events"`,
-          );
-        },
-        /APPEND_ONLY_VIOLATION|strictly forbidden|nex_reject_append_only_mutation/i,
-      );
-    });
-
-    it('Trigger bloqueia UPDATE e DELETE em nex_execution_signals', async () => {
-      const attId = `att_trg_sig_${Date.now()}` as AttemptId;
-      const sigId = `sig_trg_${Date.now()}` as ExecutionSignalId;
+    before(async () => {
+      // Popula dados para que todas as 7 tabelas históricas tenham pelo menos 1 linha
+      const attId = `att_trg_suite_${Date.now()}` as AttemptId;
+      const sigId = `sig_trg_suite_${Date.now()}` as ExecutionSignalId;
+      const eviId = `evi_trg_suite_${Date.now()}` as ExecutionEvidenceId;
+      const assId = `ass_trg_suite_${Date.now()}` as OutcomeAssessmentId;
+      const rcpId = `rcp_trg_suite_${Date.now()}` as ReceiptId;
 
       await store.appendAttemptEvent({
         type: 'AttemptCreated',
@@ -987,19 +1326,68 @@ describe('0.86C-2A · Persistência PostgreSQL de Execution Ledger L0', { skip: 
         observedAt: T1,
       });
 
-      await assert.rejects(
-        async () => {
-          await pool.query(
-            `DELETE FROM "nex_execution_signals" WHERE "signal_id" = $1`,
-            [sigId],
-          );
-        },
-        /APPEND_ONLY_VIOLATION|strictly forbidden|nex_reject_append_only_mutation/i,
-      );
+      await store.appendExecutionEvidence({
+        evidenceId: eviId,
+        attemptId: attId,
+        signalRefs: [sigId],
+        kind: 'effect_observed',
+        safeFacts: {},
+        provenance: PROVENANCE_TEST,
+        recordedAt: T2,
+      });
+
+      await store.appendOutcomeAssessment({
+        assessmentId: assId,
+        attemptId: attId,
+        evidenceRefs: [eviId],
+        verdict: 'confirmed_mutation',
+        reasonCode: 'TRIGGER_SUITE',
+        assessedAt: T3,
+      });
+
+      await store.appendReceipt({
+        receiptId: rcpId,
+        decisionId: DECISION_A,
+        kind: 'execution_outcome',
+        routeEvaluationId: ROUTE_EVAL_A,
+        attemptId: attId,
+        outcomeAssessmentId: assId,
+        verdictSummary: 'confirmed_mutation',
+        reasonCode: 'TRIGGER_SUITE',
+        safeStructuredFacts: {},
+        materializedAt: T4,
+      });
     });
 
+    for (const table of historicalTables) {
+      it(`Tabela histórica ${table.name} rejeita UPDATE, DELETE e TRUNCATE via trigger append-only`, async () => {
+        // UPDATE rejeitado
+        await assert.rejects(
+          async () => {
+            await pool.query(`UPDATE "${table.name}" SET "${table.identCol}" = "${table.identCol}"`);
+          },
+          /APPEND_ONLY_VIOLATION|strictly forbidden|nex_reject_append_only_mutation/i,
+        );
 
-    it('Projeções operacionais (heads) continuam sendo mutáveis normalmente', async () => {
+        // DELETE rejeitado
+        await assert.rejects(
+          async () => {
+            await pool.query(`DELETE FROM "${table.name}"`);
+          },
+          /APPEND_ONLY_VIOLATION|strictly forbidden|nex_reject_append_only_mutation/i,
+        );
+
+        // TRUNCATE rejeitado
+        await assert.rejects(
+          async () => {
+            await pool.query(`TRUNCATE "${table.name}" CASCADE`);
+          },
+          /APPEND_ONLY_VIOLATION|strictly forbidden|nex_reject_append_only_mutation/i,
+        );
+      });
+    }
+
+    it('Projeções operacionais (heads) continuam sendo mutáveis normalmente via adapter', async () => {
       const attId = `att_head_mut_${Date.now()}` as AttemptId;
 
       await store.appendAttemptEvent({
@@ -1027,12 +1415,12 @@ describe('0.86C-2A · Persistência PostgreSQL de Execution Ledger L0', { skip: 
   });
 
   // ==========================================================================
-  // 8. TRUST BOUNDARY FAIL-CLOSED (CORRUPÇÃO)
+  // 8. TRUST BOUNDARY FAIL-CLOSED (CORRUPÇÃO) (C4)
   // ==========================================================================
-  describe('8. Trust Boundary Fail-Closed', () => {
-    it('Rejeita row com payload JSON adulterado (array ou primitive em vez de plain object)', async () => {
-      const attId = `att_corrupt_${Date.now()}` as AttemptId;
-      const sigId = `sig_corrupt_${Date.now()}` as ExecutionSignalId;
+  describe('8. Trust Boundary Fail-Closed (Corrupção Adversarial) (C4)', () => {
+    it('Rejeita FactProvenance com source vazia', async () => {
+      const attId = `att_c4_src_${Date.now()}` as AttemptId;
+      const sigId = `sig_c4_src_${Date.now()}` as ExecutionSignalId;
 
       await store.appendAttemptEvent({
         type: 'AttemptCreated',
@@ -1045,27 +1433,443 @@ describe('0.86C-2A · Persistência PostgreSQL de Execution Ledger L0', { skip: 
         createdAt: T0,
       });
 
-      // Insere sinal com safe_metadata inválido diretamente via SQL bypassing adapter
+      const badProvenance = { ...PROVENANCE_TEST, source: '' };
       await pool.query(
         `INSERT INTO "nex_execution_signals"
          ("signal_id", "attempt_id", "kind", "safe_metadata", "provenance", "observed_at")
          VALUES ($1, $2, $3, $4, $5, $6)`,
-        [
-          sigId,
-          attId,
-          'effect_observed',
-          JSON.stringify(['corrupted_array']), // array em vez de plain object
-          JSON.stringify(PROVENANCE_TEST),
-          T1,
-        ],
+        [sigId, attId, 'effect_observed', JSON.stringify({}), JSON.stringify(badProvenance), T1],
       );
 
-      // Leitura deve falhar de forma fail-closed
       await assert.rejects(
         async () => {
           await store.getExecutionSignal(sigId);
         },
         (err: any) => err instanceof CorruptedLedgerRowError,
+      );
+    });
+
+    it('Rejeita FactProvenance com acquisitionBasis inválido', async () => {
+      const attId = `att_c4_acq_${Date.now()}` as AttemptId;
+      const sigId = `sig_c4_acq_${Date.now()}` as ExecutionSignalId;
+
+      await store.appendAttemptEvent({
+        type: 'AttemptCreated',
+        attemptId: attId,
+        decisionId: DECISION_A,
+        routeEvaluationId: ROUTE_EVAL_A,
+        capabilityRevisionId: CAP_REV_A,
+        bindingRevisionId: BIND_REV_A,
+        routeRevisionId: ROUTE_REV_A,
+        createdAt: T0,
+      });
+
+      const badProvenance = { ...PROVENANCE_TEST, acquisitionBasis: 'telepathy' };
+      await pool.query(
+        `INSERT INTO "nex_execution_signals"
+         ("signal_id", "attempt_id", "kind", "safe_metadata", "provenance", "observed_at")
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [sigId, attId, 'effect_observed', JSON.stringify({}), JSON.stringify(badProvenance), T1],
+      );
+
+      await assert.rejects(
+        async () => {
+          await store.getExecutionSignal(sigId);
+        },
+        (err: any) => err instanceof CorruptedLedgerRowError,
+      );
+    });
+
+    it('Rejeita FactProvenance com observedAt não-ISO ou inválido', async () => {
+      const attId = `att_c4_obs_${Date.now()}` as AttemptId;
+      const sigId = `sig_c4_obs_${Date.now()}` as ExecutionSignalId;
+
+      await store.appendAttemptEvent({
+        type: 'AttemptCreated',
+        attemptId: attId,
+        decisionId: DECISION_A,
+        routeEvaluationId: ROUTE_EVAL_A,
+        capabilityRevisionId: CAP_REV_A,
+        bindingRevisionId: BIND_REV_A,
+        routeRevisionId: ROUTE_REV_A,
+        createdAt: T0,
+      });
+
+      const badProvenance = { ...PROVENANCE_TEST, observedAt: 'invalid-date' };
+      await pool.query(
+        `INSERT INTO "nex_execution_signals"
+         ("signal_id", "attempt_id", "kind", "safe_metadata", "provenance", "observed_at")
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [sigId, attId, 'effect_observed', JSON.stringify({}), JSON.stringify(badProvenance), T1],
+      );
+
+      await assert.rejects(
+        async () => {
+          await store.getExecutionSignal(sigId);
+        },
+        (err: any) => err instanceof CorruptedLedgerRowError,
+      );
+    });
+
+    it('Rejeita AttemptEvent com payload.type divergente de event_type', async () => {
+      const attId = `att_c4_type_${Date.now()}` as AttemptId;
+
+      await store.appendAttemptEvent({
+        type: 'AttemptCreated',
+        attemptId: attId,
+        decisionId: DECISION_A,
+        routeEvaluationId: ROUTE_EVAL_A,
+        capabilityRevisionId: CAP_REV_A,
+        bindingRevisionId: BIND_REV_A,
+        routeRevisionId: ROUTE_REV_A,
+        createdAt: T0,
+      });
+
+      // Insere evento com event_type = AttemptStarted mas payload.type = AttemptTerminal
+      await pool.query(
+        `INSERT INTO "nex_execution_attempt_events"
+         ("attempt_id", "sequence_number", "event_type", "event_payload", "occurred_at")
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          attId,
+          2,
+          'AttemptStarted',
+          JSON.stringify({
+            type: 'AttemptTerminal',
+            attemptId: attId,
+            terminalStatus: 'succeeded',
+            finishedAt: T1,
+          }),
+          T1,
+        ],
+      );
+
+      await assert.rejects(
+        async () => {
+          await store.listAttemptEvents(attId);
+        },
+        (err: any) => err instanceof CorruptedLedgerRowError,
+      );
+    });
+
+    it('Rejeita AttemptStarted com divergência material de timestamp entre payload e occurred_at', async () => {
+      const attId = `att_c4_drift_${Date.now()}` as AttemptId;
+
+      await store.appendAttemptEvent({
+        type: 'AttemptCreated',
+        attemptId: attId,
+        decisionId: DECISION_A,
+        routeEvaluationId: ROUTE_EVAL_A,
+        capabilityRevisionId: CAP_REV_A,
+        bindingRevisionId: BIND_REV_A,
+        routeRevisionId: ROUTE_REV_A,
+        createdAt: T0,
+      });
+
+      await pool.query(
+        `INSERT INTO "nex_execution_attempt_events"
+         ("attempt_id", "sequence_number", "event_type", "event_payload", "occurred_at")
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          attId,
+          2,
+          'AttemptStarted',
+          JSON.stringify({
+            type: 'AttemptStarted',
+            attemptId: attId,
+            startedAt: '2026-09-25T15:00:00.000Z', // Divergência material contra occurred_at
+          }),
+          '2026-09-25T12:00:00.000Z',
+        ],
+      );
+
+      await assert.rejects(
+        async () => {
+          await store.listAttemptEvents(attId);
+        },
+        (err: any) => err instanceof CorruptedLedgerRowError,
+      );
+    });
+
+    it('Rejeita AttemptTerminal com terminalStatus inválido no payload', async () => {
+      const attId = `att_c4_term_${Date.now()}` as AttemptId;
+
+      await store.appendAttemptEvent({
+        type: 'AttemptCreated',
+        attemptId: attId,
+        decisionId: DECISION_A,
+        routeEvaluationId: ROUTE_EVAL_A,
+        capabilityRevisionId: CAP_REV_A,
+        bindingRevisionId: BIND_REV_A,
+        routeRevisionId: ROUTE_REV_A,
+        createdAt: T0,
+      });
+
+      await pool.query(
+        `INSERT INTO "nex_execution_attempt_events"
+         ("attempt_id", "sequence_number", "event_type", "event_payload", "occurred_at")
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          attId,
+          2,
+          'AttemptTerminal',
+          JSON.stringify({
+            type: 'AttemptTerminal',
+            attemptId: attId,
+            terminalStatus: 'exploded_into_space', // Status inválido
+            finishedAt: T1,
+          }),
+          T1,
+        ],
+      );
+
+      await assert.rejects(
+        async () => {
+          await store.listAttemptEvents(attId);
+        },
+        (err: any) => err instanceof CorruptedLedgerRowError,
+      );
+    });
+
+    it('DB rejeita noSideEffectGuarantee fora da restrição CHECK estrutural (C4)', async () => {
+      const attId = `att_c4_side_${Date.now()}` as AttemptId;
+      const eviId = `evi_c4_side_${Date.now()}` as ExecutionEvidenceId;
+
+      await store.appendAttemptEvent({
+        type: 'AttemptCreated',
+        attemptId: attId,
+        decisionId: DECISION_A,
+        routeEvaluationId: ROUTE_EVAL_A,
+        capabilityRevisionId: CAP_REV_A,
+        bindingRevisionId: BIND_REV_A,
+        routeRevisionId: ROUTE_REV_A,
+        createdAt: T0,
+      });
+
+      await assert.rejects(
+        async () => {
+          await pool.query(
+            `INSERT INTO "nex_execution_evidence"
+             ("evidence_id", "attempt_id", "kind", "safe_facts", "provenance", "no_side_effect_guarantee", "recorded_at")
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [
+              eviId,
+              attId,
+              'effect_observed',
+              JSON.stringify({}),
+              JSON.stringify(PROVENANCE_TEST),
+              'maybe_safe', // valor inválido rejeitado pelo CHECK
+              T1,
+            ],
+          );
+        },
+        (err: any) => err?.code === '23514',
+      );
+    });
+
+    it('Rejeita Evidence com safeFacts adulterado no DB (C4)', async () => {
+      const attId = `att_c4_facts_${Date.now()}` as AttemptId;
+      const eviId = `evi_c4_facts_${Date.now()}` as ExecutionEvidenceId;
+
+      await store.appendAttemptEvent({
+        type: 'AttemptCreated',
+        attemptId: attId,
+        decisionId: DECISION_A,
+        routeEvaluationId: ROUTE_EVAL_A,
+        capabilityRevisionId: CAP_REV_A,
+        bindingRevisionId: BIND_REV_A,
+        routeRevisionId: ROUTE_REV_A,
+        createdAt: T0,
+      });
+
+      await pool.query(
+        `INSERT INTO "nex_execution_evidence"
+         ("evidence_id", "attempt_id", "kind", "safe_facts", "provenance", "no_side_effect_guarantee", "recorded_at")
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          eviId,
+          attId,
+          'effect_observed',
+          JSON.stringify(['corrupted_array']), // array em vez de plain object
+          JSON.stringify(PROVENANCE_TEST),
+          'structural',
+          T1,
+        ],
+      );
+
+      await assert.rejects(
+        async () => {
+          await store.getExecutionEvidence(eviId);
+        },
+        (err: any) => err instanceof CorruptedLedgerRowError,
+      );
+    });
+  });
+
+  // ==========================================================================
+  // 9. PRESERVAÇÃO DE ORDEM OBSERVÁVEL DO STORE VIGENTE (C5)
+  // ==========================================================================
+  describe('9. Preservação de Ordem Observável (C5)', () => {
+    it('Preserva estritamente a ordem de append com timestamps não-monotônicos e idênticos, compatível com store in-memory', async () => {
+      const memStore = createExecutionLedgerStore();
+
+      // 1. Attempts com timestamps fora de ordem
+      const attId1 = `att_c5_seq1_${Date.now()}` as AttemptId;
+      const attId2 = `att_c5_seq2_${Date.now()}` as AttemptId;
+      const attId3 = `att_c5_seq3_${Date.now()}` as AttemptId;
+
+      const attDefs = [
+        { id: attId1, time: T3 }, // Criado com timestamp futuro
+        { id: attId2, time: T1 }, // Criado com timestamp passado
+        { id: attId3, time: T1 }, // Criado com timestamp idêntico
+      ];
+
+      for (const def of attDefs) {
+        const evt: AttemptCreatedEvent = {
+          type: 'AttemptCreated',
+          attemptId: def.id,
+          decisionId: DECISION_A,
+          routeEvaluationId: ROUTE_EVAL_A,
+          capabilityRevisionId: CAP_REV_A,
+          bindingRevisionId: BIND_REV_A,
+          routeRevisionId: ROUTE_REV_A,
+          createdAt: def.time,
+        };
+        await memStore.appendAttemptEvent(evt);
+        await store.appendAttemptEvent(evt);
+      }
+
+      // 2. Signals no attId1 com timestamps fora de ordem
+      const sig1 = `sig_c5_1_${Date.now()}` as ExecutionSignalId;
+      const sig2 = `sig_c5_2_${Date.now()}` as ExecutionSignalId;
+      const sig3 = `sig_c5_3_${Date.now()}` as ExecutionSignalId;
+
+      const sigDefs: ExecutionSignal[] = [
+        {
+          signalId: sig1,
+          attemptId: attId1,
+          kind: 'effect_observed',
+          safeMetadata: {},
+          provenance: PROVENANCE_TEST,
+          observedAt: T4, // T4
+        },
+        {
+          signalId: sig2,
+          attemptId: attId1,
+          kind: 'effect_observed',
+          safeMetadata: {},
+          provenance: PROVENANCE_TEST,
+          observedAt: T1, // T1
+        },
+        {
+          signalId: sig3,
+          attemptId: attId1,
+          kind: 'effect_observed',
+          safeMetadata: {},
+          provenance: PROVENANCE_TEST,
+          observedAt: T2, // T2
+        },
+      ];
+
+      for (const sig of sigDefs) {
+        await memStore.appendExecutionSignal(sig);
+        await store.appendExecutionSignal(sig);
+      }
+
+      const memSignals = await memStore.listExecutionSignals(attId1);
+      const pgSignals = await store.listExecutionSignals(attId1);
+
+      assert.deepEqual(
+        pgSignals.map((s) => s.signalId),
+        [sig1, sig2, sig3],
+        'Postgres listExecutionSignals deve respeitar ordem de append, não observedAt.',
+      );
+      assert.deepEqual(
+        pgSignals.map((s) => s.signalId),
+        memSignals.map((s) => s.signalId),
+        'Ordem observável do Postgres deve ser idêntica ao store in-memory.',
+      );
+
+      // 3. Evidence no attId1 com timestamps fora de ordem
+      const evi1 = `evi_c5_1_${Date.now()}` as ExecutionEvidenceId;
+      const evi2 = `evi_c5_2_${Date.now()}` as ExecutionEvidenceId;
+      const eviDefs: ExecutionEvidence[] = [
+        {
+          evidenceId: evi1,
+          attemptId: attId1,
+          signalRefs: [sig1],
+          kind: 'effect_observed',
+          safeFacts: {},
+          provenance: PROVENANCE_TEST,
+          recordedAt: T4,
+        },
+        {
+          evidenceId: evi2,
+          attemptId: attId1,
+          signalRefs: [sig2],
+          kind: 'effect_observed',
+          safeFacts: {},
+          provenance: PROVENANCE_TEST,
+          recordedAt: T1,
+        },
+      ];
+
+      for (const evi of eviDefs) {
+        await memStore.appendExecutionEvidence(evi);
+        await store.appendExecutionEvidence(evi);
+      }
+
+      const memEvi = await memStore.listExecutionEvidence(attId1);
+      const pgEvi = await store.listExecutionEvidence(attId1);
+
+      assert.deepEqual(
+        pgEvi.map((e) => e.evidenceId),
+        [evi1, evi2],
+      );
+      assert.deepEqual(
+        pgEvi.map((e) => e.evidenceId),
+        memEvi.map((e) => e.evidenceId),
+      );
+
+      // 4. OutcomeAssessments no attId1 com supersedes e timestamps não-monotônicos
+      const ass1 = `ass_c5_1_${Date.now()}` as OutcomeAssessmentId;
+      const ass2 = `ass_c5_2_${Date.now()}` as OutcomeAssessmentId;
+
+      const assDefs: OutcomeAssessment[] = [
+        {
+          assessmentId: ass1,
+          attemptId: attId1,
+          evidenceRefs: [evi1],
+          verdict: 'indeterminate',
+          reasonCode: 'INIT',
+          assessedAt: T2,
+        },
+        {
+          assessmentId: ass2,
+          attemptId: attId1,
+          evidenceRefs: [evi1],
+          verdict: 'confirmed_mutation',
+          reasonCode: 'SECOND',
+          supersedesAssessmentId: ass1,
+          assessedAt: T1, // Anterior no timestamp ao ass1, mas inserido depois
+        },
+      ];
+
+      for (const ass of assDefs) {
+        await memStore.appendOutcomeAssessment(ass);
+        await store.appendOutcomeAssessment(ass);
+      }
+
+      const memAss = await memStore.listOutcomeAssessments(attId1);
+      const pgAss = await store.listOutcomeAssessments(attId1);
+
+      assert.deepEqual(
+        pgAss.map((a) => a.assessmentId),
+        [ass1, ass2],
+      );
+      assert.deepEqual(
+        pgAss.map((a) => a.assessmentId),
+        memAss.map((a) => a.assessmentId),
       );
     });
   });

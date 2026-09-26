@@ -41,6 +41,8 @@ import type {
   BindingRevisionId,
   RouteRevisionId,
   FactProvenance,
+  AcquisitionBasis,
+  VerificationStatus,
 } from '../../capabilities/contracts';
 import type { PolicyRevisionId } from '../../policy/contracts';
 import { deepCloneAndFreeze } from '../ledger';
@@ -57,9 +59,12 @@ export function formatPgTimestampToUtcInstant(
   entityId?: string,
 ): string {
   if (val instanceof Date) {
+    if (Number.isNaN(val.getTime())) {
+      throw new CorruptedLedgerRowError(table, `Field '${fieldName}' contains invalid Date object.`, entityId);
+    }
     return val.toISOString();
   }
-  if (typeof val === 'string') {
+  if (typeof val === 'string' && val.trim().length > 0) {
     const d = new Date(val);
     if (!Number.isNaN(d.getTime())) {
       return d.toISOString();
@@ -86,6 +91,120 @@ export function assertPlainObject(
     );
   }
   return deepCloneAndFreeze(val as Record<string, unknown>);
+}
+
+export function assertNonEmptyString(
+  val: unknown,
+  table: string,
+  fieldName: string,
+  entityId?: string,
+): string {
+  if (typeof val !== 'string' || val.trim().length === 0) {
+    throw new CorruptedLedgerRowError(
+      table,
+      `Field '${fieldName}' must be a non-empty string.`,
+      entityId,
+    );
+  }
+  return val.trim();
+}
+
+const VALID_ACQUISITION_BASES = new Set<string>([
+  'declared',
+  'observed',
+  'derived',
+  'measured',
+  'imported',
+]);
+
+const VALID_VERIFICATION_STATUSES = new Set<string>([
+  'unverified',
+  'corroborated',
+  'empirically_verified',
+  'unknown',
+]);
+
+export function validateAndMapFactProvenance(
+  val: unknown,
+  table: string,
+  fieldName: string,
+  entityId?: string,
+): FactProvenance {
+  if (!val || typeof val !== 'object' || Array.isArray(val)) {
+    throw new CorruptedLedgerRowError(
+      table,
+      `Field '${fieldName}' must be a non-null plain JSON object.`,
+      entityId,
+    );
+  }
+  const obj = val as Record<string, unknown>;
+
+  const source = assertNonEmptyString(obj.source, table, `${fieldName}.source`, entityId);
+
+  if (typeof obj.acquisitionBasis !== 'string' || !VALID_ACQUISITION_BASES.has(obj.acquisitionBasis)) {
+    throw new CorruptedLedgerRowError(
+      table,
+      `Field '${fieldName}.acquisitionBasis' must be one of: declared, observed, derived, measured, imported. Received: '${String(obj.acquisitionBasis)}'`,
+      entityId,
+    );
+  }
+
+  if (typeof obj.verificationStatus !== 'string' || !VALID_VERIFICATION_STATUSES.has(obj.verificationStatus)) {
+    throw new CorruptedLedgerRowError(
+      table,
+      `Field '${fieldName}.verificationStatus' must be one of: unverified, corroborated, empirically_verified, unknown. Received: '${String(obj.verificationStatus)}'`,
+      entityId,
+    );
+  }
+
+  const observedAt = formatPgTimestampToUtcInstant(
+    obj.observedAt,
+    table,
+    `${fieldName}.observedAt`,
+    entityId,
+  );
+
+  let effectiveFrom: string | undefined;
+  if (obj.effectiveFrom !== undefined && obj.effectiveFrom !== null) {
+    effectiveFrom = formatPgTimestampToUtcInstant(
+      obj.effectiveFrom,
+      table,
+      `${fieldName}.effectiveFrom`,
+      entityId,
+    );
+  }
+
+  let validUntil: string | undefined;
+  if (obj.validUntil !== undefined && obj.validUntil !== null) {
+    validUntil = formatPgTimestampToUtcInstant(
+      obj.validUntil,
+      table,
+      `${fieldName}.validUntil`,
+      entityId,
+    );
+  }
+
+  let externalReference: string | undefined;
+  if (obj.externalReference !== undefined && obj.externalReference !== null) {
+    if (typeof obj.externalReference !== 'string') {
+      throw new CorruptedLedgerRowError(
+        table,
+        `Field '${fieldName}.externalReference' must be a string if provided.`,
+        entityId,
+      );
+    }
+    externalReference = obj.externalReference;
+  }
+
+  return Object.freeze<FactProvenance>({
+    source,
+    acquisitionBasis: obj.acquisitionBasis as AcquisitionBasis,
+    verificationStatus: obj.verificationStatus as VerificationStatus,
+    observedAt,
+    ...(effectiveFrom ? { effectiveFrom } : {}),
+    ...(validUntil ? { validUntil } : {}),
+    ...(externalReference !== undefined ? { externalReference } : {}),
+  });
 }
 
 // ============================================================================
@@ -164,6 +283,14 @@ export function mapRowToAttemptState(row: any): AttemptState {
 // 3. MAPPER: ATTEMPT EVENTS
 // ============================================================================
 
+const VALID_TERMINAL_STATUSES = new Set<AttemptTerminalStatus>([
+  'succeeded',
+  'failed',
+  'timed_out',
+  'cancelled',
+  'unknown_completion',
+]);
+
 export function mapRowToAttemptEvent(row: any): AttemptEvent {
   if (!row || typeof row !== 'object') {
     throw new CorruptedLedgerRowError('nex_execution_attempt_events', 'Row is null or not an object.');
@@ -175,42 +302,116 @@ export function mapRowToAttemptEvent(row: any): AttemptEvent {
   }
 
   const occurredAt = formatPgTimestampToUtcInstant(row.occurred_at, 'nex_execution_attempt_events', 'occurred_at', attemptId);
-  const payload = assertPlainObject(row.event_payload, 'nex_execution_attempt_events', 'event_payload', attemptId);
+
+  if (!row.event_payload || typeof row.event_payload !== 'object' || Array.isArray(row.event_payload)) {
+    throw new CorruptedLedgerRowError('nex_execution_attempt_events', 'event_payload must be a non-null plain JSON object.', attemptId);
+  }
+  const payload = row.event_payload as Record<string, unknown>;
+
+  if (payload.type !== row.event_type) {
+    throw new CorruptedLedgerRowError(
+      'nex_execution_attempt_events',
+      `event_payload.type '${String(payload.type)}' does not match event_type '${String(row.event_type)}'.`,
+      attemptId,
+    );
+  }
+
+  if (payload.attemptId !== attemptId) {
+    throw new CorruptedLedgerRowError(
+      'nex_execution_attempt_events',
+      `event_payload.attemptId '${String(payload.attemptId)}' does not match row attempt_id '${attemptId}'.`,
+      attemptId,
+    );
+  }
 
   switch (row.event_type) {
     case 'AttemptCreated': {
+      const decisionId = assertNonEmptyString(payload.decisionId, 'nex_execution_attempt_events', 'event_payload.decisionId', attemptId);
+      const routeEvaluationId = assertNonEmptyString(payload.routeEvaluationId, 'nex_execution_attempt_events', 'event_payload.routeEvaluationId', attemptId);
+      const capabilityRevisionId = assertNonEmptyString(payload.capabilityRevisionId, 'nex_execution_attempt_events', 'event_payload.capabilityRevisionId', attemptId);
+      const bindingRevisionId = assertNonEmptyString(payload.bindingRevisionId, 'nex_execution_attempt_events', 'event_payload.bindingRevisionId', attemptId);
+      const routeRevisionId = assertNonEmptyString(payload.routeRevisionId, 'nex_execution_attempt_events', 'event_payload.routeRevisionId', attemptId);
+
+      let policyRevisionId: PolicyRevisionId | undefined;
+      if (payload.policyRevisionId !== undefined && payload.policyRevisionId !== null) {
+        policyRevisionId = assertNonEmptyString(payload.policyRevisionId, 'nex_execution_attempt_events', 'event_payload.policyRevisionId', attemptId) as PolicyRevisionId;
+      }
+
+      const createdAt = formatPgTimestampToUtcInstant(payload.createdAt, 'nex_execution_attempt_events', 'event_payload.createdAt', attemptId);
+      if (new Date(createdAt).getTime() !== new Date(occurredAt).getTime()) {
+        throw new CorruptedLedgerRowError(
+          'nex_execution_attempt_events',
+          `Material divergence between event_payload.createdAt '${createdAt}' and occurred_at '${occurredAt}'.`,
+          attemptId,
+        );
+      }
+
       return Object.freeze<AttemptCreatedEvent>({
         type: 'AttemptCreated',
         attemptId: attemptId as AttemptId,
-        decisionId: (payload.decisionId ?? row.decision_id) as DecisionId,
-        routeEvaluationId: (payload.routeEvaluationId ?? row.route_evaluation_id) as RouteEvaluationId,
-        capabilityRevisionId: (payload.capabilityRevisionId ?? row.capability_revision_id) as CapabilityRevisionId,
-        bindingRevisionId: (payload.bindingRevisionId ?? row.binding_revision_id) as BindingRevisionId,
-        routeRevisionId: (payload.routeRevisionId ?? row.route_revision_id) as RouteRevisionId,
-        policyRevisionId: (payload.policyRevisionId ?? row.policy_revision_id) as PolicyRevisionId | undefined,
-        createdAt: (payload.createdAt as string) || occurredAt,
+        decisionId: decisionId as DecisionId,
+        routeEvaluationId: routeEvaluationId as RouteEvaluationId,
+        capabilityRevisionId: capabilityRevisionId as CapabilityRevisionId,
+        bindingRevisionId: bindingRevisionId as BindingRevisionId,
+        routeRevisionId: routeRevisionId as RouteRevisionId,
+        ...(policyRevisionId ? { policyRevisionId } : {}),
+        createdAt,
       });
     }
 
     case 'AttemptStarted': {
+      const startedAt = formatPgTimestampToUtcInstant(payload.startedAt, 'nex_execution_attempt_events', 'event_payload.startedAt', attemptId);
+      if (new Date(startedAt).getTime() !== new Date(occurredAt).getTime()) {
+        throw new CorruptedLedgerRowError(
+          'nex_execution_attempt_events',
+          `Material divergence between event_payload.startedAt '${startedAt}' and occurred_at '${occurredAt}'.`,
+          attemptId,
+        );
+      }
+
       return Object.freeze<AttemptStartedEvent>({
         type: 'AttemptStarted',
         attemptId: attemptId as AttemptId,
-        startedAt: (payload.startedAt as string) || occurredAt,
+        startedAt,
       });
     }
 
     case 'AttemptTerminal': {
-      const terminalStatus = payload.terminalStatus as AttemptTerminalStatus;
-      if (!terminalStatus) {
-        throw new CorruptedLedgerRowError('nex_execution_attempt_events', 'Missing terminalStatus in AttemptTerminal payload.', attemptId);
+      if (typeof payload.terminalStatus !== 'string' || !VALID_TERMINAL_STATUSES.has(payload.terminalStatus as AttemptTerminalStatus)) {
+        throw new CorruptedLedgerRowError(
+          'nex_execution_attempt_events',
+          `Missing or invalid terminalStatus in AttemptTerminal payload: '${String(payload.terminalStatus)}'.`,
+          attemptId,
+        );
       }
+
+      let terminalReason: string | undefined;
+      if (payload.terminalReason !== undefined && payload.terminalReason !== null) {
+        if (typeof payload.terminalReason !== 'string') {
+          throw new CorruptedLedgerRowError(
+            'nex_execution_attempt_events',
+            'terminalReason in AttemptTerminal must be a string if provided.',
+            attemptId,
+          );
+        }
+        terminalReason = payload.terminalReason;
+      }
+
+      const finishedAt = formatPgTimestampToUtcInstant(payload.finishedAt, 'nex_execution_attempt_events', 'event_payload.finishedAt', attemptId);
+      if (new Date(finishedAt).getTime() !== new Date(occurredAt).getTime()) {
+        throw new CorruptedLedgerRowError(
+          'nex_execution_attempt_events',
+          `Material divergence between event_payload.finishedAt '${finishedAt}' and occurred_at '${occurredAt}'.`,
+          attemptId,
+        );
+      }
+
       return Object.freeze<AttemptTerminalEvent>({
         type: 'AttemptTerminal',
         attemptId: attemptId as AttemptId,
-        terminalStatus,
-        terminalReason: payload.terminalReason as string | undefined,
-        finishedAt: (payload.finishedAt as string) || occurredAt,
+        terminalStatus: payload.terminalStatus as AttemptTerminalStatus,
+        finishedAt,
+        ...(terminalReason !== undefined ? { terminalReason } : {}),
       });
     }
 
@@ -247,7 +448,7 @@ export function mapRowToExecutionSignal(row: any): ExecutionSignal {
 
   const observedAt = formatPgTimestampToUtcInstant(row.observed_at, 'nex_execution_signals', 'observed_at', signalId);
   const safeMetadata = assertPlainObject(row.safe_metadata, 'nex_execution_signals', 'safe_metadata', signalId);
-  const provenance = assertPlainObject(row.provenance, 'nex_execution_signals', 'provenance', signalId) as unknown as FactProvenance;
+  const provenance = validateAndMapFactProvenance(row.provenance, 'nex_execution_signals', 'provenance', signalId);
 
   return Object.freeze<ExecutionSignal>({
     signalId: signalId as ExecutionSignalId,
@@ -293,9 +494,21 @@ export function mapRowsToExecutionEvidence(
     throw new CorruptedLedgerRowError('nex_execution_evidence', `Invalid evidence kind '${String(headerRow.kind)}'.`, evidenceId);
   }
 
+  let noSideEffectGuarantee: 'structural' | 'none' | undefined;
+  if (headerRow.no_side_effect_guarantee !== null && headerRow.no_side_effect_guarantee !== undefined) {
+    if (headerRow.no_side_effect_guarantee !== 'structural' && headerRow.no_side_effect_guarantee !== 'none') {
+      throw new CorruptedLedgerRowError(
+        'nex_execution_evidence',
+        `Invalid no_side_effect_guarantee '${String(headerRow.no_side_effect_guarantee)}'. Must be 'structural', 'none', or null.`,
+        evidenceId,
+      );
+    }
+    noSideEffectGuarantee = headerRow.no_side_effect_guarantee;
+  }
+
   const recordedAt = formatPgTimestampToUtcInstant(headerRow.recorded_at, 'nex_execution_evidence', 'recorded_at', evidenceId);
   const safeFacts = assertPlainObject(headerRow.safe_facts, 'nex_execution_evidence', 'safe_facts', evidenceId);
-  const provenance = assertPlainObject(headerRow.provenance, 'nex_execution_evidence', 'provenance', evidenceId) as unknown as FactProvenance;
+  const provenance = validateAndMapFactProvenance(headerRow.provenance, 'nex_execution_evidence', 'provenance', evidenceId);
 
   const signalRefs = Object.freeze(
     signalRows
@@ -304,6 +517,13 @@ export function mapRowsToExecutionEvidence(
       .map((sr) => {
         if (typeof sr.signal_id !== 'string' || sr.signal_id.trim().length === 0) {
           throw new CorruptedLedgerRowError('nex_execution_evidence_signals', 'Missing signal_id in relation.', evidenceId);
+        }
+        if (sr.attempt_id && sr.attempt_id !== headerRow.attempt_id) {
+          throw new CorruptedLedgerRowError(
+            'nex_execution_evidence_signals',
+            `Relation attempt_id '${sr.attempt_id}' does not match evidence attempt_id '${headerRow.attempt_id}'.`,
+            evidenceId,
+          );
         }
         return sr.signal_id as ExecutionSignalId;
       }),
@@ -317,7 +537,7 @@ export function mapRowsToExecutionEvidence(
     safeFacts,
     provenance,
     recordedAt,
-    ...(headerRow.no_side_effect_guarantee ? { noSideEffectGuarantee: headerRow.no_side_effect_guarantee } : {}),
+    ...(noSideEffectGuarantee ? { noSideEffectGuarantee } : {}),
   });
 }
 
@@ -366,6 +586,13 @@ export function mapRowsToOutcomeAssessment(
       .map((er) => {
         if (typeof er.evidence_id !== 'string' || er.evidence_id.trim().length === 0) {
           throw new CorruptedLedgerRowError('nex_execution_outcome_evidence', 'Missing evidence_id in relation.', assessmentId);
+        }
+        if (er.attempt_id && er.attempt_id !== headerRow.attempt_id) {
+          throw new CorruptedLedgerRowError(
+            'nex_execution_outcome_evidence',
+            `Relation attempt_id '${er.attempt_id}' does not match assessment attempt_id '${headerRow.attempt_id}'.`,
+            assessmentId,
+          );
         }
         return er.evidence_id as ExecutionEvidenceId;
       }),

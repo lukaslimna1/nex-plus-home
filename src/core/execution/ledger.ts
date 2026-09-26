@@ -341,8 +341,19 @@ export function createExecutionLedgerStore(
           `Receipt of kind 'execution_outcome' must have attemptId, outcomeAssessmentId, and routeEvaluationId.`,
         );
       }
-      if (!attemptStatesById.has(receipt.attemptId)) {
+      const attempt = attemptStatesById.get(receipt.attemptId);
+      if (!attempt) {
         throw new InvalidAttemptReferenceError(receipt.attemptId as string, 'appendReceipt');
+      }
+      if (attempt.decisionId !== receipt.decisionId) {
+        throw new InvalidReceiptStructureError(
+          `Receipt decisionId '${receipt.decisionId}' does not match Attempt decisionId '${attempt.decisionId}'.`,
+        );
+      }
+      if (attempt.routeEvaluationId !== receipt.routeEvaluationId) {
+        throw new InvalidReceiptStructureError(
+          `Receipt routeEvaluationId '${receipt.routeEvaluationId}' does not match Attempt routeEvaluationId '${attempt.routeEvaluationId}'.`,
+        );
       }
       const assessment = assessmentsById.get(receipt.outcomeAssessmentId);
       if (!assessment) {
@@ -364,6 +375,11 @@ export function createExecutionLedgerStore(
       if (untyped.outcomeAssessmentId !== undefined) {
         throw new InvalidReceiptStructureError(
           `Receipt of kind '${receipt.kind}' must NOT have an outcomeAssessmentId.`,
+        );
+      }
+      if (untyped.routeEvaluationId !== undefined) {
+        throw new InvalidReceiptStructureError(
+          `Receipt of kind '${receipt.kind}' must NOT have a routeEvaluationId.`,
         );
       }
     }

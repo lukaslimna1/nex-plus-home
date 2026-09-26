@@ -2084,6 +2084,138 @@ describe('NEX+ L0 ExecutionEvidence & Attempt Ledger (Bloco 0.5D)', () => {
     const sig = ledger.getExecutionSignal('sig_01' as ExecutionSignalId);
     assert.equal((sig?.safeMetadata as any)?.config?.level, 5);
   });
+
+  // D66. Receipt execution_outcome com decisionId divergente do Attempt lança InvalidReceiptStructureError
+  it('D66. Receipt execution_outcome com decisionId divergente do Attempt lança InvalidReceiptStructureError', () => {
+    const ledger = createExecutionLedgerStore();
+    ledger.appendAttemptEvent({
+      type: 'AttemptCreated',
+      attemptId: 'att_01' as AttemptId,
+      decisionId: 'dec_01' as DecisionId,
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_rev_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_rev_01' as BindingRevisionId,
+      routeRevisionId: 'route_rev_01' as RouteRevisionId,
+      createdAt: '2026-08-19T18:40:00.000Z',
+    });
+    ledger.appendOutcomeAssessment({
+      assessmentId: 'ass_01' as OutcomeAssessmentId,
+      attemptId: 'att_01' as AttemptId,
+      evidenceRefs: [],
+      verdict: 'confirmed_mutation',
+      reasonCode: 'SUCCESS',
+      assessedAt: '2026-08-19T18:40:02.000Z',
+    });
+
+    assert.throws(
+      () => {
+        ledger.appendReceipt({
+          receiptId: 'rcpt_err_dec' as ReceiptId,
+          decisionId: 'dec_divergent' as DecisionId,
+          kind: 'execution_outcome',
+          routeEvaluationId: 'eval_01' as RouteEvaluationId,
+          attemptId: 'att_01' as AttemptId,
+          outcomeAssessmentId: 'ass_01' as OutcomeAssessmentId,
+          verdictSummary: 'confirmed_mutation',
+          reasonCode: 'SUCCESS',
+          safeStructuredFacts: {},
+          materializedAt: '2026-08-19T18:40:03.000Z',
+        });
+      },
+      (err: any) => err instanceof InvalidReceiptStructureError && err.message.includes('decisionId'),
+    );
+  });
+
+  // D67. Receipt execution_outcome com routeEvaluationId divergente do Attempt lança InvalidReceiptStructureError
+  it('D67. Receipt execution_outcome com routeEvaluationId divergente do Attempt lança InvalidReceiptStructureError', () => {
+    const ledger = createExecutionLedgerStore();
+    ledger.appendAttemptEvent({
+      type: 'AttemptCreated',
+      attemptId: 'att_01' as AttemptId,
+      decisionId: 'dec_01' as DecisionId,
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_rev_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_rev_01' as BindingRevisionId,
+      routeRevisionId: 'route_rev_01' as RouteRevisionId,
+      createdAt: '2026-08-19T18:40:00.000Z',
+    });
+    ledger.appendOutcomeAssessment({
+      assessmentId: 'ass_01' as OutcomeAssessmentId,
+      attemptId: 'att_01' as AttemptId,
+      evidenceRefs: [],
+      verdict: 'confirmed_mutation',
+      reasonCode: 'SUCCESS',
+      assessedAt: '2026-08-19T18:40:02.000Z',
+    });
+
+    assert.throws(
+      () => {
+        ledger.appendReceipt({
+          receiptId: 'rcpt_err_rte' as ReceiptId,
+          decisionId: 'dec_01' as DecisionId,
+          kind: 'execution_outcome',
+          routeEvaluationId: 'eval_divergent' as RouteEvaluationId,
+          attemptId: 'att_01' as AttemptId,
+          outcomeAssessmentId: 'ass_01' as OutcomeAssessmentId,
+          verdictSummary: 'confirmed_mutation',
+          reasonCode: 'SUCCESS',
+          safeStructuredFacts: {},
+          materializedAt: '2026-08-19T18:40:03.000Z',
+        });
+      },
+      (err: any) => err instanceof InvalidReceiptStructureError && err.message.includes('routeEvaluationId'),
+    );
+  });
+
+  // D68. Preservação de refs repetidas em signalRefs e evidenceRefs
+  it('D68. Preservação de refs repetidas em signalRefs e evidenceRefs', () => {
+    const ledger = createExecutionLedgerStore();
+    ledger.appendAttemptEvent({
+      type: 'AttemptCreated',
+      attemptId: 'att_01' as AttemptId,
+      decisionId: 'dec_01' as DecisionId,
+      routeEvaluationId: 'eval_01' as RouteEvaluationId,
+      capabilityRevisionId: 'cap_rev_01' as CapabilityRevisionId,
+      bindingRevisionId: 'bind_rev_01' as BindingRevisionId,
+      routeRevisionId: 'route_rev_01' as RouteRevisionId,
+      createdAt: '2026-08-19T18:40:00.000Z',
+    });
+    ledger.appendExecutionSignal({
+      signalId: 'sig_01' as ExecutionSignalId,
+      attemptId: 'att_01' as AttemptId,
+      kind: 'technical_success',
+      provenance: defaultProvenance,
+      observedAt: '2026-08-19T18:40:01.000Z',
+      safeMetadata: {},
+    });
+
+    ledger.appendExecutionEvidence({
+      evidenceId: 'evi_01' as ExecutionEvidenceId,
+      attemptId: 'att_01' as AttemptId,
+      signalRefs: ['sig_01' as ExecutionSignalId, 'sig_01' as ExecutionSignalId],
+      kind: 'effect_observed',
+      safeFacts: {},
+      provenance: defaultProvenance,
+      recordedAt: '2026-08-19T18:40:02.000Z',
+    });
+
+    const evi = ledger.getExecutionEvidence('evi_01' as ExecutionEvidenceId);
+    assert.ok(evi);
+    assert.equal(evi.signalRefs.length, 2);
+    assert.deepEqual(evi.signalRefs, ['sig_01', 'sig_01']);
+
+    ledger.appendOutcomeAssessment({
+      assessmentId: 'ass_01' as OutcomeAssessmentId,
+      attemptId: 'att_01' as AttemptId,
+      evidenceRefs: ['evi_01' as ExecutionEvidenceId, 'evi_01' as ExecutionEvidenceId],
+      verdict: 'confirmed_mutation',
+      reasonCode: 'CHECK',
+      assessedAt: '2026-08-19T18:40:03.000Z',
+    });
+
+    const ass = ledger.getOutcomeAssessment('ass_01' as OutcomeAssessmentId);
+    assert.ok(ass);
+    assert.equal(ass.evidenceRefs.length, 2);
+    assert.deepEqual(ass.evidenceRefs, ['evi_01', 'evi_01']);
+  });
 });
-
-

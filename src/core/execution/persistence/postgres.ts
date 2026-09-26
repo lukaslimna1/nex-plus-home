@@ -32,6 +32,7 @@ import {
   InvalidAssessmentLineageError,
   CrossAttemptReferenceError,
   InvalidReceiptStructureError,
+  CorruptedLedgerRowError,
 } from './errors';
 import {
   mapRowToAttemptState,
@@ -57,41 +58,30 @@ export interface PgTransactionalClient {
 }
 
 export interface PgTransactionalExecutor extends PgExecutor {
-  connect?(): Promise<PgTransactionalClient>;
+  connect(): Promise<PgTransactionalClient>;
 }
 
 export class PostgresExecutionLedgerStore implements DurableExecutionLedgerStore {
   constructor(private readonly executor: PgTransactionalExecutor) {}
 
   private async withTransaction<T>(
-    operation: (client: PgExecutor) => Promise<T>,
+    operation: (client: PgTransactionalClient) => Promise<T>,
   ): Promise<T> {
-    let client: PgTransactionalClient | undefined;
-    let runner: PgExecutor;
-
-    if (typeof this.executor.connect === 'function') {
-      client = await this.executor.connect();
-      runner = client;
-    } else {
-      runner = this.executor;
-    }
-
+    const client = await this.executor.connect();
     try {
-      await runner.query('BEGIN');
-      const result = await operation(runner);
-      await runner.query('COMMIT');
+      await client.query('BEGIN');
+      const result = await operation(client);
+      await client.query('COMMIT');
       return result;
     } catch (err) {
       try {
-        await runner.query('ROLLBACK');
+        await client.query('ROLLBACK');
       } catch {
         // Ignora erro no rollback
       }
       throw err;
     } finally {
-      if (client) {
-        client.release();
-      }
+      client.release();
     }
   }
 
@@ -111,21 +101,7 @@ export class PostgresExecutionLedgerStore implements DurableExecutionLedgerStore
         }
 
         try {
-          // 1. Evento histórico sequencial (seq = 1)
-          await tx.query(
-            `INSERT INTO "nex_execution_attempt_events"
-             ("attempt_id", "sequence_number", "event_type", "event_payload", "occurred_at")
-             VALUES ($1, $2, $3, $4, $5)`,
-            [
-              event.attemptId,
-              1,
-              event.type,
-              JSON.stringify(event),
-              event.createdAt,
-            ],
-          );
-
-          // 2. Head operacional mutável
+          // 1. Head operacional mutável FIRST (garante que attempt_events com FK não seja órfão)
           await tx.query(
             `INSERT INTO "nex_execution_attempt_heads"
              ("attempt_id", "decision_id", "route_evaluation_id", "capability_revision_id",
@@ -143,6 +119,20 @@ export class PostgresExecutionLedgerStore implements DurableExecutionLedgerStore
               'created',
               event.createdAt,
               1,
+            ],
+          );
+
+          // 2. Evento histórico sequencial (seq = 1) SECOND
+          await tx.query(
+            `INSERT INTO "nex_execution_attempt_events"
+             ("attempt_id", "sequence_number", "event_type", "event_payload", "occurred_at")
+             VALUES ($1, $2, $3, $4, $5)`,
+            [
+              event.attemptId,
+              1,
+              event.type,
+              JSON.stringify(event),
+              event.createdAt,
             ],
           );
         } catch (err: any) {
@@ -269,8 +259,8 @@ export class PostgresExecutionLedgerStore implements DurableExecutionLedgerStore
 
   async listAttempts(decisionId?: DecisionId): Promise<readonly AttemptState[]> {
     const querySql = decisionId
-      ? `SELECT * FROM "nex_execution_attempt_heads" WHERE "decision_id" = $1 ORDER BY "created_at" ASC`
-      : `SELECT * FROM "nex_execution_attempt_heads" ORDER BY "created_at" ASC`;
+      ? `SELECT * FROM "nex_execution_attempt_heads" WHERE "decision_id" = $1 ORDER BY "append_sequence" ASC`
+      : `SELECT * FROM "nex_execution_attempt_heads" ORDER BY "append_sequence" ASC`;
     const params = decisionId ? [decisionId] : [];
     const res = await this.executor.query(querySql, params);
     return Object.freeze(res.rows.map(mapRowToAttemptState));
@@ -337,7 +327,7 @@ export class PostgresExecutionLedgerStore implements DurableExecutionLedgerStore
 
   async listExecutionSignals(attemptId: AttemptId): Promise<readonly ExecutionSignal[]> {
     const res = await this.executor.query(
-      `SELECT * FROM "nex_execution_signals" WHERE "attempt_id" = $1 ORDER BY "observed_at" ASC`,
+      `SELECT * FROM "nex_execution_signals" WHERE "attempt_id" = $1 ORDER BY "append_sequence" ASC`,
       [attemptId],
     );
     return Object.freeze(res.rows.map(mapRowToExecutionSignal));
@@ -441,7 +431,7 @@ export class PostgresExecutionLedgerStore implements DurableExecutionLedgerStore
 
   async listExecutionEvidence(attemptId: AttemptId): Promise<readonly ExecutionEvidence[]> {
     const res = await this.executor.query(
-      `SELECT * FROM "nex_execution_evidence" WHERE "attempt_id" = $1 ORDER BY "recorded_at" ASC`,
+      `SELECT * FROM "nex_execution_evidence" WHERE "attempt_id" = $1 ORDER BY "append_sequence" ASC`,
       [attemptId],
     );
     if (res.rows.length === 0) {
@@ -626,18 +616,35 @@ export class PostgresExecutionLedgerStore implements DurableExecutionLedgerStore
 
   async getLatestOutcomeAssessment(attemptId: AttemptId): Promise<OutcomeAssessment | undefined> {
     const headRes = await this.executor.query(
-      `SELECT "latest_assessment_id" FROM "nex_execution_outcome_heads" WHERE "attempt_id" = $1`,
+      `SELECT h.latest_assessment_id, a.assessment_id, a.attempt_id as assessment_attempt_id
+       FROM "nex_execution_outcome_heads" h
+       LEFT JOIN "nex_execution_outcome_assessments" a
+         ON a.assessment_id = h.latest_assessment_id
+       WHERE h.attempt_id = $1`,
       [attemptId],
     );
     if (headRes.rows.length === 0) {
       return undefined;
     }
-    return this.getOutcomeAssessment(headRes.rows[0].latest_assessment_id as OutcomeAssessmentId);
+    const row = headRes.rows[0];
+    if (!row.assessment_id) {
+      throw new CorruptedLedgerRowError(
+        'nex_execution_outcome_heads',
+        `Outcome head references non-existent assessment '${row.latest_assessment_id}'`,
+        attemptId as string,
+      );
+    }
+    if (row.assessment_attempt_id !== attemptId) {
+      throw new CrossAttemptReferenceError(
+        `Outcome head for Attempt '${attemptId}' points to assessment '${row.latest_assessment_id}' belonging to Attempt '${row.assessment_attempt_id}'`,
+      );
+    }
+    return this.getOutcomeAssessment(row.latest_assessment_id as OutcomeAssessmentId);
   }
 
   async listOutcomeAssessments(attemptId: AttemptId): Promise<readonly OutcomeAssessment[]> {
     const res = await this.executor.query(
-      `SELECT * FROM "nex_execution_outcome_assessments" WHERE "attempt_id" = $1 ORDER BY "assessed_at" ASC`,
+      `SELECT * FROM "nex_execution_outcome_assessments" WHERE "attempt_id" = $1 ORDER BY "append_sequence" ASC`,
       [attemptId],
     );
     if (res.rows.length === 0) {
@@ -687,11 +694,16 @@ export class PostgresExecutionLedgerStore implements DurableExecutionLedgerStore
         }
 
         const attRes = await tx.query(
-          `SELECT "attempt_id", "route_evaluation_id" FROM "nex_execution_attempt_heads" WHERE "attempt_id" = $1`,
+          `SELECT "attempt_id", "decision_id", "route_evaluation_id" FROM "nex_execution_attempt_heads" WHERE "attempt_id" = $1`,
           [receipt.attemptId],
         );
         if (attRes.rows.length === 0) {
           throw new InvalidAttemptReferenceError(receipt.attemptId as string, 'appendReceipt');
+        }
+        if (attRes.rows[0].decision_id !== receipt.decisionId) {
+          throw new InvalidReceiptStructureError(
+            `Receipt decisionId '${receipt.decisionId}' does not match Attempt decisionId '${attRes.rows[0].decision_id}'.`,
+          );
         }
         if (attRes.rows[0].route_evaluation_id !== receipt.routeEvaluationId) {
           throw new InvalidReceiptStructureError(
@@ -796,8 +808,8 @@ export class PostgresExecutionLedgerStore implements DurableExecutionLedgerStore
 
   async listReceipts(decisionId?: DecisionId): Promise<readonly Receipt[]> {
     const querySql = decisionId
-      ? `SELECT * FROM "nex_execution_receipts" WHERE "decision_id" = $1 ORDER BY "materialized_at" ASC`
-      : `SELECT * FROM "nex_execution_receipts" ORDER BY "materialized_at" ASC`;
+      ? `SELECT * FROM "nex_execution_receipts" WHERE "decision_id" = $1 ORDER BY "append_sequence" ASC`
+      : `SELECT * FROM "nex_execution_receipts" ORDER BY "append_sequence" ASC`;
     const params = decisionId ? [decisionId] : [];
     const res = await this.executor.query(querySql, params);
     return Object.freeze(res.rows.map(mapRowToReceipt));

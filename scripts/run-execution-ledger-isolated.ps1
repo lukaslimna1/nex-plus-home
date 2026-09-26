@@ -95,25 +95,27 @@ try {
     # Configuração de ambiente filho isolado
     $env:DATABASE_URL = $disposableDbUrl
     $env:PAYLOAD_SECRET = $payloadSecret
+    $env:NEX_REQUIRE_EXECUTION_LEDGER_DB = "1"
 
     # 5. Executar Migrations UP no banco descartável
     Write-Host "`n[2/6] Executando migrations (UP) até 0.86C-2A no banco descartável..." -ForegroundColor Yellow
     & npx payload migrate
     if ($LASTEXITCODE -ne 0) { throw "Falha ao executar payload migrate inicial no banco descartável" }
 
-    # Ajustar ledger para manter batches ordenados 1..10
-    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 2 WHERE name = '20260820_030631_multiuser_auth';" | Out-Null
-    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 3 WHERE name = '20260821_210000_observation_persistence';" | Out-Null
-    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 4 WHERE name = '20260821_220000_evidence_artifact_store';" | Out-Null
-    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 5 WHERE name = '20260821_230000_reconciliation_and_precedents';" | Out-Null
-    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 6 WHERE name = '20260824_190000_session_operational_state';" | Out-Null
-    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 7 WHERE name = '20260824_210000_input_record_and_ingress';" | Out-Null
-    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 8 WHERE name = '20260825_030000_material_context_pin';" | Out-Null
-    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 9 WHERE name = '20260925_110223_stack_payload_3902_auth_security';" | Out-Null
-    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c "UPDATE payload_migrations SET batch = 10 WHERE name = '20260925_200000_durable_execution_ledger';" | Out-Null
+    # Colocar exclusivamente a migration 2A em batch superior ao maior batch anterior
+    $updateBatchSql = "UPDATE payload_migrations SET batch = (SELECT coalesce(max(batch), 1) + 1 FROM payload_migrations WHERE name <> '20260925_200000_durable_execution_ledger') WHERE name = '20260925_200000_durable_execution_ledger';"
+    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c $updateBatchSql
+    if ($LASTEXITCODE -ne 0) { throw "Falha ao ajustar batch da migration 2A no banco descartável" }
+
+    # Verificar que exatamente uma migration está no batch superior (a 2A)
+    $topBatchCount = (& psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT count(*) FROM payload_migrations WHERE batch = (SELECT max(batch) FROM payload_migrations);").Trim()
+    if ($LASTEXITCODE -ne 0 -or $topBatchCount -ne "1") {
+        throw "Verificação de batch falhou: esperado exatamente 1 migration no batch de topo, obtido: $topBatchCount"
+    }
 
     # Verificar as 9 tabelas do 0.86C-2A criadas pós-UP
     $tablesUpRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
+    if ($LASTEXITCODE -ne 0) { throw "Falha ao inspecionar tabelas pós-UP via psql" }
     $tablesUp = if ($tablesUpRaw) { @($tablesUpRaw.Split("`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ }) } else { @() }
 
     $requiredTables086C2A = @(
@@ -146,8 +148,20 @@ try {
     & npx payload migrate:down
     if ($LASTEXITCODE -ne 0) { throw "Falha ao executar payload migrate:down para 0.86C-2A no banco descartável" }
 
+    # Provar que a migration 2A foi removida do histórico de migrations
+    $migration2ACount = (& psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT count(*) FROM payload_migrations WHERE name = '20260925_200000_durable_execution_ledger';").Trim()
+    if ($LASTEXITCODE -ne 0 -or $migration2ACount -ne "0") {
+        throw "Verificação pós-DOWN falhou: migration 2A ainda consta em payload_migrations."
+    }
+    $priorMigrationsCount = (& psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT count(*) FROM payload_migrations;").Trim()
+    if ($LASTEXITCODE -ne 0 -or [int]$priorMigrationsCount -lt 1) {
+        throw "Verificação pós-DOWN falhou: migrations anteriores foram indevidamente removidas (restam: $priorMigrationsCount)."
+    }
+    Write-Host "Verificado: DOWN removeu exclusivamente a migration 2A (restam $priorMigrationsCount migrations anteriores no ledger)." -ForegroundColor Green
+
     # Verificar estrutura pós-DOWN
     $tablesDownRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
+    if ($LASTEXITCODE -ne 0) { throw "Falha ao inspecionar tabelas pós-DOWN via psql" }
     $tablesDown = if ($tablesDownRaw) { @($tablesDownRaw.Split("`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ }) } else { @() }
 
     foreach ($tbl in $requiredTables086C2A) {
@@ -184,6 +198,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Falha ao re-executar payload migrate no banco descartável" }
 
     $tablesReUpRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
+    if ($LASTEXITCODE -ne 0) { throw "Falha ao inspecionar tabelas pós-re-UP via psql" }
     $tablesReUp = if ($tablesReUpRaw) { @($tablesReUpRaw.Split("`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ }) } else { @() }
 
     foreach ($tbl in $requiredTables086C2A) {
@@ -207,14 +222,21 @@ finally {
     # 10. Destruição segura e garantida do Database Descartável
     Write-Host "`n[CLEANUP] Encerrando conexões residuais e destruindo banco descartável..." -ForegroundColor Yellow
     if ($disposableDbName -and $disposableDbName.StartsWith("nex_exec_") -and $disposableDbName -ne $operationalDbName) {
-        try {
-            $env:DATABASE_URL = $dbUrl
-            & psql -h $operationalHost -p $operationalPort -U $operationalUser -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$disposableDbName' AND pid <> pg_backend_pid();" | Out-Null
-            & dropdb -h $operationalHost -p $operationalPort -U $operationalUser $disposableDbName
-            Write-Host "[CLEANUP] Banco descartável '$disposableDbName' destruído com sucesso." -ForegroundColor Green
-        }
-        catch {
-            Write-Host "[CLEANUP_WARN] Erro ao destruir banco descartável '$disposableDbName': $_" -ForegroundColor Yellow
+        $env:DATABASE_URL = $dbUrl
+        & psql -h $operationalHost -p $operationalPort -U $operationalUser -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$disposableDbName' AND pid <> pg_backend_pid();" | Out-Null
+
+        & dropdb -h $operationalHost -p $operationalPort -U $operationalUser $disposableDbName
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[CLEANUP_FAIL] Falha ao executar dropdb no banco descartável '$disposableDbName' (exit code: $LASTEXITCODE)." -ForegroundColor Red
+            $exitCode = 1
+        } else {
+            $dbStillExists = (& psql -h $operationalHost -p $operationalPort -U $operationalUser -d postgres -t -A -c "SELECT count(*) FROM pg_database WHERE datname = '$disposableDbName';").Trim()
+            if ($LASTEXITCODE -ne 0 -or $dbStillExists -ne "0") {
+                Write-Host "[CLEANUP_FAIL] Banco descartável '$disposableDbName' ainda existe no catálogo de databases." -ForegroundColor Red
+                $exitCode = 1
+            } else {
+                Write-Host "[CLEANUP] Banco descartável '$disposableDbName' destruído e confirmado inexistente." -ForegroundColor Green
+            }
         }
     }
 
@@ -222,6 +244,7 @@ finally {
     $env:DATABASE_URL = $dbUrl
     $env:PAYLOAD_SECRET = $payloadSecret
     $env:PGPASSWORD = $operationalPass
+    Remove-Item env:NEX_REQUIRE_EXECUTION_LEDGER_DB -ErrorAction SilentlyContinue
 }
 
 exit $exitCode
