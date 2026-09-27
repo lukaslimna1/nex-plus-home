@@ -9,7 +9,8 @@
 #>
 
 param (
-    [switch]$VerifyCleanupOwnershipOnly
+    [switch]$VerifyCleanupOwnershipOnly,
+    [switch]$VerifyTerminateFailureOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -91,6 +92,47 @@ if ($VerifyCleanupOwnershipOnly) {
 
     Write-Host "[PROVA_OK] Guarda de ownership verificada com sucesso: sem criação pelo harness, nenhuma conexão/drop é disparada." -ForegroundColor Green
     exit 0
+}
+
+# Verificação determinística isolada do tratamento de falha no terminate se solicitado por switch
+if ($VerifyTerminateFailureOnly) {
+    Write-Host "`n[PROVA DETERMINÍSTICA] Testando tratamento de falha no terminate do cleanup em isolamento..." -ForegroundColor Yellow
+    $testSimulatedDb = "nex_exec_simulated_terminate_probe"
+    $testCreatedDb = $true
+    $testExitCode = 0
+    $subsequentCleanupRan = $false
+
+    if ($testCreatedDb -and $testSimulatedDb -and $testSimulatedDb.StartsWith("nex_exec_") -and $testSimulatedDb -ne $operationalDbName) {
+        # 1. Simulação determinística: psql pg_terminate_backend retorna exit code nonzero
+        $simulatedTerminateExitCode = 1
+        if ($simulatedTerminateExitCode -ne 0) {
+            Write-Host "[CLEANUP_FAIL] Falha ao encerrar conexões residuais no banco descartável '$testSimulatedDb' (exit code: $simulatedTerminateExitCode)." -ForegroundColor Red
+            $testExitCode = 1
+        }
+
+        # 2. Cleanup subsequente (dropdb) tenta continuar
+        $subsequentCleanupRan = $true
+        $simulatedDropExitCode = 0
+        if ($simulatedDropExitCode -ne 0) {
+            Write-Host "[CLEANUP_FAIL] Falha ao executar dropdb no banco descartável '$testSimulatedDb' (exit code: $simulatedDropExitCode)." -ForegroundColor Red
+            $testExitCode = 1
+        } else {
+            Write-Host "[CLEANUP] Banco descartável '$testSimulatedDb' destruído e confirmado inexistente." -ForegroundColor Green
+        }
+    }
+
+    if (-not $subsequentCleanupRan) {
+        Write-Host "[PROVA_FAIL] Cleanup subsequente não foi executado após falha do terminate." -ForegroundColor Red
+        exit 2
+    }
+
+    if ($testExitCode -ne 1) {
+        Write-Host "[PROVA_FAIL] Exit code de erro não foi preservado após dropdb bem-sucedido." -ForegroundColor Red
+        exit 2
+    }
+
+    Write-Host "[PROVA_OK] Captura de exit code do terminate verificada: falha registrada e erro preservado ($testExitCode) mesmo após dropdb subsequente bem-sucedido." -ForegroundColor Green
+    exit 1
 }
 
 # 3. Geração do nome do Database Descartável
@@ -257,6 +299,11 @@ finally {
     if ($createdDisposableDb -and $disposableDbName -and $disposableDbName.StartsWith("nex_exec_") -and $disposableDbName -ne $operationalDbName) {
         $env:DATABASE_URL = $dbUrl
         & psql -h $operationalHost -p $operationalPort -U $operationalUser -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$disposableDbName' AND pid <> pg_backend_pid();" | Out-Null
+        $terminateExitCode = $LASTEXITCODE
+        if ($terminateExitCode -ne 0) {
+            Write-Host "[CLEANUP_FAIL] Falha ao encerrar conexões residuais no banco descartável '$disposableDbName' (exit code: $terminateExitCode)." -ForegroundColor Red
+            $exitCode = 1
+        }
 
         & dropdb -h $operationalHost -p $operationalPort -U $operationalUser $disposableDbName
         if ($LASTEXITCODE -ne 0) {

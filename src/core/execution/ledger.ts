@@ -129,7 +129,12 @@ export function deepCloneAndFreeze<T>(val: T): Readonly<T> {
   }
   const copy: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(val)) {
-    copy[k] = deepCloneAndFreeze(v);
+    Object.defineProperty(copy, k, {
+      value: deepCloneAndFreeze(v),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
   }
   return Object.freeze(copy) as unknown as Readonly<T>;
 }

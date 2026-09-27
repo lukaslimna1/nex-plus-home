@@ -45,6 +45,7 @@ import type {
   VerificationStatus,
 } from '../../capabilities/contracts';
 import type { PolicyRevisionId } from '../../policy/contracts';
+import { isCanonicalUtcInstant } from '../../context/invariants';
 import { deepCloneAndFreeze } from '../ledger';
 import { CorruptedLedgerRowError } from './errors';
 
@@ -64,11 +65,15 @@ export function formatPgTimestampToUtcInstant(
     }
     return val.toISOString();
   }
-  if (typeof val === 'string' && val.trim().length > 0) {
-    const d = new Date(val);
-    if (!Number.isNaN(d.getTime())) {
-      return d.toISOString();
+  if (typeof val === 'string') {
+    if (isCanonicalUtcInstant(val)) {
+      return new Date(val).toISOString();
     }
+    throw new CorruptedLedgerRowError(
+      table,
+      `Field '${fieldName}' contains non-canonical or invalid UTC timestamp string '${val}'.`,
+      entityId,
+    );
   }
   throw new CorruptedLedgerRowError(
     table,
