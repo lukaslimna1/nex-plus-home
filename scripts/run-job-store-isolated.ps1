@@ -291,20 +291,9 @@ try {
     $env:NEX_REQUIRE_JOB_STORE_DB = "1"
 
     # 5. Executar Migrations UP no banco descartável
-    Write-Host "`n[2/6] Executando migrations (UP) até 0.86C-2B no banco descartável..." -ForegroundColor Yellow
+    Write-Host "`n[2/6] Executando migrations (UP) até 0.86C-3B no banco descartável..." -ForegroundColor Yellow
     & npx payload migrate
     if ($LASTEXITCODE -ne 0) { throw "Falha ao executar payload migrate inicial no banco descartável" }
-
-    # Colocar exclusivamente a migration 2B em batch superior ao maior batch anterior
-    $updateBatchSql = "UPDATE payload_migrations SET batch = (SELECT coalesce(max(batch), 1) + 1 FROM payload_migrations WHERE name <> '20260927_220000_durable_job_store') WHERE name = '20260927_220000_durable_job_store';"
-    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c $updateBatchSql
-    if ($LASTEXITCODE -ne 0) { throw "Falha ao ajustar batch da migration 2B no banco descartável" }
-
-    # Verificar que exatamente uma migration está no batch superior (a 2B)
-    $topBatchCount = (& psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT count(*) FROM payload_migrations WHERE batch = (SELECT max(batch) FROM payload_migrations);").Trim()
-    if ($LASTEXITCODE -ne 0 -or $topBatchCount -ne "1") {
-        throw "Verificação de batch falhou: esperado exatamente 1 migration no batch de topo, obtido: $topBatchCount"
-    }
 
     # Verificar as 2 tabelas do 0.86C-2B criadas pós-UP
     $tablesUpRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
@@ -329,8 +318,59 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Falha nos testes de integração PostgreSQL do 0.86C-2B" }
     Write-Host "Testes de integração PostgreSQL concluídos com 100% de sucesso!" -ForegroundColor Green
 
-    # 7. Testar Migration DOWN (Rollback exclusivo do 0.86C-2B)
-    Write-Host "`n[4/6] Testando rollback de migration (DOWN do 0.86C-2B) no banco descartável..." -ForegroundColor Yellow
+    # 7. Testar Rollback de Migrations respeitando dependência posterior de 3B -> 2B
+    Write-Host "`n[4/6] Testando rollback ordenado de migrations (DOWN de 3B e 2B) no banco descartável..." -ForegroundColor Yellow
+
+    # PASSO A: Isolar migration 3B (dependente posterior) no batch superior
+    $updateBatch3BSql = "UPDATE payload_migrations SET batch = (SELECT coalesce(max(batch), 1) + 1 FROM payload_migrations WHERE name <> '20260928_230000_canonical_job_claims') WHERE name = '20260928_230000_canonical_job_claims';"
+    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c $updateBatch3BSql
+    if ($LASTEXITCODE -ne 0) { throw "Falha ao ajustar batch da migration 3B no banco descartável" }
+
+    $topBatch3B = (& psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT name FROM payload_migrations WHERE batch = (SELECT max(batch) FROM payload_migrations);").Trim()
+    if ($LASTEXITCODE -ne 0 -or $topBatch3B -ne "20260928_230000_canonical_job_claims") {
+        throw "Verificação de batch falhou: esperado exatamente '20260928_230000_canonical_job_claims' no batch superior, obtido: '$topBatch3B'"
+    }
+    Write-Host "Migration dependente 3B ('20260928_230000_canonical_job_claims') isolada no batch superior." -ForegroundColor Green
+
+    # PASSO B: Rollback 3B
+    Write-Host "Executando rollback de 3B..." -ForegroundColor Yellow
+    & npx payload migrate:down
+    if ($LASTEXITCODE -ne 0) { throw "Falha ao executar payload migrate:down para 3B no banco descartável" }
+
+    # Provar: migration 3B ausente de payload_migrations
+    $m3BCount = (& psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT count(*) FROM payload_migrations WHERE name = '20260928_230000_canonical_job_claims';").Trim()
+    if ($LASTEXITCODE -ne 0 -or $m3BCount -ne "0") {
+        throw "Verificação pós-DOWN de 3B falhou: migration 3B ainda consta em payload_migrations."
+    }
+
+    # Provar: tabela nex_job_claims ausente
+    $tablesAfter3BDownRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
+    if ($LASTEXITCODE -ne 0) { throw "Falha ao inspecionar tabelas pós-DOWN de 3B via psql" }
+    $tablesAfter3BDown = if ($tablesAfter3BDownRaw) { @($tablesAfter3BDownRaw.Split("`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ }) } else { @() }
+
+    if ($tablesAfter3BDown -contains "nex_job_claims") {
+        throw "Verificação pós-DOWN de 3B falhou: tabela 'nex_job_claims' ainda existe após rollback de 3B."
+    }
+
+    # Provar: nex_job_heads PRESENTE e nex_job_events PRESENTE
+    if ($tablesAfter3BDown -notcontains "nex_job_heads" -or $tablesAfter3BDown -notcontains "nex_job_events") {
+        throw "Verificação pós-DOWN de 3B falhou: nex_job_heads ou nex_job_events foram indevidamente removidos pelo rollback de 3B."
+    }
+    Write-Host "Cutoff de 3B comprovado: nex_job_claims removida, nex_job_heads e nex_job_events intactos." -ForegroundColor Green
+
+    # PASSO C: Isolar migration 2B
+    $updateBatch2BSql = "UPDATE payload_migrations SET batch = (SELECT coalesce(max(batch), 1) + 1 FROM payload_migrations WHERE name <> '20260927_220000_durable_job_store') WHERE name = '20260927_220000_durable_job_store';"
+    & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -c $updateBatch2BSql
+    if ($LASTEXITCODE -ne 0) { throw "Falha ao ajustar batch da migration 2B no banco descartável" }
+
+    $topBatch2B = (& psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT name FROM payload_migrations WHERE batch = (SELECT max(batch) FROM payload_migrations);").Trim()
+    if ($LASTEXITCODE -ne 0 -or $topBatch2B -ne "20260927_220000_durable_job_store") {
+        throw "Verificação de batch falhou: esperado exatamente '20260927_220000_durable_job_store' no batch superior, obtido: '$topBatch2B'"
+    }
+    Write-Host "Migration 2B ('20260927_220000_durable_job_store') isolada no batch superior." -ForegroundColor Green
+
+    # PASSO D: Rollback 2B
+    Write-Host "Executando rollback de 2B..." -ForegroundColor Yellow
     & npx payload migrate:down
     if ($LASTEXITCODE -ne 0) { throw "Falha ao executar payload migrate:down para 0.86C-2B no banco descartável" }
 
@@ -387,27 +427,43 @@ try {
     }
     Write-Host "Estrutura pós-DOWN verificada: tabelas 0.86C-2B removidas, tabelas anteriores (incluindo 0.86C-2A) preservadas intactas." -ForegroundColor Green
 
-    # 8. Executar Migration UP novamente (Convergência bidirecional)
-    Write-Host "`n[5/6] Re-executando migrations (UP do 0.86C-2B) no banco descartável..." -ForegroundColor Yellow
+    # PASSO E: Re-UP canônico
+    Write-Host "`n[5/6] Re-executando migrations (UP canônico 2B + 3B) no banco descartável..." -ForegroundColor Yellow
     & npx payload migrate
     if ($LASTEXITCODE -ne 0) { throw "Falha ao re-executar payload migrate no banco descartável" }
+
+    # PASSO F: Prova de reconvergência
+    $ledger2B = (& psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT count(*) FROM payload_migrations WHERE name = '20260927_220000_durable_job_store';").Trim()
+    $ledger3B = (& psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT count(*) FROM payload_migrations WHERE name = '20260928_230000_canonical_job_claims';").Trim()
+
+    if ($ledger2B -ne "1" -or $ledger3B -ne "1") {
+        throw "Verificação de reconvergência falhou: esperado 2B e 3B no ledger (2B: $ledger2B, 3B: $ledger3B)."
+    }
 
     $tablesReUpRaw = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
     if ($LASTEXITCODE -ne 0) { throw "Falha ao inspecionar tabelas pós-re-UP via psql" }
     $tablesReUp = if ($tablesReUpRaw) { @($tablesReUpRaw.Split("`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ }) } else { @() }
 
-    foreach ($tbl in $requiredTables086C2B) {
+    $allRequiredReUp = @("nex_job_heads", "nex_job_events", "nex_job_claims")
+    foreach ($tbl in $allRequiredReUp) {
         if ($tablesReUp -notcontains $tbl) {
             throw "Verificação pós-re-UP falhou: tabela '$tbl' ausente após re-convergência."
         }
     }
-    Write-Host "Schema reconvergido com sucesso após rollback e re-UP." -ForegroundColor Green
 
-    # 9. Re-execução dos testes no schema restaurado
+    # Confirmar FK de nex_job_claims para nex_job_heads presente
+    $fkCheckSql = "SELECT count(*) FROM information_schema.table_constraints tc JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_name = 'nex_job_claims' AND ccu.table_name = 'nex_job_heads';"
+    $fkCount = (& psql -h $operationalHost -p $operationalPort -U $operationalUser -d $disposableDbName -t -A -c $fkCheckSql).Trim()
+    if ($fkCount -ne "1") {
+        throw "Verificação de FK pós-re-UP falhou: FK nex_job_claims -> nex_job_heads ausente (encontrado: $fkCount)."
+    }
+    Write-Host "Schema reconvergido com sucesso: ledger com 2B e 3B, tabelas e FK restauradas." -ForegroundColor Green
+
+    # PASSO G: Re-execução dos testes no schema restaurado
     Write-Host "`n[6/6] Executando novamente os testes funcionais no schema reconvergido..." -ForegroundColor Yellow
     & npx tsx --test src/core/jobs/persistence/__tests__/postgres.integration.test.ts
     if ($LASTEXITCODE -ne 0) { throw "Falha nos testes de integração após reconvergência" }
-    Write-Host "Todos os testes de integração passaram com 100% de sucesso no schema restaurado!" -ForegroundColor Green
+    Write-Host "Todos os 43 testes de integração passaram com 100% de sucesso no schema restaurado!" -ForegroundColor Green
 }
 catch {
     Write-Host "`n[ERRO NO HARNESS] $_" -ForegroundColor Red
