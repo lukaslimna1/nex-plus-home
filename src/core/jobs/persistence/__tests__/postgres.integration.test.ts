@@ -1613,5 +1613,199 @@ describe('0.86C-2B · Persistência PostgreSQL de Durable Job Store L0', { skip:
         assert.equal(createdValid.actor.sessionRef, 'max-session-opaque');
       }
     });
+
+    // ========================================================================
+    // T-01 · FIDELIDADE TEXTUAL DE TIMESTAMPS UTC EM POSTGRESQL REAL
+    // ========================================================================
+    const TIMESTAMP_VARIANTS = [
+      { label: '0 casas decimais', val: '2026-09-25T12:00:00Z' },
+      { label: '1 casa decimal', val: '2026-09-25T12:00:00.1Z' },
+      { label: '2 casas decimais', val: '2026-09-25T12:00:00.12Z' },
+      { label: '3 casas decimais', val: '2026-09-25T12:00:00.123Z' },
+    ];
+
+    for (const variant of TIMESTAMP_VARIANTS) {
+      it(`T-01: Matriz de criação (${variant.label}) preserva representação textual exata '${variant.val}'`, async () => {
+        const jobId = makeJobId(`job_t01_c_${variant.val.replace(/[^a-zA-Z0-9]/g, '_')}`);
+        const input = variant.val;
+
+        // 1. retorno imediato
+        const created = await store.createJob({
+          jobId,
+          createdAt: input,
+          actor: ACTOR_SYSTEM,
+        });
+        assert.equal(created.createdAt, input);
+        assert.equal(created.updatedAt, input);
+
+        // 2. getJob
+        const fetched = await store.getJob(jobId);
+        assert.ok(fetched);
+        assert.equal(fetched.createdAt, input);
+        assert.equal(fetched.updatedAt, input);
+
+        // 3. listJobEvents
+        const events = await store.listJobEvents(jobId);
+        assert.equal(events.length, 1);
+        assert.equal(events[0].occurredAt, input);
+        assert.equal(events[0].payload.createdAt, input);
+
+        // 4. rehydrateJob
+        const rehydrated = await store.rehydrateJob(jobId);
+        assert.ok(rehydrated);
+        assert.equal(rehydrated.createdAt, input);
+        assert.equal(rehydrated.updatedAt, input);
+
+        // 5. equivalência replay == head
+        assertJobStatesEquivalent(rehydrated, fetched);
+        assert.deepEqual(stripUndefined(rehydrated), stripUndefined(fetched));
+      });
+    }
+
+    for (const variant of TIMESTAMP_VARIANTS) {
+      it(`T-01: Matriz de JobStarted (${variant.label}) preserva representação textual exata '${variant.val}'`, async () => {
+        const jobId = makeJobId(`job_t01_s_${variant.val.replace(/[^a-zA-Z0-9]/g, '_')}`);
+        const creationT = '2026-09-25T11:00:00Z'; // Anterior a todos os variants
+        const startedInput = variant.val;
+
+        await store.createJob({
+          jobId,
+          createdAt: creationT,
+          actor: ACTOR_SYSTEM,
+        });
+
+        // 1. applyJobEvent
+        const started = await store.applyJobEvent(
+          {
+            type: 'JobStarted',
+            jobId,
+            startedAt: startedInput,
+          },
+          1,
+        );
+        assert.equal(started.startedAt, startedInput);
+        assert.equal(started.updatedAt, startedInput);
+
+        // 2. getJob
+        const fetched = await store.getJob(jobId);
+        assert.ok(fetched);
+        assert.equal(fetched.startedAt, startedInput);
+        assert.equal(fetched.updatedAt, startedInput);
+
+        // 3. listJobEvents
+        const events = await store.listJobEvents(jobId);
+        assert.equal(events.length, 2);
+        assert.equal(events[1].occurredAt, startedInput);
+        assert.equal(events[1].payload.startedAt, startedInput);
+
+        // 4. rehydrateJob
+        const rehydrated = await store.rehydrateJob(jobId);
+        assert.ok(rehydrated);
+        assert.equal(rehydrated.startedAt, startedInput);
+        assert.equal(rehydrated.updatedAt, startedInput);
+
+        // 5. equivalência replay == head
+        assertJobStatesEquivalent(rehydrated, fetched);
+        assert.deepEqual(stripUndefined(rehydrated), stripUndefined(fetched));
+      });
+    }
+
+    it('T-01: Progress com updatedAt contendo 1 casa decimal é preservado exatamente', async () => {
+      const jobId = makeJobId('job_t01_prog');
+      const creationT = '2026-09-25T11:00:00Z';
+      const startedT = '2026-09-25T11:30:00Z';
+      const progressT = '2026-09-25T12:00:00.1Z';
+
+      await store.createJob({ jobId, createdAt: creationT, actor: ACTOR_SYSTEM });
+      await store.applyJobEvent({ type: 'JobStarted', jobId, startedAt: startedT }, 1);
+
+      // apply JobProgressUpdated
+      const progressed = await store.applyJobEvent(
+        {
+          type: 'JobProgressUpdated',
+          jobId,
+          progress: { completed: 25, total: 100, updatedAt: progressT },
+        },
+        2,
+      );
+      assert.equal(progressed.progress?.updatedAt, progressT);
+
+      // getJob
+      const fetched = await store.getJob(jobId);
+      assert.ok(fetched);
+      assert.equal(fetched.progress?.updatedAt, progressT);
+
+      // listJobEvents
+      const events = await store.listJobEvents(jobId);
+      assert.equal(events.length, 3);
+      assert.equal(events[2].occurredAt, progressT);
+      assert.equal((events[2].payload.progress as any)?.updatedAt, progressT);
+
+      // rehydrateJob
+      const rehydrated = await store.rehydrateJob(jobId);
+      assert.ok(rehydrated);
+      assert.equal(rehydrated.progress?.updatedAt, progressT);
+
+      assertJobStatesEquivalent(rehydrated, fetched);
+      assert.deepEqual(stripUndefined(rehydrated), stripUndefined(fetched));
+    });
+
+    it('T-01: WaitingCause (Human) com timestamps fracionários preserva strings exatas', async () => {
+      const jobId = makeJobId('job_t01_wait');
+      const creationT = '2026-09-25T11:00:00Z';
+      const startedT = '2026-09-25T11:30:00Z';
+      const transitionedT = '2026-09-25T12:00:00.1Z';
+      const requestedT = '2026-09-25T12:00:00.1Z';
+      const deadlineT = '2026-09-25T12:00:00.12Z';
+
+      await store.createJob({ jobId, createdAt: creationT, actor: ACTOR_SYSTEM });
+      await store.applyJobEvent({ type: 'JobStarted', jobId, startedAt: startedT }, 1);
+
+      // apply JobWaiting (Human)
+      const waiting = await store.applyJobEvent(
+        {
+          type: 'JobWaiting',
+          jobId,
+          transitionedAt: transitionedT,
+          cause: {
+            kind: 'human',
+            reasonCode: 'HUMAN_INTERVENTION',
+            requestedAt: requestedT,
+            deadline: deadlineT,
+          },
+        },
+        2,
+      );
+      assert.equal(waiting.waitingCause?.requestedAt, requestedT);
+      if (waiting.waitingCause?.kind === 'human') {
+        assert.equal(waiting.waitingCause.deadline, deadlineT);
+      }
+
+      // getJob
+      const fetched = await store.getJob(jobId);
+      assert.ok(fetched);
+      assert.equal(fetched.waitingCause?.requestedAt, requestedT);
+      if (fetched.waitingCause?.kind === 'human') {
+        assert.equal(fetched.waitingCause.deadline, deadlineT);
+      }
+
+      // listJobEvents
+      const events = await store.listJobEvents(jobId);
+      assert.equal(events.length, 3);
+      assert.equal(events[2].occurredAt, transitionedT);
+      assert.equal((events[2].payload.cause as any)?.requestedAt, requestedT);
+      assert.equal((events[2].payload.cause as any)?.deadline, deadlineT);
+
+      // rehydrateJob
+      const rehydrated = await store.rehydrateJob(jobId);
+      assert.ok(rehydrated);
+      assert.equal(rehydrated.waitingCause?.requestedAt, requestedT);
+      if (rehydrated.waitingCause?.kind === 'human') {
+        assert.equal(rehydrated.waitingCause.deadline, deadlineT);
+      }
+
+      assertJobStatesEquivalent(rehydrated, fetched);
+      assert.deepEqual(stripUndefined(rehydrated), stripUndefined(fetched));
+    });
   });
 });

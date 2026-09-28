@@ -28,6 +28,10 @@ import { createJob } from '../../lifecycle';
 import {
   assertNonEmptyString,
   assertString,
+  readCanonicalPayloadUtcInstant,
+  normalizePgTimestampInstant,
+  areSameUtcInstant,
+  assertMatchingUtcInstant,
   serializeCreateJobParams,
   serializeCreationParamsFromJobState,
   serializeJobEvent,
@@ -891,6 +895,244 @@ describe('0.86C-2B · Serialização, Allowlist e Trust Boundary', () => {
         () => mapRowToJobState(invalidRow),
         (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes('Invalid sessionRef in Job payload'),
       );
+    });
+  });
+
+  // ==========================================================================
+  // T-01 · FIDELIDADE TEXTUAL DE TIMESTAMPS UTC & CROSS-CHECK TEMPORAL
+  // ==========================================================================
+  describe('T-01 · Fidelidade Textual de Timestamps UTC & Cross-Check Temporal', () => {
+    const T_NO_FRAC = '2026-09-25T12:00:00Z';
+    const T_1_DIGIT = '2026-09-25T12:00:00.1Z';
+    const T_2_DIGIT = '2026-09-25T12:00:00.12Z';
+    const T_3_DIGIT = '2026-09-25T12:00:00.123Z';
+
+    it('readCanonicalPayloadUtcInstant aceita e preserva strings canônicas sem alteração de zeros', () => {
+      assert.equal(readCanonicalPayloadUtcInstant(T_NO_FRAC, 'test_table', 't'), T_NO_FRAC);
+      assert.equal(readCanonicalPayloadUtcInstant(T_1_DIGIT, 'test_table', 't'), T_1_DIGIT);
+      assert.equal(readCanonicalPayloadUtcInstant(T_2_DIGIT, 'test_table', 't'), T_2_DIGIT);
+      assert.equal(readCanonicalPayloadUtcInstant(T_3_DIGIT, 'test_table', 't'), T_3_DIGIT);
+
+      // Rejeita timestamp inválido ou com mais de 3 casas decimais
+      assert.throws(
+        () => readCanonicalPayloadUtcInstant('2026-09-25T12:00:00.1234Z', 'test_table', 't'),
+        (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes('non-canonical or invalid UTC timestamp string'),
+      );
+      assert.throws(
+        () => readCanonicalPayloadUtcInstant('2026-09-25 12:00:00', 'test_table', 't'),
+        (err: any) => err instanceof CorruptedJobStorageError,
+      );
+    });
+
+    it('normalizePgTimestampInstant e areSameUtcInstant comparam instantes temporais sem exigir igualdade textual', () => {
+      const date100 = new Date('2026-09-25T12:00:00.100Z');
+      assert.ok(areSameUtcInstant(date100, T_1_DIGIT));
+      assert.ok(areSameUtcInstant(T_1_DIGIT, date100));
+
+      const date101 = new Date('2026-09-25T12:00:00.101Z');
+      assert.strictEqual(areSameUtcInstant(date101, T_1_DIGIT), false);
+
+      // assertMatchingUtcInstant
+      assert.doesNotThrow(() => assertMatchingUtcInstant(date100, T_1_DIGIT, 'test_table', 'col'));
+      assert.throws(
+        () => assertMatchingUtcInstant(date101, T_1_DIGIT, 'test_table', 'col'),
+        (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes("Mismatch between column col"),
+      );
+    });
+
+    it('mapRowToJobState aceita coluna SQL .100Z com payload .1Z e preserva string textual .1Z no JobState', () => {
+      const sqlDate = new Date('2026-09-25T12:00:00.100Z');
+      const canonicalInput = T_1_DIGIT; // '2026-09-25T12:00:00.1Z'
+
+      const row = {
+        job_id: JOB_ID,
+        status: 'running',
+        revision: 2,
+        created_at: sqlDate,
+        updated_at: sqlDate,
+        started_at: sqlDate,
+        finished_at: null,
+        state_payload: {
+          jobId: JOB_ID,
+          status: 'running',
+          revision: 2,
+          actor: { kind: 'system', component: 'orchestrator' },
+          createdAt: canonicalInput,
+          updatedAt: canonicalInput,
+          startedAt: canonicalInput,
+          attemptLineage: ['att_1'],
+        },
+      };
+
+      const mapped = mapRowToJobState(row);
+      assert.equal(mapped.createdAt, canonicalInput);
+      assert.equal(mapped.updatedAt, canonicalInput);
+      assert.equal(mapped.startedAt, canonicalInput);
+    });
+
+    it('mapRowToJobState falha fechado se instante da coluna SQL divergir temporalmente do payload', () => {
+      const divergedDate = new Date('2026-09-25T12:00:00.101Z'); // 1ms a mais que .100Z
+      const row = {
+        job_id: JOB_ID,
+        status: 'queued',
+        revision: 1,
+        created_at: divergedDate,
+        updated_at: divergedDate,
+        started_at: null,
+        finished_at: null,
+        state_payload: {
+          jobId: JOB_ID,
+          status: 'queued',
+          revision: 1,
+          actor: { kind: 'system', component: 'orchestrator' },
+          createdAt: T_1_DIGIT,
+          updatedAt: T_1_DIGIT,
+          attemptLineage: [],
+        },
+      };
+
+      assert.throws(
+        () => mapRowToJobState(row),
+        (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes('Mismatch between column created_at'),
+      );
+    });
+
+    it('mapRowToStoredRecord aceita coluna occurred_at .100Z e devolve string exata .1Z do payload no record.occurredAt', () => {
+      const sqlDate = new Date('2026-09-25T12:00:00.100Z');
+      const row = {
+        job_id: JOB_ID,
+        revision: 1,
+        record_kind: 'created',
+        event_type: null,
+        occurred_at: sqlDate,
+        payload: {
+          jobId: JOB_ID,
+          createdAt: T_1_DIGIT,
+          actor: { kind: 'system', component: 'orchestrator' },
+        },
+        append_sequence: '1',
+      };
+
+      const record = mapRowToStoredRecord(row);
+      assert.equal(record.occurredAt, T_1_DIGIT);
+      assert.equal(record.payload.createdAt, T_1_DIGIT);
+
+      // Divergência real de 1ms
+      const divergedRow = {
+        ...row,
+        occurred_at: new Date('2026-09-25T12:00:00.101Z'),
+      };
+      assert.throws(
+        () => mapRowToStoredRecord(divergedRow),
+        (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes('Mismatch between row occurred_at'),
+      );
+    });
+
+    it('Seção 17: mapStoredRecordToCreateJobParams sem payload.createdAt falha fechado (sem fallback para occurredAt)', () => {
+      const recordWithoutCreatedAt = {
+        jobId: JOB_ID,
+        revision: 1,
+        recordKind: 'created' as const,
+        occurredAt: T0,
+        payload: {
+          jobId: JOB_ID,
+          actor: { kind: 'system', component: 'orchestrator' },
+          // createdAt ausente
+        },
+        appendSequence: '1',
+      };
+
+      assert.throws(
+        () => mapStoredRecordToCreateJobParams(recordWithoutCreatedAt as any),
+        (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes('Creation payload missing createdAt'),
+      );
+    });
+
+    it('Seção 17: mapStoredRecordToJobEvent sem timestamp factual no payload falha fechado (sem fallback para occurredAt)', () => {
+      const eventTypes = [
+        { type: 'JobStarted', missing: 'startedAt', payload: {} },
+        { type: 'JobAttemptCorrelated', missing: 'correlatedAt', payload: { attemptId: 'att_1' } },
+        { type: 'JobWaiting', missing: 'transitionedAt', payload: { cause: { kind: 'human', reasonCode: 'HUMAN', requestedAt: T0 } } },
+        { type: 'JobYieldedWaiting', missing: 'resumedAt', payload: {} },
+        { type: 'JobControlRequested', missing: 'requestedAt', payload: { intent: 'pause' } },
+        { type: 'JobPaused', missing: 'pausedAt', payload: {} },
+        { type: 'JobResumed', missing: 'resumedAt', payload: {} },
+        { type: 'JobSucceeded', missing: 'finishedAt', payload: {} },
+        { type: 'JobFailed', missing: 'finishedAt', payload: { reasonCode: 'ERR' } },
+        { type: 'JobCancelled', missing: 'finishedAt', payload: {} },
+      ];
+
+      for (const item of eventTypes) {
+        const record = {
+          jobId: JOB_ID,
+          revision: 2,
+          recordKind: 'transition' as const,
+          eventType: item.type as any,
+          occurredAt: T0,
+          payload: item.payload,
+          appendSequence: '2',
+        };
+
+        assert.throws(
+          () => mapStoredRecordToJobEvent(record as any),
+          (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes(`missing ${item.missing}`),
+          `Deveria falhar para ${item.type} sem ${item.missing}`,
+        );
+      }
+    });
+
+    it('Payloads aninhados preservam strings canônicas de timestamp sem normalização', () => {
+      // HumanWaitingCause
+      const humanCause = {
+        kind: 'human',
+        reasonCode: 'HUMAN_APPROVAL',
+        requestedAt: T_1_DIGIT,
+        deadline: T_2_DIGIT,
+      };
+      const rowHuman = {
+        job_id: JOB_ID,
+        status: 'waiting',
+        revision: 2,
+        created_at: new Date('2026-09-25T12:00:00.100Z'),
+        updated_at: new Date('2026-09-25T12:00:00.100Z'),
+        started_at: new Date('2026-09-25T12:00:00.100Z'),
+        finished_at: null,
+        state_payload: {
+          jobId: JOB_ID,
+          status: 'waiting',
+          revision: 2,
+          actor: { kind: 'system', component: 'orchestrator' },
+          createdAt: T_1_DIGIT,
+          updatedAt: T_1_DIGIT,
+          startedAt: T_1_DIGIT,
+          attemptLineage: ['att_1'],
+          waitingCause: humanCause,
+        },
+      };
+      const mappedHuman = mapRowToJobState(rowHuman);
+      assert.equal(mappedHuman.waitingCause?.requestedAt, T_1_DIGIT);
+      if (mappedHuman.waitingCause?.kind === 'human') {
+        assert.equal(mappedHuman.waitingCause.deadline, T_2_DIGIT);
+      }
+
+      // JobProgress
+      const progressPayload = {
+        completed: 40,
+        total: 100,
+        updatedAt: T_1_DIGIT,
+      };
+      const rowProgress = {
+        ...rowHuman,
+        status: 'running',
+        state_payload: {
+          ...rowHuman.state_payload,
+          status: 'running',
+          waitingCause: undefined,
+          progress: progressPayload,
+        },
+      };
+      const mappedProgress = mapRowToJobState(rowProgress);
+      assert.equal(mappedProgress.progress?.updatedAt, T_1_DIGIT);
     });
   });
 });

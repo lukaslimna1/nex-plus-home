@@ -65,33 +65,115 @@ export function deepCloneAndFreeze<T>(val: T): Readonly<T> {
   return Object.freeze(copy) as unknown as Readonly<T>;
 }
 
-export function formatPgTimestampToUtcInstant(
+/**
+ * Valida que um valor vindo do JSON payload é uma string canônica UTC aceita pelo Core (isCanonicalUtcInstant)
+ * e a retorna EXATAMENTE como persistida, com zero normalização textual ou preenchimento de zeros.
+ */
+export function readCanonicalPayloadUtcInstant(
   val: unknown,
   table: string,
   fieldName: string,
   jobId?: string,
 ): string {
+  if (typeof val !== 'string' || !isCanonicalUtcInstant(val)) {
+    throw new CorruptedJobStorageError(
+      table,
+      `Field '${fieldName}' contains non-canonical or invalid UTC timestamp string '${String(val)}'.`,
+      jobId,
+    );
+  }
+  return val;
+}
+
+/**
+ * Normaliza uma representação de timestamp proveniente de coluna PostgreSQL física (objeto Date do driver node-postgres
+ * ou string em fixtures/testes) para seu instante temporal em epoch milliseconds.
+ * A coluna física é apenas projeção temporal e NÃO possui autoridade sobre a grafia textual canônica do JobState.
+ */
+export function normalizePgTimestampInstant(
+  val: unknown,
+  table: string,
+  fieldName: string,
+  jobId?: string,
+): number {
   if (val instanceof Date) {
     if (Number.isNaN(val.getTime())) {
       throw new CorruptedJobStorageError(table, `Field '${fieldName}' contains invalid Date object.`, jobId);
     }
-    return val.toISOString();
+    return val.getTime();
   }
   if (typeof val === 'string') {
-    if (isCanonicalUtcInstant(val)) {
-      return new Date(val).toISOString();
+    const d = new Date(val);
+    if (Number.isNaN(d.getTime())) {
+      throw new CorruptedJobStorageError(
+        table,
+        `Field '${fieldName}' contains non-canonical or invalid UTC timestamp string '${val}'.`,
+        jobId,
+      );
     }
-    throw new CorruptedJobStorageError(
-      table,
-      `Field '${fieldName}' contains non-canonical or invalid UTC timestamp string '${val}'.`,
-      jobId,
-    );
+    return d.getTime();
+  }
+  if (typeof val === 'number' && Number.isFinite(val)) {
+    return val;
   }
   throw new CorruptedJobStorageError(
     table,
     `Field '${fieldName}' contains invalid timestamp value '${String(val)}'.`,
     jobId,
   );
+}
+
+/**
+ * Compara dois instantes temporais comprovando que representam o mesmo momento no tempo
+ * (resolução até milissegundos). Não realiza comparação puramente textual.
+ */
+export function areSameUtcInstant(instantA: unknown, instantB: unknown): boolean {
+  try {
+    const msA = instantA instanceof Date ? instantA.getTime() : (typeof instantA === 'number' ? instantA : new Date(String(instantA)).getTime());
+    const msB = instantB instanceof Date ? instantB.getTime() : (typeof instantB === 'number' ? instantB : new Date(String(instantB)).getTime());
+    if (Number.isNaN(msA) || Number.isNaN(msB)) return false;
+    return msA === msB;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Valida o cross-check temporal entre o timestamp de uma coluna SQL física e o timestamp canônico do payload JSON.
+ * Falha fechado com CorruptedJobStorageError se representarem instantes divergentes no tempo.
+ */
+export function assertMatchingUtcInstant(
+  sqlVal: unknown,
+  canonicalPayloadVal: string,
+  table: string,
+  fieldName: string,
+  jobId?: string,
+): void {
+  const sqlMs = normalizePgTimestampInstant(sqlVal, table, fieldName, jobId);
+  const payloadMs = new Date(canonicalPayloadVal).getTime();
+  if (sqlMs !== payloadMs) {
+    const sqlStr = sqlVal instanceof Date ? sqlVal.toISOString() : String(sqlVal);
+    const prefix = fieldName === 'occurred_at' ? 'row occurred_at' : `column ${fieldName}`;
+    throw new CorruptedJobStorageError(
+      table,
+      `Mismatch between ${prefix} '${sqlStr}' and payload timestamp '${canonicalPayloadVal}'.`,
+      jobId,
+    );
+  }
+}
+
+/**
+ * Adapter retrocompatível para utilitários externos que precisem de representação ISO de timestamps SQL.
+ * NÃO deve ser utilizado para desserializar timestamps canônicos do JobState ou eventos.
+ */
+export function formatPgTimestampToUtcInstant(
+  val: unknown,
+  table: string,
+  fieldName: string,
+  jobId?: string,
+): string {
+  const ms = normalizePgTimestampInstant(val, table, fieldName, jobId);
+  return new Date(ms).toISOString();
 }
 
 export function assertPlainObject(
@@ -493,16 +575,16 @@ export function mapPayloadToWaitingCause(raw: unknown, table: string, jobId?: st
   const obj = assertPlainObject(raw, table, 'waitingCause', jobId);
   const kind = assertNonEmptyString(obj.kind, table, 'waitingCause.kind', jobId);
   const reasonCode = assertNonEmptyString(obj.reasonCode, table, 'waitingCause.reasonCode', jobId);
-  const requestedAt = formatPgTimestampToUtcInstant(obj.requestedAt, table, 'waitingCause.requestedAt', jobId);
+  const requestedAt = readCanonicalPayloadUtcInstant(obj.requestedAt, table, 'waitingCause.requestedAt', jobId);
 
   let causeCandidate: JobWaitingCause;
   if (kind === 'human') {
     const res: Record<string, unknown> = { kind: 'human', reasonCode, requestedAt };
     if (obj.description !== undefined) res.description = assertString(obj.description, table, 'waitingCause.description', jobId);
-    if (obj.deadline !== undefined) res.deadline = formatPgTimestampToUtcInstant(obj.deadline, table, 'waitingCause.deadline', jobId);
+    if (obj.deadline !== undefined) res.deadline = readCanonicalPayloadUtcInstant(obj.deadline, table, 'waitingCause.deadline', jobId);
     causeCandidate = res as unknown as HumanWaitingCause;
   } else if (kind === 'temporal') {
-    const resumeAfter = formatPgTimestampToUtcInstant(obj.resumeAfter, table, 'waitingCause.resumeAfter', jobId);
+    const resumeAfter = readCanonicalPayloadUtcInstant(obj.resumeAfter, table, 'waitingCause.resumeAfter', jobId);
     causeCandidate = { kind: 'temporal', reasonCode, resumeAfter, requestedAt } as unknown as TemporalWaitingCause;
   } else {
     throw new CorruptedJobStorageError(table, `Unknown waitingCause kind '${kind}'.`, jobId);
@@ -519,7 +601,7 @@ export function mapPayloadToWaitingCause(raw: unknown, table: string, jobId?: st
 
 export function mapPayloadToProgress(raw: unknown, table: string, jobId?: string): JobProgress {
   const obj = assertPlainObject(raw, table, 'progress', jobId);
-  const updatedAt = formatPgTimestampToUtcInstant(obj.updatedAt, table, 'progress.updatedAt', jobId);
+  const updatedAt = readCanonicalPayloadUtcInstant(obj.updatedAt, table, 'progress.updatedAt', jobId);
 
   const res: Record<string, unknown> = {
     completed: obj.completed,
@@ -585,19 +667,13 @@ export function mapRowToJobState(row: any): JobState {
 
   const actor = mapPayloadToActor(payload.actor, TABLE, jobId);
 
-  // M-04: Cross-validação estrita de timestamps escalares colunas vs payload
-  const colCreatedAt = formatPgTimestampToUtcInstant(row.created_at, TABLE, 'created_at', jobId);
-  const payloadCreatedAt = formatPgTimestampToUtcInstant(payload.createdAt, TABLE, 'payload.createdAt', jobId);
-  if (colCreatedAt !== payloadCreatedAt) {
-    throw new CorruptedJobStorageError(TABLE, `Mismatch between column created_at '${colCreatedAt}' and payload createdAt '${payloadCreatedAt}'.`, jobId);
-  }
+  // M-04 & T-01: Cross-validação estrita de timestamps escalares colunas vs payload preservando string canônica exata
+  const payloadCreatedAt = readCanonicalPayloadUtcInstant(payload.createdAt, TABLE, 'payload.createdAt', jobId);
+  assertMatchingUtcInstant(row.created_at, payloadCreatedAt, TABLE, 'created_at', jobId);
   const createdAt = payloadCreatedAt;
 
-  const colUpdatedAt = formatPgTimestampToUtcInstant(row.updated_at, TABLE, 'updated_at', jobId);
-  const payloadUpdatedAt = formatPgTimestampToUtcInstant(payload.updatedAt, TABLE, 'payload.updatedAt', jobId);
-  if (colUpdatedAt !== payloadUpdatedAt) {
-    throw new CorruptedJobStorageError(TABLE, `Mismatch between column updated_at '${colUpdatedAt}' and payload updatedAt '${payloadUpdatedAt}'.`, jobId);
-  }
+  const payloadUpdatedAt = readCanonicalPayloadUtcInstant(payload.updatedAt, TABLE, 'payload.updatedAt', jobId);
+  assertMatchingUtcInstant(row.updated_at, payloadUpdatedAt, TABLE, 'updated_at', jobId);
   const updatedAt = payloadUpdatedAt;
 
   let startedAt: string | undefined;
@@ -605,11 +681,8 @@ export function mapRowToJobState(row: any): JobState {
     if (payload.startedAt === undefined || payload.startedAt === null) {
       throw new CorruptedJobStorageError(TABLE, `Column started_at is present but payload.startedAt is missing.`, jobId);
     }
-    const colStartedAt = formatPgTimestampToUtcInstant(row.started_at, TABLE, 'started_at', jobId);
-    const payloadStartedAt = formatPgTimestampToUtcInstant(payload.startedAt, TABLE, 'payload.startedAt', jobId);
-    if (colStartedAt !== payloadStartedAt) {
-      throw new CorruptedJobStorageError(TABLE, `Mismatch between column started_at '${colStartedAt}' and payload startedAt '${payloadStartedAt}'.`, jobId);
-    }
+    const payloadStartedAt = readCanonicalPayloadUtcInstant(payload.startedAt, TABLE, 'payload.startedAt', jobId);
+    assertMatchingUtcInstant(row.started_at, payloadStartedAt, TABLE, 'started_at', jobId);
     startedAt = payloadStartedAt;
   } else {
     if (payload.startedAt !== undefined && payload.startedAt !== null) {
@@ -622,11 +695,8 @@ export function mapRowToJobState(row: any): JobState {
     if (payload.finishedAt === undefined || payload.finishedAt === null) {
       throw new CorruptedJobStorageError(TABLE, `Column finished_at is present but payload.finishedAt is missing.`, jobId);
     }
-    const colFinishedAt = formatPgTimestampToUtcInstant(row.finished_at, TABLE, 'finished_at', jobId);
-    const payloadFinishedAt = formatPgTimestampToUtcInstant(payload.finishedAt, TABLE, 'payload.finishedAt', jobId);
-    if (colFinishedAt !== payloadFinishedAt) {
-      throw new CorruptedJobStorageError(TABLE, `Mismatch between column finished_at '${colFinishedAt}' and payload finishedAt '${payloadFinishedAt}'.`, jobId);
-    }
+    const payloadFinishedAt = readCanonicalPayloadUtcInstant(payload.finishedAt, TABLE, 'payload.finishedAt', jobId);
+    assertMatchingUtcInstant(row.finished_at, payloadFinishedAt, TABLE, 'finished_at', jobId);
     finishedAt = payloadFinishedAt;
   } else {
     if (payload.finishedAt !== undefined && payload.finishedAt !== null) {
@@ -735,7 +805,7 @@ export function mapRowToStoredRecord(row: any): JobStoredRecord {
     eventType = assertNonEmptyString(row.event_type, TABLE, 'event_type', jobId) as JobEventType;
   }
 
-  const occurredAt = formatPgTimestampToUtcInstant(row.occurred_at, TABLE, 'occurred_at', jobId);
+  let occurredAt: string;
   let payloadRaw: unknown;
   if (typeof row.payload === 'string') {
     try {
@@ -748,56 +818,51 @@ export function mapRowToStoredRecord(row: any): JobStoredRecord {
   }
   const payload = assertPlainObject(payloadRaw, TABLE, 'payload', jobId);
 
-  // M-06: Validação cruzada de occurred_at com o timestamp correspondente no payload
+  // M-06 & T-01: Validação cruzada de occurred_at com o timestamp correspondente no payload, preservando a string canônica original
   if (recordKind === 'created') {
     if (payload.createdAt === undefined || payload.createdAt === null) {
       throw new CorruptedJobStorageError(TABLE, `Creation payload missing createdAt.`, jobId);
     }
-    const payloadCreatedAt = formatPgTimestampToUtcInstant(payload.createdAt, TABLE, 'payload.createdAt', jobId);
-    if (payloadCreatedAt !== occurredAt) {
-      throw new CorruptedJobStorageError(
-        TABLE,
-        `Mismatch between row occurred_at '${occurredAt}' and payload.createdAt '${payloadCreatedAt}'.`,
-        jobId,
-      );
-    }
+    const payloadCreatedAt = readCanonicalPayloadUtcInstant(payload.createdAt, TABLE, 'payload.createdAt', jobId);
+    assertMatchingUtcInstant(row.occurred_at, payloadCreatedAt, TABLE, 'occurred_at', jobId);
+    occurredAt = payloadCreatedAt;
   } else {
-    let payloadOccurredAt: unknown;
+    let payloadOccurredAtRaw: unknown;
     switch (eventType) {
       case 'JobStarted':
-        payloadOccurredAt = payload.startedAt;
+        payloadOccurredAtRaw = payload.startedAt;
         break;
       case 'JobAttemptCorrelated':
-        payloadOccurredAt = payload.correlatedAt;
+        payloadOccurredAtRaw = payload.correlatedAt;
         break;
       case 'JobWaiting':
-        payloadOccurredAt = payload.transitionedAt;
+        payloadOccurredAtRaw = payload.transitionedAt;
         break;
       case 'JobYieldedWaiting':
-        payloadOccurredAt = payload.resumedAt;
+        payloadOccurredAtRaw = payload.resumedAt;
         break;
       case 'JobControlRequested':
-        payloadOccurredAt = payload.requestedAt;
+        payloadOccurredAtRaw = payload.requestedAt;
         break;
       case 'JobPaused':
-        payloadOccurredAt = payload.pausedAt;
+        payloadOccurredAtRaw = payload.pausedAt;
         break;
       case 'JobResumed':
-        payloadOccurredAt = payload.resumedAt;
+        payloadOccurredAtRaw = payload.resumedAt;
         break;
       case 'JobProgressUpdated':
-        payloadOccurredAt = (payload.progress as Record<string, unknown> | undefined)?.updatedAt;
+        payloadOccurredAtRaw = (payload.progress as Record<string, unknown> | undefined)?.updatedAt;
         break;
       case 'JobSucceeded':
       case 'JobFailed':
       case 'JobCancelled':
-        payloadOccurredAt = payload.finishedAt;
+        payloadOccurredAtRaw = payload.finishedAt;
         break;
       default:
         throw new CorruptedJobStorageError(TABLE, `Unknown event_type '${String(eventType)}'.`, jobId);
     }
 
-    if (payloadOccurredAt === undefined || payloadOccurredAt === null) {
+    if (payloadOccurredAtRaw === undefined || payloadOccurredAtRaw === null) {
       throw new CorruptedJobStorageError(
         TABLE,
         `Event payload for '${String(eventType)}' missing timestamp field matching occurred_at.`,
@@ -805,19 +870,14 @@ export function mapRowToStoredRecord(row: any): JobStoredRecord {
       );
     }
 
-    const formattedPayloadOccurredAt = formatPgTimestampToUtcInstant(
-      payloadOccurredAt,
+    const payloadOccurredAt = readCanonicalPayloadUtcInstant(
+      payloadOccurredAtRaw,
       TABLE,
       `payload timestamp for ${String(eventType)}`,
       jobId,
     );
-    if (formattedPayloadOccurredAt !== occurredAt) {
-      throw new CorruptedJobStorageError(
-        TABLE,
-        `Mismatch between row occurred_at '${occurredAt}' and event payload timestamp '${formattedPayloadOccurredAt}'.`,
-        jobId,
-      );
-    }
+    assertMatchingUtcInstant(row.occurred_at, payloadOccurredAt, TABLE, 'occurred_at', jobId);
+    occurredAt = payloadOccurredAt;
   }
 
   // M-07: Validar formato de append_sequence com /^[1-9]\d*$/ (bigint identity positivo)
@@ -859,7 +919,10 @@ export function mapStoredRecordToCreateJobParams(record: JobStoredRecord): Creat
   }
 
   const actor = mapPayloadToActor(payload.actor, TABLE, jobId);
-  const createdAt = formatPgTimestampToUtcInstant(payload.createdAt ?? record.occurredAt, TABLE, 'payload.createdAt', jobId);
+  if (payload.createdAt === undefined || payload.createdAt === null) {
+    throw new CorruptedJobStorageError(TABLE, `Creation payload missing createdAt.`, jobId);
+  }
+  const createdAt = readCanonicalPayloadUtcInstant(payload.createdAt, TABLE, 'payload.createdAt', jobId);
 
   const params: Record<string, unknown> = {
     jobId,
@@ -907,7 +970,10 @@ export function mapStoredRecordToJobEvent(record: JobStoredRecord): JobEvent {
 
   switch (record.eventType) {
     case 'JobStarted': {
-      const startedAt = formatPgTimestampToUtcInstant(p.startedAt ?? record.occurredAt, TABLE, 'startedAt', jobId);
+      if (p.startedAt === undefined || p.startedAt === null) {
+        throw new CorruptedJobStorageError(TABLE, `JobStarted payload missing startedAt.`, jobId);
+      }
+      const startedAt = readCanonicalPayloadUtcInstant(p.startedAt, TABLE, 'startedAt', jobId);
       const res: Record<string, unknown> = { type: 'JobStarted', jobId, startedAt };
       if (p.attemptId !== undefined) res.attemptId = assertNonEmptyString(p.attemptId, TABLE, 'attemptId', jobId);
       return deepCloneAndFreeze(res) as unknown as JobEvent;
@@ -915,18 +981,27 @@ export function mapStoredRecordToJobEvent(record: JobStoredRecord): JobEvent {
 
     case 'JobAttemptCorrelated': {
       const attemptId = assertNonEmptyString(p.attemptId, TABLE, 'attemptId', jobId);
-      const correlatedAt = formatPgTimestampToUtcInstant(p.correlatedAt ?? record.occurredAt, TABLE, 'correlatedAt', jobId);
+      if (p.correlatedAt === undefined || p.correlatedAt === null) {
+        throw new CorruptedJobStorageError(TABLE, `JobAttemptCorrelated payload missing correlatedAt.`, jobId);
+      }
+      const correlatedAt = readCanonicalPayloadUtcInstant(p.correlatedAt, TABLE, 'correlatedAt', jobId);
       return deepCloneAndFreeze({ type: 'JobAttemptCorrelated', jobId, attemptId, correlatedAt }) as unknown as JobEvent;
     }
 
     case 'JobWaiting': {
+      if (p.transitionedAt === undefined || p.transitionedAt === null) {
+        throw new CorruptedJobStorageError(TABLE, `JobWaiting payload missing transitionedAt.`, jobId);
+      }
       const cause = mapPayloadToWaitingCause(p.cause, TABLE, jobId);
-      const transitionedAt = formatPgTimestampToUtcInstant(p.transitionedAt ?? record.occurredAt, TABLE, 'transitionedAt', jobId);
+      const transitionedAt = readCanonicalPayloadUtcInstant(p.transitionedAt, TABLE, 'transitionedAt', jobId);
       return deepCloneAndFreeze({ type: 'JobWaiting', jobId, cause, transitionedAt }) as unknown as JobEvent;
     }
 
     case 'JobYieldedWaiting': {
-      const resumedAt = formatPgTimestampToUtcInstant(p.resumedAt ?? record.occurredAt, TABLE, 'resumedAt', jobId);
+      if (p.resumedAt === undefined || p.resumedAt === null) {
+        throw new CorruptedJobStorageError(TABLE, `JobYieldedWaiting payload missing resumedAt.`, jobId);
+      }
+      const resumedAt = readCanonicalPayloadUtcInstant(p.resumedAt, TABLE, 'resumedAt', jobId);
       return deepCloneAndFreeze({ type: 'JobYieldedWaiting', jobId, resumedAt }) as unknown as JobEvent;
     }
 
@@ -935,17 +1010,26 @@ export function mapStoredRecordToJobEvent(record: JobStoredRecord): JobEvent {
       if (!VALID_CONTROL_INTENTS.has(intent)) {
         throw new CorruptedJobStorageError(TABLE, `Invalid control intent '${intent}'.`, jobId);
       }
-      const requestedAt = formatPgTimestampToUtcInstant(p.requestedAt ?? record.occurredAt, TABLE, 'requestedAt', jobId);
+      if (p.requestedAt === undefined || p.requestedAt === null) {
+        throw new CorruptedJobStorageError(TABLE, `JobControlRequested payload missing requestedAt.`, jobId);
+      }
+      const requestedAt = readCanonicalPayloadUtcInstant(p.requestedAt, TABLE, 'requestedAt', jobId);
       return deepCloneAndFreeze({ type: 'JobControlRequested', jobId, intent: intent as JobControlIntent, requestedAt }) as unknown as JobEvent;
     }
 
     case 'JobPaused': {
-      const pausedAt = formatPgTimestampToUtcInstant(p.pausedAt ?? record.occurredAt, TABLE, 'pausedAt', jobId);
+      if (p.pausedAt === undefined || p.pausedAt === null) {
+        throw new CorruptedJobStorageError(TABLE, `JobPaused payload missing pausedAt.`, jobId);
+      }
+      const pausedAt = readCanonicalPayloadUtcInstant(p.pausedAt, TABLE, 'pausedAt', jobId);
       return deepCloneAndFreeze({ type: 'JobPaused', jobId, pausedAt }) as unknown as JobEvent;
     }
 
     case 'JobResumed': {
-      const resumedAt = formatPgTimestampToUtcInstant(p.resumedAt ?? record.occurredAt, TABLE, 'resumedAt', jobId);
+      if (p.resumedAt === undefined || p.resumedAt === null) {
+        throw new CorruptedJobStorageError(TABLE, `JobResumed payload missing resumedAt.`, jobId);
+      }
+      const resumedAt = readCanonicalPayloadUtcInstant(p.resumedAt, TABLE, 'resumedAt', jobId);
       return deepCloneAndFreeze({ type: 'JobResumed', jobId, resumedAt }) as unknown as JobEvent;
     }
 
@@ -955,14 +1039,20 @@ export function mapStoredRecordToJobEvent(record: JobStoredRecord): JobEvent {
     }
 
     case 'JobSucceeded': {
-      const finishedAt = formatPgTimestampToUtcInstant(p.finishedAt ?? record.occurredAt, TABLE, 'finishedAt', jobId);
+      if (p.finishedAt === undefined || p.finishedAt === null) {
+        throw new CorruptedJobStorageError(TABLE, `JobSucceeded payload missing finishedAt.`, jobId);
+      }
+      const finishedAt = readCanonicalPayloadUtcInstant(p.finishedAt, TABLE, 'finishedAt', jobId);
       const res: Record<string, unknown> = { type: 'JobSucceeded', jobId, finishedAt };
       if (p.terminalReason !== undefined) res.terminalReason = assertString(p.terminalReason, TABLE, 'terminalReason', jobId);
       return deepCloneAndFreeze(res) as unknown as JobEvent;
     }
 
     case 'JobFailed': {
-      const finishedAt = formatPgTimestampToUtcInstant(p.finishedAt ?? record.occurredAt, TABLE, 'finishedAt', jobId);
+      if (p.finishedAt === undefined || p.finishedAt === null) {
+        throw new CorruptedJobStorageError(TABLE, `JobFailed payload missing finishedAt.`, jobId);
+      }
+      const finishedAt = readCanonicalPayloadUtcInstant(p.finishedAt, TABLE, 'finishedAt', jobId);
       const reasonCode = assertNonEmptyString(p.reasonCode, TABLE, 'reasonCode', jobId);
       const res: Record<string, unknown> = { type: 'JobFailed', jobId, finishedAt, reasonCode };
       if (p.terminalReason !== undefined) res.terminalReason = assertString(p.terminalReason, TABLE, 'terminalReason', jobId);
@@ -970,7 +1060,10 @@ export function mapStoredRecordToJobEvent(record: JobStoredRecord): JobEvent {
     }
 
     case 'JobCancelled': {
-      const finishedAt = formatPgTimestampToUtcInstant(p.finishedAt ?? record.occurredAt, TABLE, 'finishedAt', jobId);
+      if (p.finishedAt === undefined || p.finishedAt === null) {
+        throw new CorruptedJobStorageError(TABLE, `JobCancelled payload missing finishedAt.`, jobId);
+      }
+      const finishedAt = readCanonicalPayloadUtcInstant(p.finishedAt, TABLE, 'finishedAt', jobId);
       const res: Record<string, unknown> = { type: 'JobCancelled', jobId, finishedAt };
       if (p.reasonCode !== undefined) res.reasonCode = assertNonEmptyString(p.reasonCode, TABLE, 'reasonCode', jobId);
       if (p.terminalReason !== undefined) res.terminalReason = assertString(p.terminalReason, TABLE, 'terminalReason', jobId);
