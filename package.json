@@ -24,6 +24,7 @@
     "test:db:086b-acceptance:isolated": "powershell.exe -NoLogo -NoProfile -File ./scripts/run-086b-acceptance-isolated.ps1",
     "test:db:execution-ledger:isolated": "powershell.exe -NoLogo -NoProfile -File ./scripts/run-execution-ledger-isolated.ps1",
     "test:db:job-store:isolated": "powershell.exe -NoLogo -NoProfile -File ./scripts/run-job-store-isolated.ps1",
+    "test:db:job-queue-runtime:isolated": "powershell.exe -NoLogo -NoProfile -File ./scripts/run-job-queue-runtime-isolated.ps1",
     "test:context:server-boundary:positive": "node --conditions=react-server --import tsx --experimental-test-module-mocks --test src/core/context/__tests__/server-boundary.positive.test.ts"
   },
   "dependencies": {
@@ -34,6 +35,7 @@
     "next": "16.3.6",
     "payload": "3.90.2",
     "pg": "8.20.0",
+    "pg-boss": "12.34.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "server-only": "^0.0.1"
