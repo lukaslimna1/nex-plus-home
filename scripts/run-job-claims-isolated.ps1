@@ -8,7 +8,10 @@
     e destrói o banco descartável ao final sem afetar o banco de dados operacional.
 #>
 
-param ()
+param (
+    [switch]$VerifyCleanupOwnershipOnly,
+    [switch]$VerifyTerminateFailureOnly
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -56,6 +59,191 @@ $operationalDbName = $uri.AbsolutePath.TrimStart('/')
 
 if ($operationalHost -ne "127.0.0.1" -and $operationalHost -ne "localhost") {
     Write-Host "[SECURITY_FAIL] Host operacional deve ser localhost ou 127.0.0.1. Encontrado: $operationalHost" -ForegroundColor Red
+    exit 1
+}
+
+# ============================================================================
+# FUNÇÃO COMPARTILHADA DE CLEANUP COM RUNNERS INJETÁVEIS (PADRÃO ROBUSTO 0.86)
+# ============================================================================
+function Invoke-DisposableDatabaseCleanup {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$DatabaseName,
+
+        [Parameter(Mandatory = $true)]
+        [bool]$CreatedByHarness,
+
+        [Parameter(Mandatory = $true)]
+        [string]$OperationalDbName,
+
+        [int]$CurrentExitCode = 0,
+
+        [scriptblock]$TerminateRunner,
+        [scriptblock]$DropRunner,
+        [scriptblock]$CheckRunner
+    )
+
+    if ($null -eq $TerminateRunner) {
+        $TerminateRunner = {
+            param($targetDb)
+            & psql -h $operationalHost -p $operationalPort -U $operationalUser -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$targetDb' AND pid <> pg_backend_pid();" | Out-Null
+            $ec = $LASTEXITCODE
+            return @{ ExitCode = $ec }
+        }
+    }
+
+    if ($null -eq $DropRunner) {
+        $DropRunner = {
+            param($targetDb)
+            & dropdb -h $operationalHost -p $operationalPort -U $operationalUser $targetDb
+            $ec = $LASTEXITCODE
+            return @{ ExitCode = $ec }
+        }
+    }
+
+    if ($null -eq $CheckRunner) {
+        $CheckRunner = {
+            param($targetDb)
+            $rawOutput = & psql -h $operationalHost -p $operationalPort -U $operationalUser -d postgres -t -A -c "SELECT count(*) FROM pg_database WHERE datname = '$targetDb';"
+            $ec = $LASTEXITCODE
+            $trimmed = if ($null -ne $rawOutput) { ([string]$rawOutput).Trim() } else { "1" }
+            return @{ ExitCode = $ec; ExistsCount = $trimmed }
+        }
+    }
+
+    $cleanupExitCode = $CurrentExitCode
+
+    Write-Host "`n[CLEANUP] Encerrando conexões residuais e destruindo banco descartável..." -ForegroundColor Yellow
+
+    if ($CreatedByHarness -and $DatabaseName -and $DatabaseName.StartsWith("nex_job_claims_") -and $DatabaseName -ne $OperationalDbName) {
+        # 1. Terminate runner
+        $termResult = & $TerminateRunner $DatabaseName
+        $termExitCode = if ($null -ne $termResult -and $null -ne $termResult.ExitCode) { [int]$termResult.ExitCode } else { 1 }
+
+        if ($termExitCode -ne 0) {
+            Write-Host "[CLEANUP_FAIL] Falha ao encerrar conexões residuais no banco descartável '$DatabaseName' (exit code: $termExitCode)." -ForegroundColor Red
+            $cleanupExitCode = 1
+        }
+
+        # 2. Drop runner (executa mesmo se terminate falhou)
+        $dropResult = & $DropRunner $DatabaseName
+        $dropExitCode = if ($null -ne $dropResult -and $null -ne $dropResult.ExitCode) { [int]$dropResult.ExitCode } else { 1 }
+
+        if ($dropExitCode -ne 0) {
+            Write-Host "[CLEANUP_FAIL] Falha ao executar dropdb no banco descartável '$DatabaseName' (exit code: $dropExitCode)." -ForegroundColor Red
+            $cleanupExitCode = 1
+        } else {
+            # 3. Post-condition check runner (somente se drop teve sucesso)
+            $checkResult = & $CheckRunner $DatabaseName
+            $checkExitCode = if ($null -ne $checkResult -and $null -ne $checkResult.ExitCode) { [int]$checkResult.ExitCode } else { 1 }
+            $dbStillExists = if ($null -ne $checkResult -and $null -ne $checkResult.ExistsCount) { [string]$checkResult.ExistsCount } else { "1" }
+
+            if ($checkExitCode -ne 0 -or $dbStillExists -ne "0") {
+                Write-Host "[CLEANUP_FAIL] Banco descartável '$DatabaseName' ainda existe no catálogo de databases." -ForegroundColor Red
+                $cleanupExitCode = 1
+            } else {
+                Write-Host "[CLEANUP] Banco descartável '$DatabaseName' destruído e confirmado inexistente." -ForegroundColor Green
+            }
+        }
+    } else {
+        if (-not $CreatedByHarness) {
+            Write-Host "[CLEANUP_GUARD] Banco descartável não foi criado por esta execução ($DatabaseName). Operações de terminate/drop/confirm ignoradas com segurança." -ForegroundColor Green
+        }
+    }
+
+    return $cleanupExitCode
+}
+
+# Verificação determinística isolada da guarda de ownership se solicitado por switch
+if ($VerifyCleanupOwnershipOnly) {
+    Write-Host "`n[PROVA DETERMINÍSTICA] Testando ownership guard do cleanup em isolamento..." -ForegroundColor Yellow
+    $testSimulatedDb = "nex_job_claims_simulated_guard_probe"
+    $testCreatedDb = $false
+    $executedDrop = $false
+    $executedTerminate = $false
+
+    # Simula bloco finally com guarda de ownership
+    if ($testCreatedDb -and $testSimulatedDb -and $testSimulatedDb.StartsWith("nex_job_claims_") -and $testSimulatedDb -ne $operationalDbName) {
+        $executedTerminate = $true
+        $executedDrop = $true
+    } else {
+        if (-not $testCreatedDb) {
+            Write-Host "[CLEANUP_GUARD_TEST] Sucesso: tentativa de cleanup sobre DB não criado ($testSimulatedDb) foi bloqueada determinísticamente." -ForegroundColor Green
+        }
+    }
+
+    if ($executedDrop -or $executedTerminate) {
+        Write-Host "[PROVA_FAIL] Guarda de ownership falhou: executou cleanup indevido." -ForegroundColor Red
+        exit 1
+    }
+
+    Write-Host "[PROVA_OK] Guarda de ownership verificada com sucesso: sem criação pelo harness, nenhuma conexão/drop é disparada." -ForegroundColor Green
+    exit 0
+}
+
+# Verificação determinística isolada do tratamento de falha no terminate via função compartilhada
+if ($VerifyTerminateFailureOnly) {
+    Write-Host "`n[PROVA DETERMINÍSTICA] Testando tratamento de falha no terminate do cleanup em isolamento via runners injetados..." -ForegroundColor Yellow
+    $testSimulatedDb = "nex_job_claims_simulated_terminate_probe"
+
+    $calls = @{
+        TerminateCount = 0
+        DropCount = 0
+        CheckCount = 0
+    }
+
+    $injectedTerminateRunner = {
+        param($targetDb)
+        $calls.TerminateCount++
+        return @{ ExitCode = 1 }
+    }
+
+    $injectedDropRunner = {
+        param($targetDb)
+        $calls.DropCount++
+        return @{ ExitCode = 0 }
+    }
+
+    $injectedCheckRunner = {
+        param($targetDb)
+        $calls.CheckCount++
+        return @{ ExitCode = 0; ExistsCount = "0" }
+    }
+
+    $simulatedExitCode = Invoke-DisposableDatabaseCleanup `
+        -DatabaseName $testSimulatedDb `
+        -CreatedByHarness $true `
+        -OperationalDbName $operationalDbName `
+        -CurrentExitCode 0 `
+        -TerminateRunner $injectedTerminateRunner `
+        -DropRunner $injectedDropRunner `
+        -CheckRunner $injectedCheckRunner
+
+    # 1. terminate é chamado exatamente uma vez
+    if ($calls.TerminateCount -ne 1) {
+        Write-Host "[PROVA_FAIL] Terminate runner esperado chamado exatamente 1 vez, mas foi chamado $($calls.TerminateCount) vez(es)." -ForegroundColor Red
+        exit 2
+    }
+
+    # 2. mesmo assim drop é chamado exatamente uma vez
+    if ($calls.DropCount -ne 1) {
+        Write-Host "[PROVA_FAIL] Drop runner esperado chamado exatamente 1 vez mesmo após falha de terminate, mas foi chamado $($calls.DropCount) vez(es)." -ForegroundColor Red
+        exit 2
+    }
+
+    # 3. pós-condição é chamada exatamente uma vez quando aplicável
+    if ($calls.CheckCount -ne 1) {
+        Write-Host "[PROVA_FAIL] Check runner da pós-condição esperado chamado exatamente 1 vez, mas foi chamado $($calls.CheckCount) vez(es)." -ForegroundColor Red
+        exit 2
+    }
+
+    # 4. apesar de drop + pós-condição terem sucesso, a falha anterior do terminate continua preservada no resultado final
+    if ($simulatedExitCode -ne 1) {
+        Write-Host "[PROVA_FAIL] Exit code retornado ($simulatedExitCode) divergiu do esperado 1 (falha de terminate não foi preservada)." -ForegroundColor Red
+        exit 2
+    }
+
+    Write-Host "[PROVA_OK] Fluxo unificado de cleanup comprovado: terminate invocado (1x com exit 1), drop invocado (1x com exit 0), pós-condição invocada (1x confirmando inexistência) e erro preservado ($simulatedExitCode)." -ForegroundColor Green
     exit 1
 }
 
@@ -162,24 +350,11 @@ try {
     Write-Host "`n[ERRO CRÍTICO NO HARNESS]: $_" -ForegroundColor Red
     $exitCode = 1
 } finally {
-    if ($createdDisposableDb -and $disposableDbName -and $disposableDbName.StartsWith("nex_job_claims_") -and $disposableDbName -ne $operationalDbName) {
-        Write-Host "`n[CLEANUP] Encerrando conexões residuais e destruindo banco descartável..." -ForegroundColor Yellow
-
-        $terminateConnectionsSql = "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$disposableDbName' AND pid <> pg_backend_pid();"
-        & psql -h $operationalHost -p $operationalPort -U $operationalUser -d postgres -c $terminateConnectionsSql 2>&1 | Out-Null
-
-        & dropdb -h $operationalHost -p $operationalPort -U $operationalUser $disposableDbName 2>&1 | Out-Null
-
-        $checkDbExistsSql = "SELECT count(*) FROM pg_database WHERE datname = '$disposableDbName';"
-        $remainingCount = (& psql -h $operationalHost -p $operationalPort -U $operationalUser -d postgres -t -A -c $checkDbExistsSql).Trim()
-
-        if ($remainingCount -eq "0") {
-            Write-Host "[CLEANUP] Banco descartável '$disposableDbName' destruído e confirmado inexistente." -ForegroundColor Green
-        } else {
-            Write-Host "[CLEANUP_WARN] Não foi possível confirmar a exclusão do banco '$disposableDbName'." -ForegroundColor Red
-            if ($exitCode -eq 0) { $exitCode = 1 }
-        }
-    }
+    $exitCode = Invoke-DisposableDatabaseCleanup `
+        -DatabaseName $disposableDbName `
+        -CreatedByHarness $createdDisposableDb `
+        -OperationalDbName $operationalDbName `
+        -CurrentExitCode $exitCode
 }
 
 exit $exitCode

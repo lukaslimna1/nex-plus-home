@@ -41,7 +41,7 @@ export interface RawClaimRow {
   readonly renewed_at: unknown;
   readonly lease_until: unknown;
   readonly released_at: unknown;
-  readonly db_now?: unknown;
+  readonly db_now: unknown;
 }
 
 function parseDbDate(value: unknown, fieldName: string, jobId?: string): Date {
@@ -84,11 +84,17 @@ export function mapRowToJobClaimSnapshot(raw: unknown): JobClaimSnapshot {
   let fencingToken: string;
   if (typeof row.fencing_token === 'string') {
     fencingToken = row.fencing_token;
-  } else if (typeof row.fencing_token === 'number' || typeof row.fencing_token === 'bigint') {
-    fencingToken = String(row.fencing_token);
+  } else if (typeof row.fencing_token === 'bigint') {
+    if (row.fencing_token <= BigInt(0)) {
+      throw new CorruptedJobClaimStorageError(
+        `Field fencing_token as bigint must be positive (> 0), received: ${row.fencing_token.toString()}.`,
+        jobId
+      );
+    }
+    fencingToken = row.fencing_token.toString();
   } else {
     throw new CorruptedJobClaimStorageError(
-      `Field fencing_token must be a string or integer, received: ${String(row.fencing_token)}.`,
+      `Field fencing_token must be a valid decimal string or positive bigint, received ${typeof row.fencing_token}: ${String(row.fencing_token)}.`,
       jobId
     );
   }
@@ -109,17 +115,51 @@ export function mapRowToJobClaimSnapshot(raw: unknown): JobClaimSnapshot {
     releasedAtDate = parseDbDate(row.released_at, 'released_at', jobId);
   }
 
-  // db_now vem preferencialmente do PostgreSQL; se omitido em contextos de teste mockados, usa leaseUntilDate como referência temporal
-  const dbNowDate = row.db_now !== undefined && row.db_now !== null
-    ? parseDbDate(row.db_now, 'db_now', jobId)
-    : new Date();
+  // db_now é OBRIGATÓRIO e deve vir do PostgreSQL (CURRENT_TIMESTAMP(3) AS db_now).
+  // Não é permitido fallback local (Date.now / new Date()).
+  if (row.db_now === undefined || row.db_now === null) {
+    throw new CorruptedJobClaimStorageError(
+      "Field 'db_now' is required and cannot be null or undefined.",
+      jobId
+    );
+  }
+  const dbNowDate = parseDbDate(row.db_now, 'db_now', jobId);
 
-  // Validação de sanidade temporal básica
+  // Validação de sanidade temporal fail-closed
   if (renewedAtDate.getTime() < acquiredAtDate.getTime()) {
     throw new CorruptedJobClaimStorageError(
       `renewed_at (${renewedAtDate.toISOString()}) cannot be earlier than acquired_at (${acquiredAtDate.toISOString()}).`,
       jobId
     );
+  }
+
+  if (leaseUntilDate.getTime() < acquiredAtDate.getTime()) {
+    throw new CorruptedJobClaimStorageError(
+      `lease_until (${leaseUntilDate.toISOString()}) cannot be earlier than acquired_at (${acquiredAtDate.toISOString()}).`,
+      jobId
+    );
+  }
+
+  if (leaseUntilDate.getTime() <= renewedAtDate.getTime()) {
+    throw new CorruptedJobClaimStorageError(
+      `lease_until (${leaseUntilDate.toISOString()}) must be strictly later than renewed_at (${renewedAtDate.toISOString()}).`,
+      jobId
+    );
+  }
+
+  if (releasedAtDate !== null) {
+    if (releasedAtDate.getTime() < acquiredAtDate.getTime()) {
+      throw new CorruptedJobClaimStorageError(
+        `released_at (${releasedAtDate.toISOString()}) cannot be earlier than acquired_at (${acquiredAtDate.toISOString()}).`,
+        jobId
+      );
+    }
+    if (releasedAtDate.getTime() < renewedAtDate.getTime()) {
+      throw new CorruptedJobClaimStorageError(
+        `released_at (${releasedAtDate.toISOString()}) cannot be earlier than renewed_at (${renewedAtDate.toISOString()}).`,
+        jobId
+      );
+    }
   }
 
   let state: JobClaimState;

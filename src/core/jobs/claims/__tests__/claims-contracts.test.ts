@@ -83,7 +83,22 @@ describe('Canonical Job Claims — Mapping, States & Error Boundaries (0.86C-3B)
       assert.equal(snapshot.releasedAt, releaseTime.toISOString());
     });
 
-    it('converte fencing_token de bigint ou number retornado pelo driver para string decimal', () => {
+    it('preserva fencing_token como string decimal ou bigint exato e rejeita tipo number (lossless)', () => {
+      // 1. string decimal positiva
+      const rowStr = {
+        job_id: 'job_str',
+        worker_id: 'w1',
+        fencing_token: '42',
+        acquired_at: baseNow,
+        renewed_at: baseNow,
+        lease_until: futureLease,
+        released_at: null,
+        db_now: baseNow,
+      };
+      const snapStr = mapRowToJobClaimSnapshot(rowStr);
+      assert.equal(snapStr.fencingToken, '42');
+
+      // 2. bigint positivo
       const rowBigInt = {
         job_id: 'job_bigint',
         worker_id: 'w1',
@@ -94,10 +109,214 @@ describe('Canonical Job Claims — Mapping, States & Error Boundaries (0.86C-3B)
         released_at: null,
         db_now: baseNow,
       };
+      const snapBigInt = mapRowToJobClaimSnapshot(rowBigInt);
+      assert.equal(snapBigInt.fencingToken, '42');
+      assert.equal(typeof snapBigInt.fencingToken, 'string');
 
-      const snapshot = mapRowToJobClaimSnapshot(rowBigInt);
-      assert.equal(snapshot.fencingToken, '42');
-      assert.equal(typeof snapshot.fencingToken, 'string');
+      // 3. string grande além de MAX_SAFE_INTEGER preservada sem perda de precisão
+      const rowLargeStr = {
+        job_id: 'job_large_str',
+        worker_id: 'w1',
+        fencing_token: '9007199254740993',
+        acquired_at: baseNow,
+        renewed_at: baseNow,
+        lease_until: futureLease,
+        released_at: null,
+        db_now: baseNow,
+      };
+      const snapLargeStr = mapRowToJobClaimSnapshot(rowLargeStr);
+      assert.equal(snapLargeStr.fencingToken, '9007199254740993');
+
+      // 4. bigint grande além de MAX_SAFE_INTEGER preservado sem perda de precisão
+      const rowLargeBigInt = {
+        job_id: 'job_large_bigint',
+        worker_id: 'w1',
+        fencing_token: BigInt('9007199254740993'),
+        acquired_at: baseNow,
+        renewed_at: baseNow,
+        lease_until: futureLease,
+        released_at: null,
+        db_now: baseNow,
+      };
+      const snapLargeBigInt = mapRowToJobClaimSnapshot(rowLargeBigInt);
+      assert.equal(snapLargeBigInt.fencingToken, '9007199254740993');
+
+      // 5. number JS (mesmo safe) é rejeitado com CorruptedJobClaimStorageError
+      assert.throws(
+        () =>
+          mapRowToJobClaimSnapshot({
+            ...rowStr,
+            fencing_token: 42,
+          }),
+        CorruptedJobClaimStorageError
+      );
+
+      // 6. unsafe number JS é rejeitado com CorruptedJobClaimStorageError
+      assert.throws(
+        () =>
+          mapRowToJobClaimSnapshot({
+            ...rowStr,
+            fencing_token: 9007199254740993,
+          }),
+        CorruptedJobClaimStorageError
+      );
+    });
+
+    it('exige db_now obrigatório e falha fechado com CorruptedJobClaimStorageError quando ausente ou inválido', () => {
+      const validBase = {
+        job_id: 'job_now_test',
+        worker_id: 'w1',
+        fencing_token: '1',
+        acquired_at: baseNow,
+        renewed_at: baseNow,
+        lease_until: futureLease,
+        released_at: null,
+      };
+
+      // db_now ausente (undefined)
+      assert.throws(
+        () => mapRowToJobClaimSnapshot({ ...validBase }),
+        (err: unknown) => {
+          assert.ok(err instanceof CorruptedJobClaimStorageError);
+          assert.match(err.message, /Field 'db_now' is required/);
+          return true;
+        }
+      );
+
+      // db_now nulo
+      assert.throws(
+        () => mapRowToJobClaimSnapshot({ ...validBase, db_now: null }),
+        CorruptedJobClaimStorageError
+      );
+
+      // db_now string inválida
+      assert.throws(
+        () => mapRowToJobClaimSnapshot({ ...validBase, db_now: 'not-a-date' }),
+        CorruptedJobClaimStorageError
+      );
+
+      // db_now tipo inesperado (number)
+      assert.throws(
+        () => mapRowToJobClaimSnapshot({ ...validBase, db_now: 123456789 }),
+        CorruptedJobClaimStorageError
+      );
+    });
+
+    it('valida sanidade temporal estrita e falha fechado com CorruptedJobClaimStorageError em estados impossíveis', () => {
+      const validBase = {
+        job_id: 'job_time_test',
+        worker_id: 'w1',
+        fencing_token: '1',
+        acquired_at: baseNow,
+        renewed_at: baseNow,
+        lease_until: futureLease,
+        released_at: null,
+        db_now: baseNow,
+      };
+
+      // 1. renewed_at < acquired_at
+      assert.throws(
+        () =>
+          mapRowToJobClaimSnapshot({
+            ...validBase,
+            acquired_at: futureLease,
+            renewed_at: pastLease,
+            lease_until: new Date('2026-09-28T13:00:00.000Z'),
+          }),
+        (err: unknown) => {
+          assert.ok(err instanceof CorruptedJobClaimStorageError);
+          assert.match(err.message, /renewed_at .* cannot be earlier than acquired_at/);
+          return true;
+        }
+      );
+
+      // 2. lease_until <= renewed_at (igual ou menor)
+      assert.throws(
+        () =>
+          mapRowToJobClaimSnapshot({
+            ...validBase,
+            acquired_at: baseNow,
+            renewed_at: baseNow,
+            lease_until: baseNow, // igual a renewed_at
+          }),
+        (err: unknown) => {
+          assert.ok(err instanceof CorruptedJobClaimStorageError);
+          assert.match(err.message, /lease_until .* must be strictly later than renewed_at/);
+          return true;
+        }
+      );
+
+      assert.throws(
+        () =>
+          mapRowToJobClaimSnapshot({
+            ...validBase,
+            acquired_at: baseNow,
+            renewed_at: baseNow,
+            lease_until: pastLease, // anterior a renewed_at
+          }),
+        CorruptedJobClaimStorageError
+      );
+
+      // 3. lease_until < acquired_at
+      assert.throws(
+        () =>
+          mapRowToJobClaimSnapshot({
+            ...validBase,
+            acquired_at: baseNow,
+            renewed_at: pastLease, // já viola renewed_at < acquired_at
+            lease_until: pastLease,
+          }),
+        CorruptedJobClaimStorageError
+      );
+
+      // 4. released_at < acquired_at
+      assert.throws(
+        () =>
+          mapRowToJobClaimSnapshot({
+            ...validBase,
+            acquired_at: baseNow,
+            renewed_at: baseNow,
+            lease_until: futureLease,
+            released_at: pastLease, // anterior a acquired_at
+          }),
+        (err: unknown) => {
+          assert.ok(err instanceof CorruptedJobClaimStorageError);
+          assert.match(err.message, /released_at .* cannot be earlier than acquired_at/);
+          return true;
+        }
+      );
+
+      // 5. released_at < renewed_at
+      const laterRenewed = new Date('2026-09-28T12:02:00.000Z');
+      const earlierRelease = new Date('2026-09-28T12:01:00.000Z');
+      assert.throws(
+        () =>
+          mapRowToJobClaimSnapshot({
+            ...validBase,
+            acquired_at: baseNow,
+            renewed_at: laterRenewed,
+            lease_until: futureLease,
+            released_at: earlierRelease, // posterior a acquired_at mas anterior a renewed_at
+          }),
+        (err: unknown) => {
+          assert.ok(err instanceof CorruptedJobClaimStorageError);
+          assert.match(err.message, /released_at .* cannot be earlier than renewed_at/);
+          return true;
+        }
+      );
+
+      // 6. released_at > lease_until é estruturalmente permitido (ex: liberação tardia registrada)
+      const lateRelease = new Date('2026-09-28T12:10:00.000Z');
+      const snapLate = mapRowToJobClaimSnapshot({
+        ...validBase,
+        acquired_at: baseNow,
+        renewed_at: baseNow,
+        lease_until: futureLease,
+        released_at: lateRelease,
+        db_now: lateRelease,
+      });
+      assert.equal(snapLate.state, 'released');
+      assert.equal(snapLate.releasedAt, lateRelease.toISOString());
     });
 
     it('falha fechado com CorruptedJobClaimStorageError sob corrupção de storage', () => {
@@ -114,6 +333,7 @@ describe('Canonical Job Claims — Mapping, States & Error Boundaries (0.86C-3B)
             acquired_at: baseNow,
             renewed_at: baseNow,
             lease_until: futureLease,
+            db_now: baseNow,
           }),
         CorruptedJobClaimStorageError
       );
@@ -128,6 +348,7 @@ describe('Canonical Job Claims — Mapping, States & Error Boundaries (0.86C-3B)
             acquired_at: baseNow,
             renewed_at: baseNow,
             lease_until: futureLease,
+            db_now: baseNow,
           }),
         CorruptedJobClaimStorageError
       );
@@ -142,6 +363,7 @@ describe('Canonical Job Claims — Mapping, States & Error Boundaries (0.86C-3B)
             acquired_at: baseNow,
             renewed_at: baseNow,
             lease_until: futureLease,
+            db_now: baseNow,
           }),
         CorruptedJobClaimStorageError
       );
@@ -156,6 +378,7 @@ describe('Canonical Job Claims — Mapping, States & Error Boundaries (0.86C-3B)
             acquired_at: 'invalid-date',
             renewed_at: baseNow,
             lease_until: futureLease,
+            db_now: baseNow,
           }),
         CorruptedJobClaimStorageError
       );
@@ -170,6 +393,7 @@ describe('Canonical Job Claims — Mapping, States & Error Boundaries (0.86C-3B)
             acquired_at: futureLease,
             renewed_at: pastLease,
             lease_until: futureLease,
+            db_now: baseNow,
           }),
         CorruptedJobClaimStorageError
       );
