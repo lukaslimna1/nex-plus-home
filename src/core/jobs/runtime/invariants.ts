@@ -145,3 +145,75 @@ export function parseJobWakeupPayload(raw: unknown): Readonly<JobWakeupPayload> 
 export function assertJobWakeupPayload(raw: unknown): asserts raw is JobWakeupPayload {
   parseJobWakeupPayload(raw);
 }
+
+// ============================================================================
+// 3. ERROS E VALIDAÇÕES DEFENSIVAS DE DELIVERY / ATTEMPT (PG-BOSS 12.35)
+// ============================================================================
+
+export type DeliveryAttemptErrorCode =
+  | 'INVALID_RETRY_COUNT'
+  | 'INVALID_DELIVERY_ATTEMPT_REF';
+
+export interface DeliveryAttemptErrorOptions {
+  readonly code: DeliveryAttemptErrorCode;
+  readonly message: string;
+  readonly received?: unknown;
+}
+
+export class DeliveryAttemptError extends Error {
+  readonly code: DeliveryAttemptErrorCode;
+  readonly received?: unknown;
+
+  constructor(options: DeliveryAttemptErrorOptions) {
+    super(options.message);
+    this.name = 'DeliveryAttemptError';
+    this.code = options.code;
+    this.received = options.received;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * Validação defensiva fail-closed para a metadata técnica 'retryCount' entregue pelo provider pg-boss.
+ * Rejeita qualquer valor que não seja número inteiro >= 0 (rejeita strings, decimais, NaN, negativos, etc.).
+ */
+export function assertDeliveryAttemptRetryCount(retryCount: unknown): asserts retryCount is number {
+  if (
+    typeof retryCount !== 'number' ||
+    !Number.isFinite(retryCount) ||
+    Number.isNaN(retryCount) ||
+    !Number.isInteger(retryCount) ||
+    retryCount < 0
+  ) {
+    throw new DeliveryAttemptError({
+      code: 'INVALID_RETRY_COUNT',
+      message: `[Delivery Metadata] Property 'retryCount' must be a non-negative integer. Received: ${String(retryCount)} (${typeof retryCount}).`,
+      received: retryCount,
+    });
+  }
+}
+
+/**
+ * Validação defensiva fail-closed para referência técnica de settlement no provider pg-boss.
+ */
+export function assertDeliveryAttemptRef(target: unknown): asserts target is import('./contracts').PgBossDeliveryAttemptRef {
+  if (target === null || typeof target !== 'object' || Array.isArray(target)) {
+    throw new DeliveryAttemptError({
+      code: 'INVALID_DELIVERY_ATTEMPT_REF',
+      message: `[Delivery Attempt] Target must be a plain object with 'id' and 'retryCount'. Received: ${target === null ? 'null' : Array.isArray(target) ? 'array' : typeof target}.`,
+      received: target,
+    });
+  }
+
+  const { id, retryCount } = target as { id?: unknown; retryCount?: unknown };
+
+  if (typeof id !== 'string' || id.trim().length === 0) {
+    throw new DeliveryAttemptError({
+      code: 'INVALID_DELIVERY_ATTEMPT_REF',
+      message: `[Delivery Attempt] Property 'id' must be a non-empty string.`,
+      received: id,
+    });
+  }
+
+  assertDeliveryAttemptRetryCount(retryCount);
+}

@@ -17,13 +17,20 @@ import {
   PG_BOSS_DEFAULT_BACKEND,
   type IPgBossRuntime,
   type JobWakeupPayload,
+  type PgBossDeliveryAttemptRef,
   type PgBossProvisioningResult,
   type PgBossRuntimeConfig,
   type PgBossRuntimeOptions,
   type PgBossSendResult,
+  type PgBossSettlementResult,
   type PgBossWakeupMessage,
 } from './contracts';
-import { assertJobWakeupPayload, parseJobWakeupPayload } from './invariants';
+import {
+  assertJobWakeupPayload,
+  parseJobWakeupPayload,
+  assertDeliveryAttemptRetryCount,
+  assertDeliveryAttemptRef,
+} from './invariants';
 
 // ============================================================================
 // 1. ERRO ESTRUTURADO DO RUNTIME PG-BOSS
@@ -36,6 +43,7 @@ export type PgBossRuntimeErrorCode =
   | 'STOP_FAILURE'
   | 'SEND_FAILURE'
   | 'FETCH_FAILURE'
+  | 'SETTLEMENT_FAILURE'
   | 'PROVISIONING_FAILURE'
   | 'SCHEMA_DRIFT_DETECTED';
 
@@ -44,17 +52,20 @@ export interface PgBossRuntimeErrorOptions {
   readonly message: string;
   readonly cause?: unknown;
   readonly schemaVersion?: number | null;
+  readonly cleanupError?: unknown;
 }
 
 export class PgBossRuntimeError extends Error {
   readonly code: PgBossRuntimeErrorCode;
   readonly schemaVersion?: number | null;
+  readonly cleanupError?: unknown;
 
   constructor(options: PgBossRuntimeErrorOptions) {
     super(options.message, { cause: options.cause });
     this.name = 'PgBossRuntimeError';
     this.code = options.code;
     this.schemaVersion = options.schemaVersion;
+    this.cleanupError = options.cleanupError;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
@@ -64,6 +75,7 @@ export class PgBossRuntimeError extends Error {
 // ============================================================================
 
 export class PgBossRuntime implements IPgBossRuntime {
+  private readonly _connectionString: string;
   private _boss: PgBoss | null = null;
   private _isStarted = false;
   private readonly _config: Readonly<PgBossRuntimeConfig>;
@@ -76,10 +88,12 @@ export class PgBossRuntime implements IPgBossRuntime {
       });
     }
 
+    this._connectionString = options.connectionString;
+
     // Configuração estritamente congelada conforme decisões arquiteturais do 0.86C-3A
+    // connectionString mantida em campo privado (F-3A-04), schema imutável 'pgboss' (F-3A-02)
     this._config = Object.freeze({
-      connectionString: options.connectionString,
-      schema: options.schema ?? PG_BOSS_CANONICAL_SCHEMA,
+      schema: PG_BOSS_CANONICAL_SCHEMA,
       backend: PG_BOSS_DEFAULT_BACKEND,
       migrate: false as const,
       useListenNotify: false as const,
@@ -97,30 +111,52 @@ export class PgBossRuntime implements IPgBossRuntime {
   /**
    * Inicialização explícita do runtime normal.
    * Lança PgBossRuntimeError se o schema não existir ou divergir de migrate: false.
+   * F-3A-01: Mantém referência ao PgBoss criado e executa cleanup best-effort se start falhar.
    */
   async start(): Promise<void> {
     if (this._isStarted && this._boss !== null) {
       return;
     }
 
-    try {
-      this._boss = new PgBoss({
-        connectionString: this._config.connectionString,
-        schema: this._config.schema,
-        backend: this._config.backend,
-        migrate: false,
-        useListenNotify: false,
-      });
+    const candidateBoss = new PgBoss({
+      connectionString: this._connectionString,
+      schema: this._config.schema,
+      backend: this._config.backend,
+      migrate: false,
+      useListenNotify: false,
+    });
 
-      await this._boss.start();
+    try {
+      this._boss = candidateBoss;
+      await candidateBoss.start();
       this._isStarted = true;
     } catch (err) {
       this._isStarted = false;
       this._boss = null;
+      let cleanupError: unknown = null;
+      try {
+        await candidateBoss.stop({ graceful: false });
+      } catch (cErr) {
+        cleanupError = cErr;
+      }
+
+      const primaryMessage = err instanceof Error ? err.message : String(err);
+      let message = `[PgBossRuntime] Failed to start pg-boss runtime (migrate: false): ${primaryMessage}`;
+      let cause: unknown = err;
+
+      if (cleanupError) {
+        const cleanupMsg = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        message += ` (cleanup error: ${cleanupMsg})`;
+        if (typeof AggregateError !== 'undefined') {
+          cause = new AggregateError([err, cleanupError], 'Start failure followed by cleanup failure');
+        }
+      }
+
       throw new PgBossRuntimeError({
         code: 'START_FAILURE',
-        message: `[PgBossRuntime] Failed to start pg-boss runtime (migrate: false): ${err instanceof Error ? err.message : String(err)}`,
-        cause: err,
+        message,
+        cause,
+        cleanupError,
       });
     }
   }
@@ -219,17 +255,25 @@ export class PgBossRuntime implements IPgBossRuntime {
       }
 
       const messages: PgBossWakeupMessage[] = jobs.map((job) => {
-        // Valida payload recuperado
+        // Validação defensiva fail-closed da metadata técnica de tentativa (pg-boss 12.35)
+        assertDeliveryAttemptRetryCount(job.retryCount);
+
+        // Validação defensiva fail-closed do payload canônico { jobId }
         const validatedPayload = parseJobWakeupPayload(job.data);
+
         return Object.freeze({
           id: job.id,
           name: job.name,
           data: validatedPayload,
+          retryCount: job.retryCount,
         });
       });
 
       return Object.freeze(messages);
     } catch (err) {
+      if (err instanceof PgBossRuntimeError) {
+        throw err;
+      }
       throw new PgBossRuntimeError({
         code: 'FETCH_FAILURE',
         message: `[PgBossRuntime] Failed to fetch wake-up from queue '${queueName}': ${err instanceof Error ? err.message : String(err)}`,
@@ -239,17 +283,52 @@ export class PgBossRuntime implements IPgBossRuntime {
   }
 
   /**
-   * Conclui processamento técnico da mensagem na fila.
+   * Conclui processamento técnico da mensagem na fila com attempt fencing ({ id, retryCount }).
+   * F-3A-03 / pg-boss 12.35: NUNCA liquida por plain id. Avalia CommandResponse.affected.
    */
-  async completeJob(queueName: string, messageId: string): Promise<void> {
+  async completeWakeup(queueName: string, target: PgBossDeliveryAttemptRef): Promise<PgBossSettlementResult> {
+    assertDeliveryAttemptRef(target);
+
     if (!this._boss || !this._isStarted) {
       throw new PgBossRuntimeError({
         code: 'RUNTIME_NOT_STARTED',
-        message: '[PgBossRuntime] Cannot complete job: pg-boss runtime is not started.',
+        message: '[PgBossRuntime] Cannot complete wake-up: pg-boss runtime is not started.',
       });
     }
 
-    await this._boss.complete(queueName, messageId);
+    try {
+      // Settlement fenced obrigatório por { id, retryCount } (pg-boss 12.35)
+      // NUNCA liquidar por plain id no boundary produtivo
+      const response = await this._boss.complete(queueName, {
+        id: target.id,
+        retryCount: target.retryCount,
+      });
+
+      const affected = response && typeof (response as { affected?: number }).affected === 'number'
+        ? (response as { affected: number }).affected
+        : 0;
+
+      if (affected > 1) {
+        throw new PgBossRuntimeError({
+          code: 'SETTLEMENT_FAILURE',
+          message: `[PgBossRuntime] Technical anomaly: settlement affected ${affected} rows for a single delivery attempt ref.`,
+        });
+      }
+
+      return Object.freeze({
+        settled: affected === 1,
+        affected,
+      });
+    } catch (err) {
+      if (err instanceof PgBossRuntimeError) {
+        throw err;
+      }
+      throw new PgBossRuntimeError({
+        code: 'SETTLEMENT_FAILURE',
+        message: `[PgBossRuntime] Failed to complete wake-up on queue '${queueName}': ${err instanceof Error ? err.message : String(err)}`,
+        cause: err,
+      });
+    }
   }
 
   /**
@@ -267,7 +346,7 @@ export class PgBossRuntime implements IPgBossRuntime {
   }
 
   /**
-   * Detecta drift de schema usando a API oficial do pg-boss 12.34.0.
+   * Detecta drift de schema usando a API oficial do pg-boss 12.35.0.
    */
   async detectDrift(): Promise<{ ok: boolean }> {
     if (!this._boss || !this._isStarted) {
@@ -297,13 +376,13 @@ export function createPgBossRuntime(options: PgBossRuntimeOptions): IPgBossRunti
 /**
  * Executa o provisionamento explícito e controlado do schema do pg-boss.
  * Este método é estritamente separado do boot da aplicação e nunca é invocado silenciosamente.
- * Utiliza a API oficial do pg-boss 12.34.0, verifica o schemaVersion = 42 e ausência de drift.
+ * Utiliza a API oficial do pg-boss 12.35.0, verifica o schemaVersion = 43 e ausência de drift.
+ * F-3A-02: Schema estritamente congelado em 'pgboss' sem parametrização pública.
  */
 export async function provisionPgBossSchema(
-  connectionString: string,
-  options?: { schema?: string }
+  connectionString: string
 ): Promise<PgBossProvisioningResult> {
-  const schema = options?.schema ?? PG_BOSS_CANONICAL_SCHEMA;
+  const schema = PG_BOSS_CANONICAL_SCHEMA;
 
   const provisioningBoss = new PgBoss({
     connectionString,
@@ -345,7 +424,7 @@ export async function provisionPgBossSchema(
     });
   } catch (err) {
     try {
-      await provisioningBoss.stop({ graceful: true });
+      await provisioningBoss.stop({ graceful: false });
     } catch {
       // Ignora falha de stop secundária na presença de erro primário
     }

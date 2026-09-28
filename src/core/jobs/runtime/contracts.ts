@@ -17,7 +17,7 @@ import type { JobId } from '../contracts';
 // ============================================================================
 
 export const PG_BOSS_CANONICAL_SCHEMA = 'pgboss' as const;
-export const PG_BOSS_EXPECTED_SCHEMA_VERSION = 42 as const;
+export const PG_BOSS_EXPECTED_SCHEMA_VERSION = 43 as const;
 export const PG_BOSS_DEFAULT_WAKEUP_QUEUE = 'nex_job_wakeup' as const;
 export const PG_BOSS_DEFAULT_BACKEND = 'postgres' as const;
 
@@ -40,12 +40,10 @@ export interface JobWakeupPayload {
 
 export interface PgBossRuntimeOptions {
   readonly connectionString: string;
-  readonly schema?: string;
 }
 
 export interface PgBossRuntimeConfig {
-  readonly connectionString: string;
-  readonly schema: string;
+  readonly schema: 'pgboss';
   readonly backend: 'postgres';
   readonly migrate: false;
   readonly useListenNotify: false;
@@ -55,14 +53,29 @@ export interface PgBossRuntimeConfig {
 // 4. MENSAGEM RECUPERADA & RESULTADOS TÉCNICOS
 // ============================================================================
 
+/**
+ * Referência técnica à tentativa de delivery mantida pelo provider da fila (pg-boss).
+ * Não confundir com Attempt canônico ou AttemptId do NEX+.
+ */
+export interface PgBossDeliveryAttemptRef {
+  readonly id: string;
+  readonly retryCount: number;
+}
+
 export interface PgBossWakeupMessage {
   readonly id: string;
   readonly name: string;
   readonly data: JobWakeupPayload;
+  readonly retryCount: number;
 }
 
 export interface PgBossSendResult {
   readonly messageId: string | null;
+}
+
+export interface PgBossSettlementResult {
+  readonly settled: boolean;
+  readonly affected: number;
 }
 
 export interface PgBossProvisioningResult {
@@ -84,7 +97,7 @@ export interface IPgBossRuntime {
   createQueue(queueName: string): Promise<void>;
   sendWakeup(queueName: string, payload: JobWakeupPayload): Promise<PgBossSendResult>;
   fetchWakeup(queueName: string, batchSize?: number): Promise<readonly PgBossWakeupMessage[]>;
-  completeJob(queueName: string, messageId: string): Promise<void>;
+  completeWakeup(queueName: string, target: PgBossDeliveryAttemptRef): Promise<PgBossSettlementResult>;
   getSchemaVersion(): Promise<number | null>;
   detectDrift(): Promise<{ ok: boolean }>;
 }

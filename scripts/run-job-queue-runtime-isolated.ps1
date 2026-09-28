@@ -3,12 +3,13 @@
     Harness canônico de validação isolada para pg-boss Runtime Provider (Escopo 0.86C-3A).
 .DESCRIPTION
     Cria um DATABASE PostgreSQL descartável dedicado (prefixo nex_job_queue_),
-    executa as 5 provas técnicas obrigatórias:
-      1. Caso A: migrate: false falha antes de provisionar e não cria schema;
-      2. Caso B: provisionamento explícito e controlado cria schema 42 sem drift;
+    executa as 6 provas técnicas obrigatórias:
+      1. Caso A: migrate: false falha antes de provisionar, executa cleanup e não cria conexões residuais;
+      2. Caso B: provisionamento explícito e controlado cria schema 43 sem drift;
       3. Caso C: runtime normal pós-provisionamento inicia com sucesso com migrate: false;
-      4. Smoke Queue: envio, recuperação e conclusão de wake-up { jobId };
-      5. Smoke Duplicidade: tolerância a múltiplos wake-ups para o mesmo jobId.
+      4. Smoke Queue: envio, recuperação com retryCount e conclusão fenced de { jobId };
+      5. Smoke Duplicidade: tolerância a múltiplos wake-ups para o mesmo jobId;
+      6. Attempt Fence: prova de que settlement stale (affected=0, settled=false) não afeta nova tentativa ativa.
     Destrói o banco descartável ao final sem afetar o banco operacional.
 #>
 
