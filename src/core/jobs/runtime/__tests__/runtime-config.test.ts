@@ -23,6 +23,8 @@ import {
   PgBossRuntimeError,
   PG_BOSS_CANONICAL_SCHEMA,
   PG_BOSS_DEFAULT_BACKEND,
+  parseSettlementAffected,
+  composeRuntimeErrorWithCleanup,
   type PgBossRuntimeOptions,
 } from '../index';
 import {
@@ -276,5 +278,211 @@ describe('Job Runtime Boundary — Provider Configuration & Lifecycle (0.86C-3A)
         return true;
       }
     );
+  });
+
+  // ==========================================================================
+  // F-3A-04-R1. HARD PRIVACY DA CONNECTION STRING (ECMAScript #connectionString)
+  // ==========================================================================
+
+  it('F-3A-04-R1: assegura hard privacy da connection string em runtime via private field nativo (#)', () => {
+    const syntheticUser = 'nex_secret_user';
+    const syntheticPass = 'NEX_SECRET_PASSWORD_123';
+    const syntheticDb = 'nex_secret_database';
+    const syntheticDsn = `postgres://${syntheticUser}:${syntheticPass}@127.0.0.1:5432/${syntheticDb}`;
+
+    const runtime = createPgBossRuntime({
+      connectionString: syntheticDsn,
+    });
+
+    // A. Object.keys(runtime)
+    const keys = Object.keys(runtime);
+    assert.equal(keys.includes('_connectionString'), false);
+    assert.equal(keys.includes('connectionString'), false);
+    assert.equal(keys.includes('#connectionString'), false);
+    assert.equal(keys.some((k) => k.includes(syntheticUser) || k.includes(syntheticPass) || k.includes(syntheticDb)), false);
+
+    // B. Object.getOwnPropertyNames(runtime)
+    const propNames = Object.getOwnPropertyNames(runtime);
+    assert.equal(propNames.includes('_connectionString'), false);
+    assert.equal(propNames.includes('connectionString'), false);
+    assert.equal(propNames.includes('#connectionString'), false);
+    assert.equal(propNames.some((k) => k.includes(syntheticUser) || k.includes(syntheticPass) || k.includes(syntheticDb)), false);
+
+    // C. Reflect.ownKeys(runtime)
+    const reflectKeys = Reflect.ownKeys(runtime);
+    assert.equal(reflectKeys.includes('_connectionString'), false);
+    assert.equal(reflectKeys.includes('connectionString'), false);
+    assert.equal(reflectKeys.includes('#connectionString'), false);
+    assert.equal(
+      reflectKeys.some(
+        (k) =>
+          typeof k === 'string' &&
+          (k.includes(syntheticUser) || k.includes(syntheticPass) || k.includes(syntheticDb))
+      ),
+      false
+    );
+
+    // D. JSON.stringify(runtime)
+    const serialized = JSON.stringify(runtime);
+    assert.equal(serialized.includes(syntheticDsn), false);
+    assert.equal(serialized.includes(syntheticUser), false);
+    assert.equal(serialized.includes(syntheticPass), false);
+    assert.equal(serialized.includes(syntheticDb), false);
+    assert.equal(serialized.includes('_connectionString'), false);
+    assert.equal(serialized.includes('connectionString'), false);
+
+    // E. Spread {...runtime}
+    const spread = { ...runtime };
+    assert.equal('_connectionString' in spread, false);
+    assert.equal('connectionString' in spread, false);
+    const spreadSerialized = JSON.stringify(spread);
+    assert.equal(spreadSerialized.includes(syntheticDsn), false);
+    assert.equal(spreadSerialized.includes(syntheticPass), false);
+
+    // F. Acesso por bracket runtime['_connectionString'] deve ser undefined
+    assert.equal((runtime as unknown as Record<string, unknown>)['_connectionString'], undefined);
+
+    // G. Acesso por bracket runtime['connectionString'] deve ser undefined
+    assert.equal((runtime as unknown as Record<string, unknown>)['connectionString'], undefined);
+
+    // H. runtime.config continua sem connectionString
+    assert.equal('connectionString' in runtime.config, false);
+    assert.equal((runtime.config as unknown as Record<string, unknown>).connectionString, undefined);
+  });
+
+  // ==========================================================================
+  // P-M1. FAIL-CLOSED DO RETORNO DE SETTLEMENT (parseSettlementAffected)
+  // ==========================================================================
+
+  it('P-M1: aceita estritamente affected = 0 (settled: false) e affected = 1 (settled: true)', () => {
+    assert.equal(parseSettlementAffected(0), 0);
+    assert.equal(parseSettlementAffected(1), 1);
+    assert.equal(parseSettlementAffected(0, 'test_queue'), 0);
+    assert.equal(parseSettlementAffected(1, 'test_queue'), 1);
+  });
+
+  it('P-M1: rejeita valores malformados de affected fail-closed com SETTLEMENT_FAILURE', () => {
+    const invalidCases: Array<{ label: string; value: unknown }> = [
+      { label: 'missing/undefined', value: undefined },
+      { label: 'null', value: null },
+      { label: 'string "0"', value: '0' },
+      { label: 'string "1"', value: '1' },
+      { label: 'string arbitrária', value: 'affected' },
+      { label: 'NaN', value: NaN },
+      { label: 'negativo -1', value: -1 },
+      { label: 'negativo -42', value: -42 },
+      { label: 'decimal 0.5', value: 0.5 },
+      { label: 'decimal 1.5', value: 1.5 },
+      { label: 'maior que 1 (2)', value: 2 },
+      { label: 'maior que 1 (10)', value: 10 },
+      { label: 'Infinity', value: Infinity },
+      { label: '-Infinity', value: -Infinity },
+      { label: 'objeto vazio', value: {} },
+      { label: 'array', value: [1] },
+    ];
+
+    for (const testCase of invalidCases) {
+      assert.throws(
+        () => parseSettlementAffected(testCase.value, 'queue_x'),
+        (err: unknown) => {
+          assert.ok(
+            err instanceof PgBossRuntimeError,
+            `Esperado PgBossRuntimeError para caso ${testCase.label}`
+          );
+          assert.equal(
+            err.code,
+            'SETTLEMENT_FAILURE',
+            `Esperado SETTLEMENT_FAILURE para caso ${testCase.label}`
+          );
+          return true;
+        },
+        `Deveria falhar para ${testCase.label}`
+      );
+    }
+  });
+
+  // ==========================================================================
+  // P-M2. PRESERVAÇÃO DE ERRO PRIMÁRIO E CLEANUP ERROR (composeRuntimeErrorWithCleanup)
+  // ==========================================================================
+
+  it('P-M2: preserva erro primário quando não há cleanupError', () => {
+    // Caso 1: erro comum embrulhado com defaultCode
+    const rawError = new Error('Database connection timeout');
+    const result1 = composeRuntimeErrorWithCleanup(
+      rawError,
+      null,
+      'PROVISIONING_FAILURE',
+      '[PgBoss Provisioning] Controlled provisioning failed'
+    );
+    assert.ok(result1 instanceof PgBossRuntimeError);
+    assert.equal(result1.code, 'PROVISIONING_FAILURE');
+    assert.equal(result1.cause, rawError);
+    assert.equal(result1.cleanupError, undefined);
+    assert.ok(result1.message.includes('Database connection timeout'));
+
+    // Caso 2: erro já era PgBossRuntimeError (ex: SCHEMA_DRIFT_DETECTED)
+    const driftError = new PgBossRuntimeError({
+      code: 'SCHEMA_DRIFT_DETECTED',
+      message: 'Drift detected in schema pgboss',
+      schemaVersion: 43,
+    });
+    const result2 = composeRuntimeErrorWithCleanup(
+      driftError,
+      null,
+      'PROVISIONING_FAILURE',
+      '[PgBoss Provisioning] Controlled provisioning failed'
+    );
+    assert.equal(result2, driftError);
+    assert.equal(result2.code, 'SCHEMA_DRIFT_DETECTED');
+    assert.equal(result2.schemaVersion, 43);
+  });
+
+  it('P-M2: preserva ambos os erros (primário + cleanup) quando cleanup falha', () => {
+    // Caso 1: erro primário comum + falha secundária no cleanup
+    const primary = new Error('Disk full during migration');
+    const cleanup = new Error('Connection reset on stop');
+
+    const result1 = composeRuntimeErrorWithCleanup(
+      primary,
+      cleanup,
+      'PROVISIONING_FAILURE',
+      '[PgBoss Provisioning] Controlled provisioning failed'
+    );
+
+    assert.ok(result1 instanceof PgBossRuntimeError);
+    assert.equal(result1.code, 'PROVISIONING_FAILURE');
+    assert.equal(result1.cleanupError, cleanup);
+    assert.ok(result1.message.includes('Disk full during migration'));
+    assert.ok(result1.message.includes('Connection reset on stop'));
+    assert.ok(result1.cause instanceof AggregateError);
+    const aggErrors1 = (result1.cause as AggregateError).errors;
+    assert.equal(aggErrors1[0], primary);
+    assert.equal(aggErrors1[1], cleanup);
+
+    // Caso 2: erro primário é PgBossRuntimeError com código específico (ex: SCHEMA_DRIFT_DETECTED)
+    const driftError = new PgBossRuntimeError({
+      code: 'SCHEMA_DRIFT_DETECTED',
+      message: 'Schema drift detected after provisioning in schema pgboss',
+      schemaVersion: 43,
+    });
+    const stopError = new Error('Socket closed prematurely during stop');
+
+    const result2 = composeRuntimeErrorWithCleanup(
+      driftError,
+      stopError,
+      'PROVISIONING_FAILURE',
+      '[PgBoss Provisioning] Controlled provisioning failed'
+    );
+
+    assert.ok(result2 instanceof PgBossRuntimeError);
+    assert.equal(result2.code, 'SCHEMA_DRIFT_DETECTED');
+    assert.equal(result2.schemaVersion, 43);
+    assert.equal(result2.cleanupError, stopError);
+    assert.ok(result2.message.includes('Schema drift detected'));
+    assert.ok(result2.message.includes('Socket closed prematurely during stop'));
+    assert.ok(result2.cause instanceof AggregateError);
+    const aggErrors2 = (result2.cause as AggregateError).errors;
+    assert.equal(aggErrors2[0], driftError);
+    assert.equal(aggErrors2[1], stopError);
   });
 });

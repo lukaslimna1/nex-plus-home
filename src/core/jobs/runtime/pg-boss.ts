@@ -71,11 +71,85 @@ export class PgBossRuntimeError extends Error {
 }
 
 // ============================================================================
+// 1.1 HELPERS DEFENSIVOS DE TRUST BOUNDARY & CLEANUP ERROR PRESERVATION
+// ============================================================================
+
+/**
+ * Validação fail-closed do retorno de settlement (P-M1).
+ * Para uma única attempt, affected DEVE ser number, finito, inteiro e estritamente 0 ou 1.
+ */
+export function parseSettlementAffected(rawAffected: unknown, queueName?: string): number {
+  if (
+    typeof rawAffected !== 'number' ||
+    !Number.isFinite(rawAffected) ||
+    !Number.isInteger(rawAffected) ||
+    rawAffected < 0 ||
+    rawAffected > 1
+  ) {
+    const queueContext = queueName ? ` on queue '${queueName}'` : '';
+    throw new PgBossRuntimeError({
+      code: 'SETTLEMENT_FAILURE',
+      message: `[PgBossRuntime] Invalid settlement response${queueContext}: expected affected to be integer 0 or 1, received: ${String(rawAffected)}`,
+    });
+  }
+
+  return rawAffected;
+}
+
+/**
+ * Preserva erro primário e falha secundária de cleanup sem mascaramento (P-M2).
+ * Utiliza AggregateError, cause e o campo cleanupError do PgBossRuntimeError.
+ */
+export function composeRuntimeErrorWithCleanup(
+  primaryError: unknown,
+  cleanupError: unknown,
+  defaultCode: PgBossRuntimeErrorCode,
+  contextPrefix: string
+): PgBossRuntimeError {
+  if (!cleanupError) {
+    if (primaryError instanceof PgBossRuntimeError) {
+      return primaryError;
+    }
+    const primaryMsg = primaryError instanceof Error ? primaryError.message : String(primaryError);
+    return new PgBossRuntimeError({
+      code: defaultCode,
+      message: `${contextPrefix}: ${primaryMsg}`,
+      cause: primaryError,
+    });
+  }
+
+  const primaryMsg = primaryError instanceof Error ? primaryError.message : String(primaryError);
+  const cleanupMsg = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+  const message = `${contextPrefix}: ${primaryMsg} (cleanup error: ${cleanupMsg})`;
+
+  let cause: unknown = primaryError;
+  if (typeof AggregateError !== 'undefined') {
+    cause = new AggregateError(
+      [primaryError, cleanupError],
+      `${contextPrefix} followed by cleanup failure`
+    );
+  }
+
+  const code: PgBossRuntimeErrorCode =
+    primaryError instanceof PgBossRuntimeError ? primaryError.code : defaultCode;
+  const schemaVersion =
+    primaryError instanceof PgBossRuntimeError ? primaryError.schemaVersion : undefined;
+
+  return new PgBossRuntimeError({
+    code,
+    message,
+    cause,
+    schemaVersion,
+    cleanupError,
+  });
+}
+
+// ============================================================================
 // 2. ADAPTER DE RUNTIME NORMAL (migrate: false)
 // ============================================================================
 
 export class PgBossRuntime implements IPgBossRuntime {
-  private readonly _connectionString: string;
+  readonly #connectionString: string;
   private _boss: PgBoss | null = null;
   private _isStarted = false;
   private readonly _config: Readonly<PgBossRuntimeConfig>;
@@ -88,10 +162,11 @@ export class PgBossRuntime implements IPgBossRuntime {
       });
     }
 
-    this._connectionString = options.connectionString;
+    this.#connectionString = options.connectionString;
 
     // Configuração estritamente congelada conforme decisões arquiteturais do 0.86C-3A
-    // connectionString mantida em campo privado (F-3A-04), schema imutável 'pgboss' (F-3A-02)
+    // connectionString mantida em campo privado nativo (#connectionString · F-3A-04-R1),
+    // schema imutável 'pgboss' (F-3A-02)
     this._config = Object.freeze({
       schema: PG_BOSS_CANONICAL_SCHEMA,
       backend: PG_BOSS_DEFAULT_BACKEND,
@@ -119,7 +194,7 @@ export class PgBossRuntime implements IPgBossRuntime {
     }
 
     const candidateBoss = new PgBoss({
-      connectionString: this._connectionString,
+      connectionString: this.#connectionString,
       schema: this._config.schema,
       backend: this._config.backend,
       migrate: false,
@@ -140,24 +215,12 @@ export class PgBossRuntime implements IPgBossRuntime {
         cleanupError = cErr;
       }
 
-      const primaryMessage = err instanceof Error ? err.message : String(err);
-      let message = `[PgBossRuntime] Failed to start pg-boss runtime (migrate: false): ${primaryMessage}`;
-      let cause: unknown = err;
-
-      if (cleanupError) {
-        const cleanupMsg = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
-        message += ` (cleanup error: ${cleanupMsg})`;
-        if (typeof AggregateError !== 'undefined') {
-          cause = new AggregateError([err, cleanupError], 'Start failure followed by cleanup failure');
-        }
-      }
-
-      throw new PgBossRuntimeError({
-        code: 'START_FAILURE',
-        message,
-        cause,
+      throw composeRuntimeErrorWithCleanup(
+        err,
         cleanupError,
-      });
+        'START_FAILURE',
+        '[PgBossRuntime] Failed to start pg-boss runtime (migrate: false)'
+      );
     }
   }
 
@@ -304,16 +367,9 @@ export class PgBossRuntime implements IPgBossRuntime {
         retryCount: target.retryCount,
       });
 
-      const affected = response && typeof (response as { affected?: number }).affected === 'number'
-        ? (response as { affected: number }).affected
-        : 0;
-
-      if (affected > 1) {
-        throw new PgBossRuntimeError({
-          code: 'SETTLEMENT_FAILURE',
-          message: `[PgBossRuntime] Technical anomaly: settlement affected ${affected} rows for a single delivery attempt ref.`,
-        });
-      }
+      // P-M1: fail-closed estrito na avaliação do affected retornado pelo provider
+      const rawAffected = (response as { affected?: unknown } | null | undefined)?.affected;
+      const affected = parseSettlementAffected(rawAffected, queueName);
 
       return Object.freeze({
         settled: affected === 1,
@@ -423,20 +479,18 @@ export async function provisionPgBossSchema(
       driftOk: driftReport.ok,
     });
   } catch (err) {
+    let cleanupError: unknown = null;
     try {
       await provisioningBoss.stop({ graceful: false });
-    } catch {
-      // Ignora falha de stop secundária na presença de erro primário
+    } catch (cErr) {
+      cleanupError = cErr;
     }
 
-    if (err instanceof PgBossRuntimeError) {
-      throw err;
-    }
-
-    throw new PgBossRuntimeError({
-      code: 'PROVISIONING_FAILURE',
-      message: `[PgBoss Provisioning] Controlled provisioning failed: ${err instanceof Error ? err.message : String(err)}`,
-      cause: err,
-    });
+    throw composeRuntimeErrorWithCleanup(
+      err,
+      cleanupError,
+      'PROVISIONING_FAILURE',
+      '[PgBoss Provisioning] Controlled provisioning failed'
+    );
   }
 }
