@@ -34,6 +34,11 @@ import type { ContextSubjectRef } from '../../context/contracts';
 import { isCanonicalUtcInstant, validateActor, validateContextSubjectRef } from '../../context/invariants';
 import { isValidSessionRef } from '../../../auth/session-ref.types';
 import { validateMaterialContextPinId } from '../../material-context/invariants';
+import {
+  assertCanonicalJobState,
+  assertValidProgress,
+  assertValidWaitingCause,
+} from '../invariants';
 import { CorruptedJobStorageError, JobRehydrationDivergenceError } from './errors';
 
 // ============================================================================
@@ -493,26 +498,30 @@ export function mapPayloadToWaitingCause(raw: unknown, table: string, jobId?: st
   const reasonCode = assertNonEmptyString(obj.reasonCode, table, 'waitingCause.reasonCode', jobId);
   const requestedAt = formatPgTimestampToUtcInstant(obj.requestedAt, table, 'waitingCause.requestedAt', jobId);
 
+  let causeCandidate: JobWaitingCause;
   if (kind === 'human') {
     const res: Record<string, unknown> = { kind: 'human', reasonCode, requestedAt };
     if (obj.description !== undefined) res.description = assertString(obj.description, table, 'waitingCause.description', jobId);
     if (obj.deadline !== undefined) res.deadline = formatPgTimestampToUtcInstant(obj.deadline, table, 'waitingCause.deadline', jobId);
-    return deepCloneAndFreeze(res) as unknown as HumanWaitingCause;
-  }
-
-  if (kind === 'temporal') {
+    causeCandidate = res as unknown as HumanWaitingCause;
+  } else if (kind === 'temporal') {
     const resumeAfter = formatPgTimestampToUtcInstant(obj.resumeAfter, table, 'waitingCause.resumeAfter', jobId);
-    return deepCloneAndFreeze({ kind: 'temporal', reasonCode, resumeAfter, requestedAt }) as unknown as TemporalWaitingCause;
+    causeCandidate = { kind: 'temporal', reasonCode, resumeAfter, requestedAt } as unknown as TemporalWaitingCause;
+  } else {
+    throw new CorruptedJobStorageError(table, `Unknown waitingCause kind '${kind}'.`, jobId);
   }
 
-  throw new CorruptedJobStorageError(table, `Unknown waitingCause kind '${kind}'.`, jobId);
+  try {
+    assertValidWaitingCause(causeCandidate, (jobId ?? 'unknown') as JobId);
+  } catch (err: any) {
+    throw new CorruptedJobStorageError(table, err?.message ?? String(err), jobId);
+  }
+
+  return deepCloneAndFreeze(causeCandidate) as unknown as JobWaitingCause;
 }
 
 export function mapPayloadToProgress(raw: unknown, table: string, jobId?: string): JobProgress {
   const obj = assertPlainObject(raw, table, 'progress', jobId);
-  if (typeof obj.completed !== 'number' || Number.isNaN(obj.completed) || obj.completed < 0) {
-    throw new CorruptedJobStorageError(table, `Field 'progress.completed' must be a non-negative number.`, jobId);
-  }
   const updatedAt = formatPgTimestampToUtcInstant(obj.updatedAt, table, 'progress.updatedAt', jobId);
 
   const res: Record<string, unknown> = {
@@ -521,15 +530,19 @@ export function mapPayloadToProgress(raw: unknown, table: string, jobId?: string
   };
 
   if (obj.total !== undefined) {
-    if (typeof obj.total !== 'number' || Number.isNaN(obj.total) || obj.total < obj.completed) {
-      throw new CorruptedJobStorageError(table, `Field 'progress.total' must be a number >= completed.`, jobId);
-    }
     res.total = obj.total;
   }
   if (obj.unit !== undefined) res.unit = assertString(obj.unit, table, 'progress.unit', jobId);
   if (obj.message !== undefined) res.message = assertString(obj.message, table, 'progress.message', jobId);
 
-  return deepCloneAndFreeze(res) as unknown as JobProgress;
+  const progressCandidate = res as unknown as JobProgress;
+  try {
+    assertValidProgress(progressCandidate, (jobId ?? 'unknown') as JobId);
+  } catch (err: any) {
+    throw new CorruptedJobStorageError(table, err?.message ?? String(err), jobId);
+  }
+
+  return deepCloneAndFreeze(progressCandidate) as unknown as JobProgress;
 }
 
 /**
@@ -686,66 +699,15 @@ export function mapRowToJobState(row: any): JobState {
     state.terminalReason = assertString(payload.terminalReason, TABLE, 'terminalReason', jobId);
   }
 
-  // M-05: Validação de invariantes semânticos do JobState para o status
-  switch (status) {
-    case 'queued':
-      if (
-        startedAt !== undefined ||
-        finishedAt !== undefined ||
-        state.waitingCause !== undefined ||
-        state.progress !== undefined ||
-        attemptLineage.length > 0 ||
-        state.terminalReason !== undefined
-      ) {
-        throw new CorruptedJobStorageError(TABLE, `Invalid JobState invariants for queued status.`, jobId);
-      }
-      break;
-    case 'running':
-      if (
-        startedAt === undefined ||
-        finishedAt !== undefined ||
-        state.waitingCause !== undefined ||
-        state.terminalReason !== undefined
-      ) {
-        throw new CorruptedJobStorageError(TABLE, `Invalid JobState invariants for running status.`, jobId);
-      }
-      break;
-    case 'waiting':
-      if (
-        startedAt === undefined ||
-        finishedAt !== undefined ||
-        state.waitingCause === undefined ||
-        state.terminalReason !== undefined
-      ) {
-        throw new CorruptedJobStorageError(TABLE, `Invalid JobState invariants for waiting status.`, jobId);
-      }
-      break;
-    case 'paused':
-      if (finishedAt !== undefined || state.terminalReason !== undefined) {
-        throw new CorruptedJobStorageError(TABLE, `Invalid JobState invariants for paused status.`, jobId);
-      }
-      if (startedAt === undefined && attemptLineage.length > 0) {
-        throw new CorruptedJobStorageError(TABLE, `Unstarted paused job cannot have attempts in lineage.`, jobId);
-      }
-      break;
-    case 'succeeded':
-      if (
-        startedAt === undefined ||
-        finishedAt === undefined ||
-        state.waitingCause !== undefined
-      ) {
-        throw new CorruptedJobStorageError(TABLE, `Invalid JobState invariants for succeeded status.`, jobId);
-      }
-      break;
-    case 'failed':
-    case 'cancelled':
-      if (finishedAt === undefined || state.waitingCause !== undefined) {
-        throw new CorruptedJobStorageError(TABLE, `Invalid JobState invariants for terminal ${status} status.`, jobId);
-      }
-      if (startedAt === undefined && attemptLineage.length > 0) {
-        throw new CorruptedJobStorageError(TABLE, `Unstarted terminal job cannot have attempts in lineage.`, jobId);
-      }
-      break;
+  // Validação canônica estrita delegada integralmente ao Core C1
+  try {
+    assertCanonicalJobState(state as unknown as JobState);
+  } catch (err: any) {
+    throw new CorruptedJobStorageError(
+      TABLE,
+      err?.message ?? String(err),
+      jobId,
+    );
   }
 
   return deepCloneAndFreeze(state) as unknown as JobState;

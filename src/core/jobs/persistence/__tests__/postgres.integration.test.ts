@@ -57,6 +57,7 @@ import { JobLifecycleError } from '../../invariants';
 import type { AttemptId } from '../../../execution/contracts';
 import type { HumanActor, SystemActor } from '../../../observations/contracts';
 import type { SessionRef } from '../../../../auth/session-ref.types';
+import type { DurableJobStore } from '../contracts';
 import {
   PostgresJobStore,
   createPostgresJobStore,
@@ -110,6 +111,18 @@ describe('0.86C-2B · Persistência PostgreSQL de Durable Job Store L0', { skip:
 
   function makeJobId(prefix: string): JobId {
     return `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}` as JobId;
+  }
+
+  function stripUndefined<T>(obj: T): T {
+    if (obj === null || typeof obj !== 'object') return obj;
+    if (Array.isArray(obj)) return obj.map(stripUndefined) as unknown as T;
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+      if (v !== undefined) {
+        result[k] = stripUndefined(v);
+      }
+    }
+    return result as unknown as T;
   }
 
   before(async () => {
@@ -407,11 +420,15 @@ describe('0.86C-2B · Persistência PostgreSQL de Durable Job Store L0', { skip:
   // C8, C9, C10, C11, C12, C13 & C28: REIDRATAÇÃO PÓS-RESTART / NOVA INSTÂNCIA
   // ==========================================================================
   describe('Persistência Cross-Instance / Restart & Campos de Domínio', () => {
-    it('C8 & C28: Nova Pool e nova Store recuperam JobState completo sem memória in-process', async () => {
-      const jobId = makeJobId('job_c8_c28');
+    it('C8 & C28 / R-03: Nova Pool e nova Store recuperam JobState completo com Pool A encerrada antes de criar Pool B', async () => {
+      const jobId = makeJobId('job_c8_c28_strict');
 
-      // Criar com a store original
-      await store.createJob({
+      // 1. Pool A dedicada e Store A dedicada (NÃO usa store/pool global)
+      const poolA = new Pool({ connectionString: databaseUrl, max: 2 });
+      let storeARef: DurableJobStore | null = createPostgresJobStore(poolA);
+      const storeA = storeARef;
+
+      await storeA.createJob({
         jobId,
         createdAt: T0,
         userId: 'usr_lucas',
@@ -421,31 +438,197 @@ describe('0.86C-2B · Persistência PostgreSQL de Durable Job Store L0', { skip:
         materialContextPinId: 'mcp_restart',
       });
 
-      // Transicionar para running
-      await store.applyJobEvent({
+      const expectedState = await storeA.applyJobEvent({
         type: 'JobStarted',
         jobId,
         startedAt: T1,
       }, 1);
 
-      // Criar nova pool e novo store simulando novo processo
-      const freshPool = new Pool({ connectionString: databaseUrl, max: 2 });
-      const freshStore = createPostgresJobStore(freshPool);
+      // 2. Executar await poolA.end() ANTES de criar Pool B
+      await poolA.end();
+
+      // 3. Remover/abandonar referências à Store A
+      storeARef = null;
+      void storeARef;
+
+      // 4. Criar Pool B e Store B após o encerramento garantido da Pool A
+      const poolB = new Pool({ connectionString: databaseUrl, max: 2 });
+      const storeB = createPostgresJobStore(poolB);
 
       try {
-        const rehydrated = await freshStore.getJob(jobId);
-        assert.ok(rehydrated);
-        assert.equal(rehydrated.jobId, jobId);
-        assert.equal(rehydrated.status, 'running');
-        assert.equal(rehydrated.revision, 2);
-        assert.equal(rehydrated.userId, 'usr_lucas');
-        assert.equal(rehydrated.sessionRef, SESSION_REF);
-        assert.equal(rehydrated.correlationId, 'corr_restart_test');
-        assert.equal(rehydrated.materialContextPinId, 'mcp_restart');
+        const getResult = await storeB.getJob(jobId);
+        assert.ok(getResult);
+        assert.deepEqual(stripUndefined(getResult), stripUndefined(expectedState));
+        assertJobStatesEquivalent(getResult, expectedState);
+
+        const rehydratedResult = await storeB.rehydrateJob(jobId);
+        assert.ok(rehydratedResult);
+        assert.deepEqual(stripUndefined(rehydratedResult), stripUndefined(expectedState));
+        assertJobStatesEquivalent(rehydratedResult, expectedState);
       } finally {
-        await freshPool.end();
+        await poolB.end();
       }
     });
+
+  // ==========================================================================
+  // R-01 / SEÇÃO 3 & SEÇÃO 14 (1 a 4): PROVAS DE RETORNO LEGÍTIMO A QUEUED
+  // ==========================================================================
+  describe('R-01 · Retorno Canônico a Queued Pós-Start (waiting/paused -> queued)', () => {
+    it('Cenário A (1, 3, 4): running -> waiting -> yielded -> queued preserva startedAt, attemptLineage e progress', async () => {
+      const jobId = makeJobId('job_r01_a');
+      const attId = 'att_01_a' as AttemptId;
+
+      // 1. Criar Job
+      await store.createJob({
+        jobId,
+        createdAt: T0,
+        actor: ACTOR_HUMAN,
+      });
+
+      // 2. JobStarted com AttemptId
+      await store.applyJobEvent({
+        type: 'JobStarted',
+        jobId,
+        attemptId: attId,
+        startedAt: T1,
+      }, 1);
+
+      // 3. JobProgressUpdated
+      await store.applyJobEvent({
+        type: 'JobProgressUpdated',
+        jobId,
+        progress: {
+          completed: 25,
+          total: 100,
+          unit: 'percent',
+          message: 'Processing batch 1',
+          updatedAt: T2,
+        },
+      }, 2);
+
+      // 4. JobWaiting
+      const waitingCause = {
+        kind: 'human' as const,
+        reasonCode: 'approval_required',
+        description: 'Waiting for manual review',
+        requestedAt: T3,
+      };
+      await store.applyJobEvent({
+        type: 'JobWaiting',
+        jobId,
+        cause: waitingCause,
+        transitionedAt: T3,
+      }, 3);
+
+      // 5. JobYieldedWaiting -> queued
+      const yieldedState = await store.applyJobEvent({
+        type: 'JobYieldedWaiting',
+        jobId,
+        resumedAt: T4,
+      }, 4);
+
+      // Verificação do estado retornado
+      assert.equal(yieldedState.status, 'queued');
+      assert.equal(yieldedState.revision, 5);
+      assert.equal(yieldedState.startedAt, T1);
+      assert.equal(yieldedState.finishedAt, undefined);
+      assert.equal(yieldedState.waitingCause, undefined);
+      assert.deepEqual(yieldedState.attemptLineage, [attId]);
+      assert.ok(yieldedState.progress);
+      assert.equal(yieldedState.progress.completed, 25);
+      assert.equal(yieldedState.progress.total, 100);
+      assert.equal(yieldedState.updatedAt, T4);
+
+      // getJob PASS
+      const getHead = await store.getJob(jobId);
+      assert.ok(getHead);
+      assert.deepEqual(stripUndefined(getHead), stripUndefined(yieldedState));
+      assertJobStatesEquivalent(getHead, yieldedState);
+
+      // rehydrateJob PASS
+      const rehydrated = await store.rehydrateJob(jobId);
+      assert.ok(rehydrated);
+      assert.deepEqual(stripUndefined(rehydrated), stripUndefined(yieldedState));
+      assertJobStatesEquivalent(rehydrated, yieldedState);
+
+      // Replay == Head confirmado
+      assertJobStatesEquivalent(rehydrated, getHead);
+    });
+
+    it('Cenário B (2, 3, 4): running -> paused -> resumed -> queued preserva startedAt, attemptLineage e progress', async () => {
+      const jobId = makeJobId('job_r01_b');
+      const attId = 'att_01_b' as AttemptId;
+
+      // 1. Criar Job
+      await store.createJob({
+        jobId,
+        createdAt: T0,
+        actor: ACTOR_SYSTEM,
+      });
+
+      // 2. JobStarted com AttemptId
+      await store.applyJobEvent({
+        type: 'JobStarted',
+        jobId,
+        attemptId: attId,
+        startedAt: T1,
+      }, 1);
+
+      // 3. JobProgressUpdated
+      await store.applyJobEvent({
+        type: 'JobProgressUpdated',
+        jobId,
+        progress: {
+          completed: 40,
+          total: 100,
+          unit: 'items',
+          message: 'Processed 40 items',
+          updatedAt: T2,
+        },
+      }, 2);
+
+      // 4. JobPaused
+      await store.applyJobEvent({
+        type: 'JobPaused',
+        jobId,
+        pausedAt: T3,
+      }, 3);
+
+      // 5. JobResumed -> queued
+      const resumedState = await store.applyJobEvent({
+        type: 'JobResumed',
+        jobId,
+        resumedAt: T4,
+      }, 4);
+
+      // Verificação do estado retornado
+      assert.equal(resumedState.status, 'queued');
+      assert.equal(resumedState.revision, 5);
+      assert.equal(resumedState.startedAt, T1);
+      assert.equal(resumedState.finishedAt, undefined);
+      assert.equal(resumedState.waitingCause, undefined);
+      assert.deepEqual(resumedState.attemptLineage, [attId]);
+      assert.ok(resumedState.progress);
+      assert.equal(resumedState.progress.completed, 40);
+      assert.equal(resumedState.progress.total, 100);
+      assert.equal(resumedState.updatedAt, T4);
+
+      // getJob PASS
+      const getHead = await store.getJob(jobId);
+      assert.ok(getHead);
+      assert.deepEqual(stripUndefined(getHead), stripUndefined(resumedState));
+      assertJobStatesEquivalent(getHead, resumedState);
+
+      // rehydrateJob PASS
+      const rehydrated = await store.rehydrateJob(jobId);
+      assert.ok(rehydrated);
+      assert.deepEqual(stripUndefined(rehydrated), stripUndefined(resumedState));
+      assertJobStatesEquivalent(rehydrated, resumedState);
+
+      // Replay == Head confirmado
+      assertJobStatesEquivalent(rehydrated, getHead);
+    });
+  });
 
     it('C9: waitingCause sobrevive e é reidratado com fidelidade estrutural', async () => {
       const jobId = makeJobId('job_c9');
@@ -840,14 +1023,24 @@ describe('0.86C-2B · Persistência PostgreSQL de Durable Job Store L0', { skip:
       }, 1);
 
       // Adulterar status no head para 'failed' diretamente no banco enquanto o replay dá 'running'
+      // O head adulterado deve ser internamente canônico (updatedAt === finishedAt e terminalReason presente)
       await pool.query(
         `UPDATE "nex_job_heads"
          SET "status" = 'failed',
+             "updated_at" = $2,
              "finished_at" = $2,
              "state_payload" = jsonb_set(
-               jsonb_set(state_payload, '{status}', '"failed"'),
-               '{finishedAt}',
-               $3::jsonb
+               jsonb_set(
+                 jsonb_set(
+                   jsonb_set(state_payload, '{status}', '"failed"'),
+                   '{finishedAt}',
+                   $3::jsonb
+                 ),
+                 '{updatedAt}',
+                 $3::jsonb
+               ),
+               '{terminalReason}',
+               '"Manual divergence corruption"'
              )
          WHERE "job_id" = $1`,
         [jobId, T2, JSON.stringify(T2)],

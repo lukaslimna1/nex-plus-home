@@ -11,7 +11,13 @@ import type {
   JobWaitingCause,
 } from './contracts';
 import type { AttemptId } from '../execution/contracts';
-import { isCanonicalUtcInstant } from '../context/invariants';
+import {
+  isCanonicalUtcInstant,
+  validateActor,
+  validateContextSubjectRef,
+} from '../context/invariants';
+import { isValidSessionRef } from '../../auth/session-ref.types';
+import { validateMaterialContextPinId } from '../material-context/invariants';
 
 // ============================================================================
 // 1. CÓDIGOS DE ERRO RECONHECÍVEIS & TESTÁVEIS
@@ -359,4 +365,506 @@ export function assertValidProgress(progress: JobProgress, jobId: JobId): void {
   }
 
   assertCanonicalUtcInstant(progress.updatedAt, 'progress.updatedAt', jobId);
+}
+
+/**
+ * INV-JOB-06: Asserção pura de conformidade do snapshot de JobState com os invariantes do Core C1.
+ * Valida modelo estrutural, actor, referências, timestamps monotônicos, attemptLineage sem duplicatas,
+ * invariantes específicos por status, terminalidade e regras de inicialização na revisão 1.
+ * Fail-closed, sem qualquer normalização destrutiva de strings.
+ */
+export function assertCanonicalJobState(state: JobState): void {
+  if (!state || typeof state !== 'object' || Array.isArray(state)) {
+    throw new JobLifecycleError({
+      code: 'JOB_INVALID_PAYLOAD',
+      message: '[Job Lifecycle] JobState must be a non-null object.',
+    });
+  }
+
+  assertNonEmptyStringField(state.jobId, 'jobId');
+  const jobId = state.jobId;
+
+  const validStatuses: readonly JobStatus[] = [
+    'queued',
+    'running',
+    'waiting',
+    'paused',
+    'succeeded',
+    'failed',
+    'cancelled',
+  ];
+  if (!validStatuses.includes(state.status)) {
+    throw new JobLifecycleError({
+      code: 'JOB_INVALID_PAYLOAD',
+      message: `[Job Lifecycle] Invalid job status '${String(state.status)}' in Job '${jobId}'.`,
+      jobId,
+    });
+  }
+
+  if (typeof state.revision !== 'number' || !Number.isInteger(state.revision) || state.revision < 1) {
+    throw new JobLifecycleError({
+      code: 'JOB_INVALID_PAYLOAD',
+      message: `[Job Lifecycle] Revision must be an integer >= 1 in Job '${jobId}'. Received: ${String(state.revision)}`,
+      jobId,
+    });
+  }
+
+  if (!state.actor || typeof state.actor !== 'object') {
+    throw new JobLifecycleError({
+      code: 'JOB_INVALID_PAYLOAD',
+      message: `[Job Lifecycle] Actor must be an object in Job '${jobId}'.`,
+      jobId,
+    });
+  }
+  try {
+    validateActor(state.actor);
+  } catch (err: any) {
+    throw new JobLifecycleError({
+      code: 'JOB_INVALID_PAYLOAD',
+      message: `[Job Lifecycle] Invalid Actor in Job '${jobId}': ${err?.message ?? String(err)}`,
+      jobId,
+    });
+  }
+
+  if (state.userId !== undefined) {
+    assertNonEmptyStringField(state.userId, 'userId', jobId);
+  }
+
+  if (state.sessionRef !== undefined) {
+    if (!isValidSessionRef(state.sessionRef)) {
+      throw new JobLifecycleError({
+        code: 'JOB_INVALID_PAYLOAD',
+        message: `[Job Lifecycle] Invalid sessionRef in Job '${jobId}'.`,
+        jobId,
+      });
+    }
+  }
+
+  if (state.contextSubjectRef !== undefined) {
+    try {
+      validateContextSubjectRef(state.contextSubjectRef);
+    } catch (err: any) {
+      throw new JobLifecycleError({
+        code: 'JOB_INVALID_PAYLOAD',
+        message: `[Job Lifecycle] Invalid contextSubjectRef in Job '${jobId}': ${err?.message ?? String(err)}`,
+        jobId,
+      });
+    }
+  }
+
+  if (state.correlationId !== undefined) {
+    assertNonEmptyStringField(state.correlationId, 'correlationId', jobId);
+  }
+
+  if (state.materialContextPinId !== undefined) {
+    try {
+      validateMaterialContextPinId(state.materialContextPinId);
+    } catch (err: any) {
+      throw new JobLifecycleError({
+        code: 'JOB_INVALID_PAYLOAD',
+        message: `[Job Lifecycle] Invalid materialContextPinId in Job '${jobId}': ${err?.message ?? String(err)}`,
+        jobId,
+      });
+    }
+  }
+
+  // Timestamps canônicos & Monotonicidade
+  assertCanonicalUtcInstant(state.createdAt, 'createdAt', jobId);
+  assertCanonicalUtcInstant(state.updatedAt, 'updatedAt', jobId);
+  assertMonotonicOrder(state.createdAt, state.updatedAt, 'createdAt', 'updatedAt', jobId);
+
+  if (state.startedAt !== undefined) {
+    assertCanonicalUtcInstant(state.startedAt, 'startedAt', jobId);
+    assertMonotonicOrder(state.createdAt, state.startedAt, 'createdAt', 'startedAt', jobId);
+    assertMonotonicOrder(state.startedAt, state.updatedAt, 'startedAt', 'updatedAt', jobId);
+  }
+
+  if (state.finishedAt !== undefined) {
+    assertCanonicalUtcInstant(state.finishedAt, 'finishedAt', jobId);
+    assertMonotonicOrder(state.createdAt, state.finishedAt, 'createdAt', 'finishedAt', jobId);
+  }
+
+  if (state.startedAt !== undefined && state.finishedAt !== undefined) {
+    assertMonotonicOrder(state.startedAt, state.finishedAt, 'startedAt', 'finishedAt', jobId);
+  }
+
+  // Attempt Lineage
+  if (!Array.isArray(state.attemptLineage)) {
+    throw new JobLifecycleError({
+      code: 'JOB_INVALID_PAYLOAD',
+      message: `[Job Lifecycle] Field 'attemptLineage' must be an array in Job '${jobId}'.`,
+      jobId,
+    });
+  }
+  const seenAttempts = new Set<string>();
+  for (let idx = 0; idx < state.attemptLineage.length; idx++) {
+    const att = state.attemptLineage[idx];
+    assertNonEmptyStringField(att, `attemptLineage[${idx}]`, jobId);
+    if (seenAttempts.has(att)) {
+      throw new JobLifecycleError({
+        code: 'JOB_DUPLICATE_ATTEMPT',
+        message: `[Job Lifecycle] Duplicate AttemptId '${att}' detected in attemptLineage of Job '${jobId}'.`,
+        jobId,
+      });
+    }
+    seenAttempts.add(att);
+  }
+
+  // WaitingCause
+  if (state.waitingCause !== undefined) {
+    assertValidWaitingCause(state.waitingCause, jobId);
+    assertMonotonicOrder(state.waitingCause.requestedAt, state.updatedAt, 'waitingCause.requestedAt', 'updatedAt', jobId);
+  }
+
+  // Progress
+  if (state.progress !== undefined) {
+    assertValidProgress(state.progress, jobId);
+    assertMonotonicOrder(state.progress.updatedAt, state.updatedAt, 'progress.updatedAt', 'updatedAt', jobId);
+  }
+
+  // ControlIntent
+  if (state.controlIntent !== undefined) {
+    if (state.controlIntent !== 'pause' && state.controlIntent !== 'cancel') {
+      throw new JobLifecycleError({
+        code: 'JOB_INVALID_PAYLOAD',
+        message: `[Job Lifecycle] Invalid controlIntent '${String(state.controlIntent)}' in Job '${jobId}'.`,
+        jobId,
+      });
+    }
+  }
+
+  // TerminalReason
+  if (state.terminalReason !== undefined) {
+    assertStringField(state.terminalReason, 'terminalReason', jobId);
+  }
+
+  // REVISION 1 (Seção 8)
+  if (state.revision === 1) {
+    if (state.status !== 'queued') {
+      throw new JobLifecycleError({
+        code: 'JOB_INVALID_PAYLOAD',
+        message: `[Job Lifecycle] Job at revision 1 must have status 'queued', but found '${state.status}' in Job '${jobId}'.`,
+        jobId,
+        currentStatus: state.status,
+      });
+    }
+    if (state.updatedAt !== state.createdAt) {
+      throw new JobLifecycleError({
+        code: 'JOB_TEMPORAL_ORDER_VIOLATION',
+        message: `[Job Lifecycle] Job at revision 1 must have updatedAt equal to createdAt in Job '${jobId}'.`,
+        jobId,
+      });
+    }
+    if (state.startedAt !== undefined) {
+      throw new JobLifecycleError({
+        code: 'JOB_INVALID_PAYLOAD',
+        message: `[Job Lifecycle] Job at revision 1 cannot have startedAt in Job '${jobId}'.`,
+        jobId,
+      });
+    }
+    if (state.finishedAt !== undefined) {
+      throw new JobLifecycleError({
+        code: 'JOB_INVALID_PAYLOAD',
+        message: `[Job Lifecycle] Job at revision 1 cannot have finishedAt in Job '${jobId}'.`,
+        jobId,
+      });
+    }
+    if (state.attemptLineage.length > 0) {
+      throw new JobLifecycleError({
+        code: 'JOB_INVALID_PAYLOAD',
+        message: `[Job Lifecycle] Job at revision 1 must have empty attemptLineage in Job '${jobId}'.`,
+        jobId,
+      });
+    }
+    if (state.waitingCause !== undefined) {
+      throw new JobLifecycleError({
+        code: 'JOB_INVALID_PAYLOAD',
+        message: `[Job Lifecycle] Job at revision 1 cannot have waitingCause in Job '${jobId}'.`,
+        jobId,
+      });
+    }
+    if (state.controlIntent !== undefined) {
+      throw new JobLifecycleError({
+        code: 'JOB_INVALID_PAYLOAD',
+        message: `[Job Lifecycle] Job at revision 1 cannot have controlIntent in Job '${jobId}'.`,
+        jobId,
+      });
+    }
+    if (state.progress !== undefined) {
+      throw new JobLifecycleError({
+        code: 'JOB_INVALID_PAYLOAD',
+        message: `[Job Lifecycle] Job at revision 1 cannot have progress in Job '${jobId}'.`,
+        jobId,
+      });
+    }
+    if (state.terminalReason !== undefined) {
+      throw new JobLifecycleError({
+        code: 'JOB_INVALID_PAYLOAD',
+        message: `[Job Lifecycle] Job at revision 1 cannot have terminalReason in Job '${jobId}'.`,
+        jobId,
+      });
+    }
+  }
+
+  // TERMINALIDADE TEMPORAL (Seção 7)
+  if (isTerminalStatus(state.status)) {
+    if (state.finishedAt === undefined) {
+      throw new JobLifecycleError({
+        code: 'JOB_INVALID_PAYLOAD',
+        message: `[Job Lifecycle] Terminal Job '${jobId}' must have finishedAt defined.`,
+        jobId,
+        currentStatus: state.status,
+      });
+    }
+    if (state.updatedAt !== state.finishedAt) {
+      throw new JobLifecycleError({
+        code: 'JOB_TEMPORAL_ORDER_VIOLATION',
+        message: `[Job Lifecycle] Terminal Job '${jobId}' must have updatedAt strictly equal to finishedAt ('${state.updatedAt}' !== '${state.finishedAt}').`,
+        jobId,
+        currentStatus: state.status,
+      });
+    }
+    if (state.waitingCause !== undefined) {
+      throw new JobLifecycleError({
+        code: 'JOB_INVALID_PAYLOAD',
+        message: `[Job Lifecycle] Terminal Job '${jobId}' cannot have waitingCause.`,
+        jobId,
+        currentStatus: state.status,
+      });
+    }
+    if (state.controlIntent !== undefined) {
+      throw new JobLifecycleError({
+        code: 'JOB_INVALID_PAYLOAD',
+        message: `[Job Lifecycle] Terminal Job '${jobId}' cannot have controlIntent.`,
+        jobId,
+        currentStatus: state.status,
+      });
+    }
+  }
+
+  // INVARIANTS POR STATUS (Seção 6)
+  switch (state.status) {
+    case 'queued': {
+      if (state.finishedAt !== undefined) {
+        throw new JobLifecycleError({
+          code: 'JOB_INVALID_PAYLOAD',
+          message: `[Job Lifecycle] Queued Job '${jobId}' cannot have finishedAt.`,
+          jobId,
+          currentStatus: state.status,
+        });
+      }
+      if (state.waitingCause !== undefined) {
+        throw new JobLifecycleError({
+          code: 'JOB_INVALID_PAYLOAD',
+          message: `[Job Lifecycle] Queued Job '${jobId}' cannot have waitingCause.`,
+          jobId,
+          currentStatus: state.status,
+        });
+      }
+      if (state.terminalReason !== undefined) {
+        throw new JobLifecycleError({
+          code: 'JOB_INVALID_PAYLOAD',
+          message: `[Job Lifecycle] Queued Job '${jobId}' cannot have terminalReason.`,
+          jobId,
+          currentStatus: state.status,
+        });
+      }
+      if (state.startedAt === undefined) {
+        if (state.attemptLineage.length > 0) {
+          throw new JobLifecycleError({
+            code: 'JOB_INVALID_PAYLOAD',
+            message: `[Job Lifecycle] Queued Job '${jobId}' without startedAt must have empty attemptLineage.`,
+            jobId,
+            currentStatus: state.status,
+          });
+        }
+        if (state.progress !== undefined) {
+          throw new JobLifecycleError({
+            code: 'JOB_INVALID_PAYLOAD',
+            message: `[Job Lifecycle] Queued Job '${jobId}' without startedAt cannot have progress.`,
+            jobId,
+            currentStatus: state.status,
+          });
+        }
+      }
+      break;
+    }
+
+    case 'running': {
+      if (state.startedAt === undefined) {
+        throw new JobLifecycleError({
+          code: 'JOB_INVALID_PAYLOAD',
+          message: `[Job Lifecycle] Running Job '${jobId}' must have startedAt.`,
+          jobId,
+          currentStatus: state.status,
+        });
+      }
+      if (state.finishedAt !== undefined) {
+        throw new JobLifecycleError({
+          code: 'JOB_INVALID_PAYLOAD',
+          message: `[Job Lifecycle] Running Job '${jobId}' cannot have finishedAt.`,
+          jobId,
+          currentStatus: state.status,
+        });
+      }
+      if (state.waitingCause !== undefined) {
+        throw new JobLifecycleError({
+          code: 'JOB_INVALID_PAYLOAD',
+          message: `[Job Lifecycle] Running Job '${jobId}' cannot have waitingCause.`,
+          jobId,
+          currentStatus: state.status,
+        });
+      }
+      if (state.terminalReason !== undefined) {
+        throw new JobLifecycleError({
+          code: 'JOB_INVALID_PAYLOAD',
+          message: `[Job Lifecycle] Running Job '${jobId}' cannot have terminalReason.`,
+          jobId,
+          currentStatus: state.status,
+        });
+      }
+      break;
+    }
+
+    case 'waiting': {
+      if (state.startedAt === undefined) {
+        throw new JobLifecycleError({
+          code: 'JOB_INVALID_PAYLOAD',
+          message: `[Job Lifecycle] Waiting Job '${jobId}' must have startedAt.`,
+          jobId,
+          currentStatus: state.status,
+        });
+      }
+      if (state.waitingCause === undefined) {
+        throw new JobLifecycleError({
+          code: 'JOB_INVALID_PAYLOAD',
+          message: `[Job Lifecycle] Waiting Job '${jobId}' must have waitingCause.`,
+          jobId,
+          currentStatus: state.status,
+        });
+      }
+      if (state.finishedAt !== undefined) {
+        throw new JobLifecycleError({
+          code: 'JOB_INVALID_PAYLOAD',
+          message: `[Job Lifecycle] Waiting Job '${jobId}' cannot have finishedAt.`,
+          jobId,
+          currentStatus: state.status,
+        });
+      }
+      if (state.terminalReason !== undefined) {
+        throw new JobLifecycleError({
+          code: 'JOB_INVALID_PAYLOAD',
+          message: `[Job Lifecycle] Waiting Job '${jobId}' cannot have terminalReason.`,
+          jobId,
+          currentStatus: state.status,
+        });
+      }
+      break;
+    }
+
+    case 'paused': {
+      if (state.finishedAt !== undefined) {
+        throw new JobLifecycleError({
+          code: 'JOB_INVALID_PAYLOAD',
+          message: `[Job Lifecycle] Paused Job '${jobId}' cannot have finishedAt.`,
+          jobId,
+          currentStatus: state.status,
+        });
+      }
+      if (state.terminalReason !== undefined) {
+        throw new JobLifecycleError({
+          code: 'JOB_INVALID_PAYLOAD',
+          message: `[Job Lifecycle] Paused Job '${jobId}' cannot have terminalReason.`,
+          jobId,
+          currentStatus: state.status,
+        });
+      }
+      if (state.controlIntent === 'pause') {
+        throw new JobLifecycleError({
+          code: 'JOB_INVALID_PAYLOAD',
+          message: `[Job Lifecycle] Paused Job '${jobId}' cannot retain controlIntent='pause'.`,
+          jobId,
+          currentStatus: state.status,
+        });
+      }
+      if (state.waitingCause !== undefined && state.startedAt === undefined) {
+        throw new JobLifecycleError({
+          code: 'JOB_INVALID_PAYLOAD',
+          message: `[Job Lifecycle] Paused Job '${jobId}' with waitingCause must have startedAt.`,
+          jobId,
+          currentStatus: state.status,
+        });
+      }
+      if (state.startedAt === undefined) {
+        if (state.attemptLineage.length > 0) {
+          throw new JobLifecycleError({
+            code: 'JOB_INVALID_PAYLOAD',
+            message: `[Job Lifecycle] Unstarted paused Job '${jobId}' must have empty attemptLineage.`,
+            jobId,
+            currentStatus: state.status,
+          });
+        }
+        if (state.progress !== undefined) {
+          throw new JobLifecycleError({
+            code: 'JOB_INVALID_PAYLOAD',
+            message: `[Job Lifecycle] Unstarted paused Job '${jobId}' cannot have progress.`,
+            jobId,
+            currentStatus: state.status,
+          });
+        }
+        if (state.waitingCause !== undefined) {
+          throw new JobLifecycleError({
+            code: 'JOB_INVALID_PAYLOAD',
+            message: `[Job Lifecycle] Unstarted paused Job '${jobId}' cannot have waitingCause.`,
+            jobId,
+            currentStatus: state.status,
+          });
+        }
+      }
+      break;
+    }
+
+    case 'succeeded': {
+      if (state.startedAt === undefined) {
+        throw new JobLifecycleError({
+          code: 'JOB_INVALID_PAYLOAD',
+          message: `[Job Lifecycle] Succeeded Job '${jobId}' must have startedAt.`,
+          jobId,
+          currentStatus: state.status,
+        });
+      }
+      break;
+    }
+
+    case 'failed':
+    case 'cancelled': {
+      if (state.terminalReason === undefined) {
+        throw new JobLifecycleError({
+          code: 'JOB_INVALID_PAYLOAD',
+          message: `[Job Lifecycle] ${state.status} Job '${jobId}' must have terminalReason.`,
+          jobId,
+          currentStatus: state.status,
+        });
+      }
+      if (state.startedAt === undefined) {
+        if (state.attemptLineage.length > 0) {
+          throw new JobLifecycleError({
+            code: 'JOB_INVALID_PAYLOAD',
+            message: `[Job Lifecycle] Unstarted ${state.status} Job '${jobId}' must have empty attemptLineage.`,
+            jobId,
+            currentStatus: state.status,
+          });
+        }
+        if (state.progress !== undefined) {
+          throw new JobLifecycleError({
+            code: 'JOB_INVALID_PAYLOAD',
+            message: `[Job Lifecycle] Unstarted ${state.status} Job '${jobId}' cannot have progress.`,
+            jobId,
+            currentStatus: state.status,
+          });
+        }
+      }
+      break;
+    }
+  }
 }

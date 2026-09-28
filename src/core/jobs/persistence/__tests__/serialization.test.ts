@@ -48,6 +48,8 @@ describe('0.86C-2B · Serialização, Allowlist e Trust Boundary', () => {
   const JOB_ID = 'job_test_001' as JobId;
   const T0 = '2026-09-27T10:00:00.000Z';
   const T1 = '2026-09-27T10:01:00.000Z';
+  const T2 = '2026-09-27T10:02:00.000Z';
+  const T3 = '2026-09-27T10:03:00.000Z';
 
   // ==========================================================================
   // 1. ALLOWLIST DE ESCRITA & REMOÇÃO DE EXTRAS / SEGREDOS
@@ -336,25 +338,24 @@ describe('0.86C-2B · Serialização, Allowlist e Trust Boundary', () => {
     });
 
     it('mapRowToJobState aceita string vazia em campos opcionais (terminalReason)', () => {
-      const initialJob = createJob({
-        jobId: JOB_ID,
-        createdAt: T0,
-        actor: { kind: 'system', component: 'orchestrator' },
-      });
-
       const serializedHead = {
-        ...serializeJobState(initialJob),
+        jobId: JOB_ID,
         status: 'cancelled',
+        revision: 2,
+        actor: { kind: 'system', component: 'orchestrator' },
+        createdAt: T0,
+        updatedAt: T1,
         finishedAt: T1,
+        attemptLineage: [],
         terminalReason: '', // string vazia permitida pelo Core
       };
 
       const row = {
         job_id: JOB_ID,
         status: 'cancelled',
-        revision: 1,
+        revision: 2,
         created_at: T0,
-        updated_at: T0,
+        updated_at: T1,
         started_at: null,
         finished_at: T1,
         state_payload: serializedHead,
@@ -442,7 +443,7 @@ describe('0.86C-2B · Serialização, Allowlist e Trust Boundary', () => {
         attemptLineage: [],
       };
 
-      // queued com startedAt presente (impossível no Core)
+      // queued com startedAt presente na revision 1 (impossível no Core)
       const invalidQueuedRow = {
         job_id: JOB_ID,
         status: 'queued',
@@ -460,9 +461,260 @@ describe('0.86C-2B · Serialização, Allowlist e Trust Boundary', () => {
 
       assert.throws(
         () => mapRowToJobState(invalidQueuedRow),
-        (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes('Invalid JobState invariants for queued status'),
+        (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes('cannot have startedAt'),
       );
     });
+
+  describe('R-02 / Seção 14 · Provas Adversariais de JobState e assertCanonicalJobState', () => {
+    const basePayload = {
+      jobId: JOB_ID,
+      actor: { kind: 'system', component: 'orchestrator' },
+      createdAt: T0,
+      updatedAt: T0,
+    };
+
+    it('5. queued revision 1 com dados históricos impossíveis é rejeitado', () => {
+      // Revision 1 com startedAt
+      const rowStarted = {
+        job_id: JOB_ID,
+        status: 'queued',
+        revision: 1,
+        created_at: T0,
+        updated_at: T0,
+        started_at: T0,
+        finished_at: null,
+        state_payload: { ...basePayload, revision: 1, status: 'queued', attemptLineage: [], startedAt: T0 },
+      };
+      assert.throws(
+        () => mapRowToJobState(rowStarted),
+        (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes('cannot have startedAt'),
+      );
+
+      // Revision 1 com attemptLineage não vazia
+      const rowLineage = {
+        job_id: JOB_ID,
+        status: 'queued',
+        revision: 1,
+        created_at: T0,
+        updated_at: T0,
+        started_at: null,
+        finished_at: null,
+        state_payload: { ...basePayload, revision: 1, status: 'queued', attemptLineage: ['att_1'] },
+      };
+      assert.throws(
+        () => mapRowToJobState(rowLineage),
+        (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes('empty attemptLineage'),
+      );
+
+      // Revision 1 com progress
+      const rowProgress = {
+        job_id: JOB_ID,
+        status: 'queued',
+        revision: 1,
+        created_at: T0,
+        updated_at: T0,
+        started_at: null,
+        finished_at: null,
+        state_payload: {
+          ...basePayload,
+          revision: 1,
+          status: 'queued',
+          attemptLineage: [],
+          progress: { completed: 10, updatedAt: T0 },
+        },
+      };
+      assert.throws(
+        () => mapRowToJobState(rowProgress),
+        (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes('cannot have progress'),
+      );
+    });
+
+    it('6. queued revision >1 com startedAt/lineage/progress válidos é aceito', () => {
+      const validQueuedRow = {
+        job_id: JOB_ID,
+        status: 'queued',
+        revision: 4,
+        created_at: T0,
+        updated_at: T2,
+        started_at: T1,
+        finished_at: null,
+        state_payload: {
+          ...basePayload,
+          revision: 4,
+          status: 'queued',
+          updatedAt: T2,
+          startedAt: T1,
+          attemptLineage: ['att_1'],
+          progress: { completed: 50, total: 100, updatedAt: T2 },
+        },
+      };
+
+      const mapped = mapRowToJobState(validQueuedRow);
+      assert.equal(mapped.status, 'queued');
+      assert.equal(mapped.revision, 4);
+      assert.equal(mapped.startedAt, T1);
+      assert.deepEqual(mapped.attemptLineage, ['att_1']);
+      assert.equal(mapped.progress?.completed, 50);
+      assert.equal(mapped.finishedAt, undefined);
+    });
+
+    it('7. duplicate attemptLineage no head é rejeitado', () => {
+      const duplicateLineageRow = {
+        job_id: JOB_ID,
+        status: 'running',
+        revision: 3,
+        created_at: T0,
+        updated_at: T2,
+        started_at: T1,
+        finished_at: null,
+        state_payload: {
+          ...basePayload,
+          revision: 3,
+          status: 'running',
+          updatedAt: T2,
+          startedAt: T1,
+          attemptLineage: ['att_1', 'att_1'],
+        },
+      };
+
+      assert.throws(
+        () => mapRowToJobState(duplicateLineageRow),
+        (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes('Duplicate AttemptId'),
+      );
+    });
+
+    it('8. Infinity/valor não finito de progress vindo do DB é rejeitado', () => {
+      const infiniteProgressRow = {
+        job_id: JOB_ID,
+        status: 'running',
+        revision: 2,
+        created_at: T0,
+        updated_at: T1,
+        started_at: T1,
+        finished_at: null,
+        state_payload: {
+          ...basePayload,
+          revision: 2,
+          status: 'running',
+          updatedAt: T1,
+          startedAt: T1,
+          attemptLineage: ['att_1'],
+          progress: { completed: Infinity, updatedAt: T1 },
+        },
+      };
+
+      assert.throws(
+        () => mapRowToJobState(infiniteProgressRow),
+        (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes('Progress completed must be a non-negative finite number'),
+      );
+    });
+
+    it('9. estado terminal com controlIntent é rejeitado', () => {
+      const terminalWithControlRow = {
+        job_id: JOB_ID,
+        status: 'succeeded',
+        revision: 3,
+        created_at: T0,
+        updated_at: T2,
+        started_at: T1,
+        finished_at: T2,
+        state_payload: {
+          ...basePayload,
+          revision: 3,
+          status: 'succeeded',
+          updatedAt: T2,
+          startedAt: T1,
+          finishedAt: T2,
+          attemptLineage: ['att_1'],
+          controlIntent: 'cancel',
+        },
+      };
+
+      assert.throws(
+        () => mapRowToJobState(terminalWithControlRow),
+        (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes('cannot have controlIntent'),
+      );
+    });
+
+    it('10. paused com controlIntent=\'pause\' é rejeitado', () => {
+      const pausedWithPauseIntentRow = {
+        job_id: JOB_ID,
+        status: 'paused',
+        revision: 3,
+        created_at: T0,
+        updated_at: T2,
+        started_at: T1,
+        finished_at: null,
+        state_payload: {
+          ...basePayload,
+          revision: 3,
+          status: 'paused',
+          updatedAt: T2,
+          startedAt: T1,
+          attemptLineage: ['att_1'],
+          controlIntent: 'pause',
+        },
+      };
+
+      assert.throws(
+        () => mapRowToJobState(pausedWithPauseIntentRow),
+        (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes("cannot retain controlIntent='pause'"),
+      );
+    });
+
+    it('11. failed/cancelled sem terminalReason é rejeitado', () => {
+      const failedWithoutReasonRow = {
+        job_id: JOB_ID,
+        status: 'failed',
+        revision: 2,
+        created_at: T0,
+        updated_at: T1,
+        started_at: T1,
+        finished_at: T1,
+        state_payload: {
+          ...basePayload,
+          revision: 2,
+          status: 'failed',
+          updatedAt: T1,
+          startedAt: T1,
+          finishedAt: T1,
+          attemptLineage: ['att_1'],
+          // sem terminalReason
+        },
+      };
+
+      assert.throws(
+        () => mapRowToJobState(failedWithoutReasonRow),
+        (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes('must have terminalReason'),
+      );
+    });
+
+    it('12. terminal updatedAt != finishedAt é rejeitado', () => {
+      const divergedTerminalRow = {
+        job_id: JOB_ID,
+        status: 'succeeded',
+        revision: 3,
+        created_at: T0,
+        updated_at: T1, // T1 !== T2!
+        started_at: T1,
+        finished_at: T2,
+        state_payload: {
+          ...basePayload,
+          revision: 3,
+          status: 'succeeded',
+          updatedAt: T1,
+          startedAt: T1,
+          finishedAt: T2,
+          attemptLineage: ['att_1'],
+        },
+      };
+
+      assert.throws(
+        () => mapRowToJobState(divergedTerminalRow),
+        (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes('must have updatedAt strictly equal to finishedAt'),
+      );
+    });
+  });
 
     it('M-06: mapRowToStoredRecord falha se occurred_at divergir do timestamp do evento no payload', () => {
       const divergedEventRow = {
