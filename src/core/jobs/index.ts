@@ -6,3 +6,4 @@
 export * from './contracts';
 export * from './invariants';
 export * from './lifecycle';
+export * from './persistence';
