@@ -123,7 +123,19 @@ export function assertNonEmptyString(
   if (typeof val !== 'string' || val.trim().length === 0) {
     throw new CorruptedJobStorageError(table, `Field '${fieldName}' must be a non-empty string.`, jobId);
   }
-  return val.trim();
+  return val;
+}
+
+export function assertString(
+  val: unknown,
+  table: string,
+  fieldName: string,
+  jobId?: string,
+): string {
+  if (typeof val !== 'string') {
+    throw new CorruptedJobStorageError(table, `Field '${fieldName}' must be a string.`, jobId);
+  }
+  return val;
 }
 
 export function assertInteger(
@@ -226,8 +238,41 @@ export function sanitizeProgress(progress: JobProgress): JobProgress {
 
 /**
  * Constrói explicitamente o payload canônico para o registro de criação (revision 1)
+ * a partir do JobState inicial validado pelo Core (initialJob).
+ * Extrai somente os campos canônicos necessários para reconstruir CreateJobParams no replay,
+ * descartando revision, status, runtime extras e segredos.
+ */
+export function serializeCreationParamsFromJobState(job: JobState): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    jobId: job.jobId,
+    actor: sanitizeActor(job.actor),
+    createdAt: job.createdAt,
+  };
+
+  if (job.userId !== undefined) {
+    result.userId = job.userId;
+  }
+  if (job.sessionRef !== undefined) {
+    result.sessionRef = job.sessionRef;
+  }
+  if (job.contextSubjectRef !== undefined) {
+    result.contextSubjectRef = sanitizeContextSubjectRef(job.contextSubjectRef);
+  }
+  if (job.correlationId !== undefined) {
+    result.correlationId = job.correlationId;
+  }
+  if (job.materialContextPinId !== undefined) {
+    result.materialContextPinId = job.materialContextPinId;
+  }
+
+  return deepCloneAndFreeze(result) as unknown as Record<string, unknown>;
+}
+
+/**
+ * Constrói explicitamente o payload canônico para o registro de criação (revision 1)
  * selecionando somente os campos canônicos permitidos de CreateJobParams.
  * Descarta tokens, segredos ou propriedades de runtime inesperadas.
+ * Preserva as strings originais validadas pelo Core sem aplicar trim.
  */
 export function serializeCreateJobParams(params: CreateJobParams): Record<string, unknown> {
   const result: Record<string, unknown> = {
@@ -236,8 +281,8 @@ export function serializeCreateJobParams(params: CreateJobParams): Record<string
     createdAt: params.createdAt,
   };
 
-  if (params.userId !== undefined && params.userId.trim().length > 0) {
-    result.userId = params.userId.trim();
+  if (params.userId !== undefined) {
+    result.userId = params.userId;
   }
   if (params.sessionRef !== undefined) {
     result.sessionRef = params.sessionRef;
@@ -245,8 +290,8 @@ export function serializeCreateJobParams(params: CreateJobParams): Record<string
   if (params.contextSubjectRef !== undefined) {
     result.contextSubjectRef = sanitizeContextSubjectRef(params.contextSubjectRef);
   }
-  if (params.correlationId !== undefined && params.correlationId.trim().length > 0) {
-    result.correlationId = params.correlationId.trim();
+  if (params.correlationId !== undefined) {
+    result.correlationId = params.correlationId;
   }
   if (params.materialContextPinId !== undefined) {
     result.materialContextPinId = params.materialContextPinId;
@@ -343,7 +388,7 @@ export function extractEventOccurredAt(event: JobEvent): string {
     case 'JobResumed':
       return event.resumedAt;
     case 'JobProgressUpdated':
-      return new Date().toISOString();
+      return event.progress.updatedAt;
     case 'JobSucceeded':
     case 'JobFailed':
     case 'JobCancelled':
@@ -450,7 +495,7 @@ export function mapPayloadToWaitingCause(raw: unknown, table: string, jobId?: st
 
   if (kind === 'human') {
     const res: Record<string, unknown> = { kind: 'human', reasonCode, requestedAt };
-    if (obj.description !== undefined) res.description = assertNonEmptyString(obj.description, table, 'waitingCause.description', jobId);
+    if (obj.description !== undefined) res.description = assertString(obj.description, table, 'waitingCause.description', jobId);
     if (obj.deadline !== undefined) res.deadline = formatPgTimestampToUtcInstant(obj.deadline, table, 'waitingCause.deadline', jobId);
     return deepCloneAndFreeze(res) as unknown as HumanWaitingCause;
   }
@@ -481,8 +526,8 @@ export function mapPayloadToProgress(raw: unknown, table: string, jobId?: string
     }
     res.total = obj.total;
   }
-  if (obj.unit !== undefined) res.unit = assertNonEmptyString(obj.unit, table, 'progress.unit', jobId);
-  if (obj.message !== undefined) res.message = assertNonEmptyString(obj.message, table, 'progress.message', jobId);
+  if (obj.unit !== undefined) res.unit = assertString(obj.unit, table, 'progress.unit', jobId);
+  if (obj.message !== undefined) res.message = assertString(obj.message, table, 'progress.message', jobId);
 
   return deepCloneAndFreeze(res) as unknown as JobProgress;
 }
@@ -529,8 +574,55 @@ export function mapRowToJobState(row: any): JobState {
   }
 
   const actor = mapPayloadToActor(payload.actor, TABLE, jobId);
-  const createdAt = formatPgTimestampToUtcInstant(payload.createdAt ?? row.created_at, TABLE, 'createdAt', jobId);
-  const updatedAt = formatPgTimestampToUtcInstant(payload.updatedAt ?? row.updated_at, TABLE, 'updatedAt', jobId);
+
+  // M-04: Cross-validação estrita de timestamps escalares colunas vs payload
+  const colCreatedAt = formatPgTimestampToUtcInstant(row.created_at, TABLE, 'created_at', jobId);
+  const payloadCreatedAt = formatPgTimestampToUtcInstant(payload.createdAt, TABLE, 'payload.createdAt', jobId);
+  if (colCreatedAt !== payloadCreatedAt) {
+    throw new CorruptedJobStorageError(TABLE, `Mismatch between column created_at '${colCreatedAt}' and payload createdAt '${payloadCreatedAt}'.`, jobId);
+  }
+  const createdAt = payloadCreatedAt;
+
+  const colUpdatedAt = formatPgTimestampToUtcInstant(row.updated_at, TABLE, 'updated_at', jobId);
+  const payloadUpdatedAt = formatPgTimestampToUtcInstant(payload.updatedAt, TABLE, 'payload.updatedAt', jobId);
+  if (colUpdatedAt !== payloadUpdatedAt) {
+    throw new CorruptedJobStorageError(TABLE, `Mismatch between column updated_at '${colUpdatedAt}' and payload updatedAt '${payloadUpdatedAt}'.`, jobId);
+  }
+  const updatedAt = payloadUpdatedAt;
+
+  let startedAt: string | undefined;
+  if (row.started_at !== null && row.started_at !== undefined) {
+    if (payload.startedAt === undefined || payload.startedAt === null) {
+      throw new CorruptedJobStorageError(TABLE, `Column started_at is present but payload.startedAt is missing.`, jobId);
+    }
+    const colStartedAt = formatPgTimestampToUtcInstant(row.started_at, TABLE, 'started_at', jobId);
+    const payloadStartedAt = formatPgTimestampToUtcInstant(payload.startedAt, TABLE, 'payload.startedAt', jobId);
+    if (colStartedAt !== payloadStartedAt) {
+      throw new CorruptedJobStorageError(TABLE, `Mismatch between column started_at '${colStartedAt}' and payload startedAt '${payloadStartedAt}'.`, jobId);
+    }
+    startedAt = payloadStartedAt;
+  } else {
+    if (payload.startedAt !== undefined && payload.startedAt !== null) {
+      throw new CorruptedJobStorageError(TABLE, `Column started_at is null but payload.startedAt is present ('${String(payload.startedAt)}').`, jobId);
+    }
+  }
+
+  let finishedAt: string | undefined;
+  if (row.finished_at !== null && row.finished_at !== undefined) {
+    if (payload.finishedAt === undefined || payload.finishedAt === null) {
+      throw new CorruptedJobStorageError(TABLE, `Column finished_at is present but payload.finishedAt is missing.`, jobId);
+    }
+    const colFinishedAt = formatPgTimestampToUtcInstant(row.finished_at, TABLE, 'finished_at', jobId);
+    const payloadFinishedAt = formatPgTimestampToUtcInstant(payload.finishedAt, TABLE, 'payload.finishedAt', jobId);
+    if (colFinishedAt !== payloadFinishedAt) {
+      throw new CorruptedJobStorageError(TABLE, `Mismatch between column finished_at '${colFinishedAt}' and payload finishedAt '${payloadFinishedAt}'.`, jobId);
+    }
+    finishedAt = payloadFinishedAt;
+  } else {
+    if (payload.finishedAt !== undefined && payload.finishedAt !== null) {
+      throw new CorruptedJobStorageError(TABLE, `Column finished_at is null but payload.finishedAt is present ('${String(payload.finishedAt)}').`, jobId);
+    }
+  }
 
   // Attempt Lineage
   if (!Array.isArray(payload.attemptLineage)) {
@@ -549,6 +641,13 @@ export function mapRowToJobState(row: any): JobState {
     updatedAt,
     attemptLineage: Object.freeze(attemptLineage),
   };
+
+  if (startedAt !== undefined) {
+    state.startedAt = startedAt;
+  }
+  if (finishedAt !== undefined) {
+    state.finishedAt = finishedAt;
+  }
 
   if (payload.userId !== undefined) {
     state.userId = assertNonEmptyString(payload.userId, TABLE, 'userId', jobId);
@@ -570,13 +669,6 @@ export function mapRowToJobState(row: any): JobState {
     state.materialContextPinId = payload.materialContextPinId;
   }
 
-  if (payload.startedAt !== undefined || row.started_at) {
-    state.startedAt = formatPgTimestampToUtcInstant(payload.startedAt ?? row.started_at, TABLE, 'startedAt', jobId);
-  }
-  if (payload.finishedAt !== undefined || row.finished_at) {
-    state.finishedAt = formatPgTimestampToUtcInstant(payload.finishedAt ?? row.finished_at, TABLE, 'finishedAt', jobId);
-  }
-
   if (payload.waitingCause !== undefined) {
     state.waitingCause = mapPayloadToWaitingCause(payload.waitingCause, TABLE, jobId);
   }
@@ -591,7 +683,69 @@ export function mapRowToJobState(row: any): JobState {
     state.progress = mapPayloadToProgress(payload.progress, TABLE, jobId);
   }
   if (payload.terminalReason !== undefined) {
-    state.terminalReason = assertNonEmptyString(payload.terminalReason, TABLE, 'terminalReason', jobId);
+    state.terminalReason = assertString(payload.terminalReason, TABLE, 'terminalReason', jobId);
+  }
+
+  // M-05: Validação de invariantes semânticos do JobState para o status
+  switch (status) {
+    case 'queued':
+      if (
+        startedAt !== undefined ||
+        finishedAt !== undefined ||
+        state.waitingCause !== undefined ||
+        state.progress !== undefined ||
+        attemptLineage.length > 0 ||
+        state.terminalReason !== undefined
+      ) {
+        throw new CorruptedJobStorageError(TABLE, `Invalid JobState invariants for queued status.`, jobId);
+      }
+      break;
+    case 'running':
+      if (
+        startedAt === undefined ||
+        finishedAt !== undefined ||
+        state.waitingCause !== undefined ||
+        state.terminalReason !== undefined
+      ) {
+        throw new CorruptedJobStorageError(TABLE, `Invalid JobState invariants for running status.`, jobId);
+      }
+      break;
+    case 'waiting':
+      if (
+        startedAt === undefined ||
+        finishedAt !== undefined ||
+        state.waitingCause === undefined ||
+        state.terminalReason !== undefined
+      ) {
+        throw new CorruptedJobStorageError(TABLE, `Invalid JobState invariants for waiting status.`, jobId);
+      }
+      break;
+    case 'paused':
+      if (finishedAt !== undefined || state.terminalReason !== undefined) {
+        throw new CorruptedJobStorageError(TABLE, `Invalid JobState invariants for paused status.`, jobId);
+      }
+      if (startedAt === undefined && attemptLineage.length > 0) {
+        throw new CorruptedJobStorageError(TABLE, `Unstarted paused job cannot have attempts in lineage.`, jobId);
+      }
+      break;
+    case 'succeeded':
+      if (
+        startedAt === undefined ||
+        finishedAt === undefined ||
+        state.waitingCause !== undefined
+      ) {
+        throw new CorruptedJobStorageError(TABLE, `Invalid JobState invariants for succeeded status.`, jobId);
+      }
+      break;
+    case 'failed':
+    case 'cancelled':
+      if (finishedAt === undefined || state.waitingCause !== undefined) {
+        throw new CorruptedJobStorageError(TABLE, `Invalid JobState invariants for terminal ${status} status.`, jobId);
+      }
+      if (startedAt === undefined && attemptLineage.length > 0) {
+        throw new CorruptedJobStorageError(TABLE, `Unstarted terminal job cannot have attempts in lineage.`, jobId);
+      }
+      break;
   }
 
   return deepCloneAndFreeze(state) as unknown as JobState;
@@ -634,7 +788,90 @@ export function mapRowToStoredRecord(row: any): JobStoredRecord {
     payloadRaw = row.payload;
   }
   const payload = assertPlainObject(payloadRaw, TABLE, 'payload', jobId);
-  const appendSequence = String(row.append_sequence ?? '0');
+
+  // M-06: Validação cruzada de occurred_at com o timestamp correspondente no payload
+  if (recordKind === 'created') {
+    if (payload.createdAt === undefined || payload.createdAt === null) {
+      throw new CorruptedJobStorageError(TABLE, `Creation payload missing createdAt.`, jobId);
+    }
+    const payloadCreatedAt = formatPgTimestampToUtcInstant(payload.createdAt, TABLE, 'payload.createdAt', jobId);
+    if (payloadCreatedAt !== occurredAt) {
+      throw new CorruptedJobStorageError(
+        TABLE,
+        `Mismatch between row occurred_at '${occurredAt}' and payload.createdAt '${payloadCreatedAt}'.`,
+        jobId,
+      );
+    }
+  } else {
+    let payloadOccurredAt: unknown;
+    switch (eventType) {
+      case 'JobStarted':
+        payloadOccurredAt = payload.startedAt;
+        break;
+      case 'JobAttemptCorrelated':
+        payloadOccurredAt = payload.correlatedAt;
+        break;
+      case 'JobWaiting':
+        payloadOccurredAt = payload.transitionedAt;
+        break;
+      case 'JobYieldedWaiting':
+        payloadOccurredAt = payload.resumedAt;
+        break;
+      case 'JobControlRequested':
+        payloadOccurredAt = payload.requestedAt;
+        break;
+      case 'JobPaused':
+        payloadOccurredAt = payload.pausedAt;
+        break;
+      case 'JobResumed':
+        payloadOccurredAt = payload.resumedAt;
+        break;
+      case 'JobProgressUpdated':
+        payloadOccurredAt = (payload.progress as Record<string, unknown> | undefined)?.updatedAt;
+        break;
+      case 'JobSucceeded':
+      case 'JobFailed':
+      case 'JobCancelled':
+        payloadOccurredAt = payload.finishedAt;
+        break;
+      default:
+        throw new CorruptedJobStorageError(TABLE, `Unknown event_type '${String(eventType)}'.`, jobId);
+    }
+
+    if (payloadOccurredAt === undefined || payloadOccurredAt === null) {
+      throw new CorruptedJobStorageError(
+        TABLE,
+        `Event payload for '${String(eventType)}' missing timestamp field matching occurred_at.`,
+        jobId,
+      );
+    }
+
+    const formattedPayloadOccurredAt = formatPgTimestampToUtcInstant(
+      payloadOccurredAt,
+      TABLE,
+      `payload timestamp for ${String(eventType)}`,
+      jobId,
+    );
+    if (formattedPayloadOccurredAt !== occurredAt) {
+      throw new CorruptedJobStorageError(
+        TABLE,
+        `Mismatch between row occurred_at '${occurredAt}' and event payload timestamp '${formattedPayloadOccurredAt}'.`,
+        jobId,
+      );
+    }
+  }
+
+  // M-07: Validar formato de append_sequence com /^[1-9]\d*$/ (bigint identity positivo)
+  const rawSeq = row.append_sequence;
+  const seqStr = String(rawSeq ?? '');
+  if (!/^[1-9]\d*$/.test(seqStr)) {
+    throw new CorruptedJobStorageError(
+      TABLE,
+      `Field 'append_sequence' must be a positive integer sequence string matching /^[1-9]\\d*$/. Received: '${seqStr}'.`,
+      jobId,
+    );
+  }
+  const appendSequence = seqStr;
 
   return Object.freeze({
     jobId,
@@ -761,7 +998,7 @@ export function mapStoredRecordToJobEvent(record: JobStoredRecord): JobEvent {
     case 'JobSucceeded': {
       const finishedAt = formatPgTimestampToUtcInstant(p.finishedAt ?? record.occurredAt, TABLE, 'finishedAt', jobId);
       const res: Record<string, unknown> = { type: 'JobSucceeded', jobId, finishedAt };
-      if (p.terminalReason !== undefined) res.terminalReason = assertNonEmptyString(p.terminalReason, TABLE, 'terminalReason', jobId);
+      if (p.terminalReason !== undefined) res.terminalReason = assertString(p.terminalReason, TABLE, 'terminalReason', jobId);
       return deepCloneAndFreeze(res) as unknown as JobEvent;
     }
 
@@ -769,7 +1006,7 @@ export function mapStoredRecordToJobEvent(record: JobStoredRecord): JobEvent {
       const finishedAt = formatPgTimestampToUtcInstant(p.finishedAt ?? record.occurredAt, TABLE, 'finishedAt', jobId);
       const reasonCode = assertNonEmptyString(p.reasonCode, TABLE, 'reasonCode', jobId);
       const res: Record<string, unknown> = { type: 'JobFailed', jobId, finishedAt, reasonCode };
-      if (p.terminalReason !== undefined) res.terminalReason = assertNonEmptyString(p.terminalReason, TABLE, 'terminalReason', jobId);
+      if (p.terminalReason !== undefined) res.terminalReason = assertString(p.terminalReason, TABLE, 'terminalReason', jobId);
       return deepCloneAndFreeze(res) as unknown as JobEvent;
     }
 
@@ -777,7 +1014,7 @@ export function mapStoredRecordToJobEvent(record: JobStoredRecord): JobEvent {
       const finishedAt = formatPgTimestampToUtcInstant(p.finishedAt ?? record.occurredAt, TABLE, 'finishedAt', jobId);
       const res: Record<string, unknown> = { type: 'JobCancelled', jobId, finishedAt };
       if (p.reasonCode !== undefined) res.reasonCode = assertNonEmptyString(p.reasonCode, TABLE, 'reasonCode', jobId);
-      if (p.terminalReason !== undefined) res.terminalReason = assertNonEmptyString(p.terminalReason, TABLE, 'terminalReason', jobId);
+      if (p.terminalReason !== undefined) res.terminalReason = assertString(p.terminalReason, TABLE, 'terminalReason', jobId);
       return deepCloneAndFreeze(res) as unknown as JobEvent;
     }
 

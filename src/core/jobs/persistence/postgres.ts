@@ -29,6 +29,7 @@ import {
 } from './errors';
 import {
   serializeCreateJobParams,
+  serializeCreationParamsFromJobState,
   serializeJobEvent,
   serializeJobState,
   extractEventOccurredAt,
@@ -67,6 +68,32 @@ export class PostgresJobStore implements DurableJobStore {
     }
   }
 
+  /**
+   * Executa operação de leitura encapsulada em transação REPEATABLE READ READ ONLY.
+   * Garante snapshot point-in-time consistente entre head e histórico de eventos
+   * sem bloquear leituras concorrentes nem utilizar FOR UPDATE.
+   */
+  private async withReadSnapshot<T>(
+    operation: (client: PgTransactionalClient) => Promise<T>,
+  ): Promise<T> {
+    const client = await this.executor.connect();
+    try {
+      await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      const result = await operation(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // Ignora falha secundária no rollback para preservar o erro raiz
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   // ==========================================================================
   // 1. CRIAÇÃO DURÁVEL (REVISION 1)
   // ==========================================================================
@@ -75,8 +102,8 @@ export class PostgresJobStore implements DurableJobStore {
     // 1. Valida e inicializa via reducer puro do Core (JobState sanitizado, revision 1, queued)
     const initialJob = createJob(params);
 
-    // 2. Serializa por allowlist explícita (sem vazar extras de runtime)
-    const creationRecordPayload = serializeCreateJobParams(params);
+    // 2. Serializa por allowlist explícita derivada exclusivamente do JobState canônico
+    const creationRecordPayload = serializeCreationParamsFromJobState(initialJob);
     const serializedHead = serializeJobState(initialJob);
 
     return await this.withTransaction(async (tx) => {
@@ -291,120 +318,122 @@ export class PostgresJobStore implements DurableJobStore {
   // ==========================================================================
 
   async rehydrateJob(jobId: JobId): Promise<JobState | undefined> {
-    // 1. Carrega o head persistido
-    const headRes = await this.executor.query(
-      `SELECT
-        "job_id",
-        "status",
-        "revision",
-        "created_at",
-        "updated_at",
-        "started_at",
-        "finished_at",
-        "state_payload"
-      FROM "nex_job_heads"
-      WHERE "job_id" = $1`,
-      [jobId],
-    );
-
-    // 2. Carrega todos os registros históricos em ordem ascendente de revisão
-    const eventsRes = await this.executor.query(
-      `SELECT
-        "job_id",
-        "revision",
-        "record_kind",
-        "event_type",
-        "occurred_at",
-        "payload",
-        "append_sequence"
-      FROM "nex_job_events"
-      WHERE "job_id" = $1
-      ORDER BY "revision" ASC`,
-      [jobId],
-    );
-
-    // 3. Valida integridade básica da existência mútua (head vs histórico)
-    if (headRes.rows.length === 0 && eventsRes.rows.length === 0) {
-      return undefined;
-    }
-
-    if (headRes.rows.length === 0 && eventsRes.rows.length > 0) {
-      throw new CorruptedJobStorageError(
-        'nex_job_heads',
-        `Job events exist for Job '${jobId}', but the operational head is missing.`,
-        jobId,
+    return await this.withReadSnapshot(async (client) => {
+      // 1. Carrega o head persistido
+      const headRes = await client.query(
+        `SELECT
+          "job_id",
+          "status",
+          "revision",
+          "created_at",
+          "updated_at",
+          "started_at",
+          "finished_at",
+          "state_payload"
+        FROM "nex_job_heads"
+        WHERE "job_id" = $1`,
+        [jobId],
       );
-    }
 
-    if (headRes.rows.length > 0 && eventsRes.rows.length === 0) {
-      throw new CorruptedJobStorageError(
-        'nex_job_events',
-        `Operational head exists for Job '${jobId}', but no event records were found.`,
-        jobId,
+      // 2. Carrega todos os registros históricos em ordem ascendente de revisão no mesmo snapshot
+      const eventsRes = await client.query(
+        `SELECT
+          "job_id",
+          "revision",
+          "record_kind",
+          "event_type",
+          "occurred_at",
+          "payload",
+          "append_sequence"
+        FROM "nex_job_events"
+        WHERE "job_id" = $1
+        ORDER BY "revision" ASC`,
+        [jobId],
       );
-    }
 
-    const headState = mapRowToJobState(headRes.rows[0]);
-    const storedRecords = eventsRes.rows.map((row) => mapRowToStoredRecord(row));
+      // 3. Valida integridade básica da existência mútua (head vs histórico)
+      if (headRes.rows.length === 0 && eventsRes.rows.length === 0) {
+        return undefined;
+      }
 
-    // 4. Valida primeiro registro (criação revision 1)
-    const firstRecord = storedRecords[0];
-    if (firstRecord.revision !== 1) {
-      throw new CorruptedJobStorageError(
-        'nex_job_events',
-        `First record for Job '${jobId}' must be revision 1, but found revision ${firstRecord.revision}.`,
-        jobId,
-      );
-    }
-    if (firstRecord.recordKind !== 'created') {
-      throw new CorruptedJobStorageError(
-        'nex_job_events',
-        `First record for Job '${jobId}' must have record_kind 'created', but found '${firstRecord.recordKind}'.`,
-        jobId,
-      );
-    }
-
-    // 5. Replay inicial: reconstruir CreateJobParams e executar createJob puro
-    const createParams = mapStoredRecordToCreateJobParams(firstRecord);
-    let replayedState = createJob(createParams);
-
-    if (replayedState.revision !== 1) {
-      throw new CorruptedJobStorageError(
-        'nex_job_events',
-        `Replayed initial state for Job '${jobId}' produced revision ${replayedState.revision}, expected 1.`,
-        jobId,
-      );
-    }
-
-    // 6. Replay subsequente: iterar sequencialmente por cada transição
-    for (let i = 1; i < storedRecords.length; i++) {
-      const record = storedRecords[i];
-      const expectedRev = replayedState.revision + 1;
-
-      if (record.revision !== expectedRev) {
+      if (headRes.rows.length === 0 && eventsRes.rows.length > 0) {
         throw new CorruptedJobStorageError(
-          'nex_job_events',
-          `Revision gap or disorder detected for Job '${jobId}': expected revision ${expectedRev}, but found revision ${record.revision}.`,
+          'nex_job_heads',
+          `Job events exist for Job '${jobId}', but the operational head is missing.`,
           jobId,
         );
       }
 
-      if (record.recordKind !== 'transition') {
+      if (headRes.rows.length > 0 && eventsRes.rows.length === 0) {
         throw new CorruptedJobStorageError(
           'nex_job_events',
-          `Record at revision ${record.revision} for Job '${jobId}' must have record_kind 'transition', but found '${record.recordKind}'.`,
+          `Operational head exists for Job '${jobId}', but no event records were found.`,
           jobId,
         );
       }
 
-      const domainEvent = mapStoredRecordToJobEvent(record);
-      replayedState = reduceJob(replayedState, domainEvent);
-    }
+      const headState = mapRowToJobState(headRes.rows[0]);
+      const storedRecords = eventsRes.rows.map((row) => mapRowToStoredRecord(row));
 
-    // 7. Validação estrita de equivalência entre replay e head operacional
-    assertJobStatesEquivalent(replayedState, headState);
+      // 4. Valida primeiro registro (criação revision 1)
+      const firstRecord = storedRecords[0];
+      if (firstRecord.revision !== 1) {
+        throw new CorruptedJobStorageError(
+          'nex_job_events',
+          `First record for Job '${jobId}' must be revision 1, but found revision ${firstRecord.revision}.`,
+          jobId,
+        );
+      }
+      if (firstRecord.recordKind !== 'created') {
+        throw new CorruptedJobStorageError(
+          'nex_job_events',
+          `First record for Job '${jobId}' must have record_kind 'created', but found '${firstRecord.recordKind}'.`,
+          jobId,
+        );
+      }
 
-    return replayedState;
+      // 5. Replay inicial: reconstruir CreateJobParams e executar createJob puro
+      const createParams = mapStoredRecordToCreateJobParams(firstRecord);
+      let replayedState = createJob(createParams);
+
+      if (replayedState.revision !== 1) {
+        throw new CorruptedJobStorageError(
+          'nex_job_events',
+          `Replayed initial state for Job '${jobId}' produced revision ${replayedState.revision}, expected 1.`,
+          jobId,
+        );
+      }
+
+      // 6. Replay subsequente: iterar sequencialmente por cada transição
+      for (let i = 1; i < storedRecords.length; i++) {
+        const record = storedRecords[i];
+        const expectedRev = replayedState.revision + 1;
+
+        if (record.revision !== expectedRev) {
+          throw new CorruptedJobStorageError(
+            'nex_job_events',
+            `Revision gap or disorder detected for Job '${jobId}': expected revision ${expectedRev}, but found revision ${record.revision}.`,
+            jobId,
+          );
+        }
+
+        if (record.recordKind !== 'transition') {
+          throw new CorruptedJobStorageError(
+            'nex_job_events',
+            `Record at revision ${record.revision} for Job '${jobId}' must have record_kind 'transition', but found '${record.recordKind}'.`,
+            jobId,
+          );
+        }
+
+        const domainEvent = mapStoredRecordToJobEvent(record);
+        replayedState = reduceJob(replayedState, domainEvent);
+      }
+
+      // 7. Validação estrita de equivalência entre replay e head operacional
+      assertJobStatesEquivalent(replayedState, headState);
+
+      return replayedState;
+    });
   }
 }
 

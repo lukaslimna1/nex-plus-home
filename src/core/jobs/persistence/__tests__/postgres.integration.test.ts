@@ -62,6 +62,7 @@ import {
   createPostgresJobStore,
 } from '../postgres';
 import {
+  mapRowToJobState,
   mapRowToStoredRecord,
   mapStoredRecordToCreateJobParams,
   assertJobStatesEquivalent,
@@ -843,9 +844,13 @@ describe('0.86C-2B · Persistência PostgreSQL de Durable Job Store L0', { skip:
         `UPDATE "nex_job_heads"
          SET "status" = 'failed',
              "finished_at" = $2,
-             "state_payload" = jsonb_set(state_payload, '{status}', '"failed"')
+             "state_payload" = jsonb_set(
+               jsonb_set(state_payload, '{status}', '"failed"'),
+               '{finishedAt}',
+               $3::jsonb
+             )
          WHERE "job_id" = $1`,
-        [jobId, T2],
+        [jobId, T2, JSON.stringify(T2)],
       );
 
       await assert.rejects(
@@ -857,6 +862,113 @@ describe('0.86C-2B · Persistência PostgreSQL de Durable Job Store L0', { skip:
           return true;
         },
       );
+    });
+
+    it('C19: Evento com payload corrompido em nex_job_events falha fechado com CorruptedJobStorageError', async () => {
+      const jobId = makeJobId('job_c19');
+
+      await store.createJob({
+        jobId,
+        createdAt: T0,
+        actor: ACTOR_SYSTEM,
+      });
+
+      // Inserir diretamente uma linha de evento com payload corrompido (sem o tipo do evento ou sem campos obrigatórios)
+      await pool.query(
+        `INSERT INTO "nex_job_events" (
+          "job_id",
+          "revision",
+          "record_kind",
+          "event_type",
+          "occurred_at",
+          "payload"
+        ) VALUES ($1, 2, 'transition', 'JobStarted', $2, $3)`,
+        [jobId, T1, JSON.stringify({ notAValidEvent: true })],
+      );
+
+      // Rehydrate deve falhar fechado com CorruptedJobStorageError ao tentar desserializar o evento corrompido
+      await assert.rejects(
+        async () => {
+          await store.rehydrateJob(jobId);
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof CorruptedJobStorageError);
+          return true;
+        },
+      );
+
+      // listJobEvents também deve falhar fechado ao encontrar payload corrompido
+      await assert.rejects(
+        async () => {
+          await store.listJobEvents(jobId);
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof CorruptedJobStorageError);
+          return true;
+        },
+      );
+    });
+
+    it('C21: Rollback integral impede evento parcial se atualização de head falhar', async () => {
+      const jobId = makeJobId('job_c21');
+
+      await store.createJob({
+        jobId,
+        createdAt: T0,
+        actor: ACTOR_SYSTEM,
+      });
+
+      // Criar trigger transitório para simular falha estrita no UPDATE de nex_job_heads
+      await pool.query(`
+        CREATE OR REPLACE FUNCTION nex_test_fail_head_update()
+        RETURNS trigger AS $$
+        BEGIN
+          IF NEW.job_id = '${jobId}' THEN
+            RAISE EXCEPTION 'simulated_head_update_failure';
+          END IF;
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+
+        DROP TRIGGER IF EXISTS "nex_test_fail_head_update_trg" ON "nex_job_heads";
+        CREATE TRIGGER "nex_test_fail_head_update_trg"
+        BEFORE UPDATE ON "nex_job_heads"
+        FOR EACH ROW EXECUTE FUNCTION nex_test_fail_head_update();
+      `);
+
+      try {
+        await assert.rejects(
+          async () => {
+            await store.applyJobEvent(
+              {
+                type: 'JobStarted',
+                jobId,
+                startedAt: T1,
+              },
+              1,
+            );
+          },
+          /simulated_head_update_failure/,
+        );
+
+        // Provar C21: Transação deu rollback integral. Nenhum evento de revision 2 foi persistido!
+        const eventsRes = await pool.query(
+          `SELECT "revision" FROM "nex_job_events" WHERE "job_id" = $1 ORDER BY "revision" ASC`,
+          [jobId],
+        );
+        assert.equal(eventsRes.rows.length, 1);
+        assert.equal(eventsRes.rows[0].revision, 1);
+
+        // Head permanece em revision 1 e queued
+        const headRes = await pool.query(
+          `SELECT "revision", "status" FROM "nex_job_heads" WHERE "job_id" = $1`,
+          [jobId],
+        );
+        assert.equal(headRes.rows[0].revision, 1);
+        assert.equal(headRes.rows[0].status, 'queued');
+      } finally {
+        await pool.query(`DROP TRIGGER IF EXISTS "nex_test_fail_head_update_trg" ON "nex_job_heads";`);
+      }
     });
   });
 
@@ -979,6 +1091,254 @@ describe('0.86C-2B · Persistência PostgreSQL de Durable Job Store L0', { skip:
       assert.ok(recovered);
       assert.equal(({} as any).polluted, undefined);
       assert.equal((recovered as any).__proto__.polluted, undefined);
+    });
+  });
+
+  // ==========================================================================
+  // H-01, H-02, H-03 & M-03: AUDITORIA CODEX & PROVAS ESPECÍFICAS
+  // ==========================================================================
+  describe('Auditoria Codex · H-01, H-02, H-03 & M-03', () => {
+    it('H-01: Round-trip preserva whitespace original e strings vazias sem trim', async () => {
+      const jobId = makeJobId('job_h01');
+
+      // 1. Criação com whitespace significativo em campos que exigem non-empty
+      const initialJob = await store.createJob({
+        jobId,
+        createdAt: T0,
+        userId: '   usr_spaced   ',
+        correlationId: '   corr_spaced   ',
+        actor: {
+          kind: 'human',
+          humanId: '   human_spaced   ',
+          role: '   operator_spaced   ',
+        },
+      });
+
+      assert.equal(initialJob.userId, '   usr_spaced   ');
+      assert.equal(initialJob.correlationId, '   corr_spaced   ');
+      assert.equal((initialJob.actor as HumanActor).humanId, '   human_spaced   ');
+      assert.equal((initialJob.actor as HumanActor).role, '   operator_spaced   ');
+
+      // 2. Transições com campos contendo strings vazias permitidas pelo Core
+      await store.applyJobEvent(
+        {
+          type: 'JobStarted',
+          jobId,
+          startedAt: T1,
+        },
+        1,
+      );
+
+      await store.applyJobEvent(
+        {
+          type: 'JobProgressUpdated',
+          jobId,
+          progress: {
+            completed: 25,
+            unit: '', // string vazia permitida
+            message: '', // string vazia permitida
+            updatedAt: T2,
+          },
+        },
+        2,
+      );
+
+      await store.applyJobEvent(
+        {
+          type: 'JobCancelled',
+          jobId,
+          finishedAt: T3,
+          terminalReason: '', // string vazia permitida
+        },
+        3,
+      );
+
+      // 3. Provar que getJob recupera exatamente os mesmos valores sem modificação
+      const readJob = await store.getJob(jobId);
+      assert.ok(readJob);
+      assert.equal(readJob.userId, '   usr_spaced   ');
+      assert.equal(readJob.correlationId, '   corr_spaced   ');
+      assert.equal((readJob.actor as HumanActor).humanId, '   human_spaced   ');
+      assert.equal((readJob.actor as HumanActor).role, '   operator_spaced   ');
+      assert.equal(readJob.progress?.unit, '');
+      assert.equal(readJob.progress?.message, '');
+      assert.equal(readJob.terminalReason, '');
+
+      // 4. Provar que rehydrateJob preserva e valida com sucesso
+      const rehydratedJob = await store.rehydrateJob(jobId);
+      assert.ok(rehydratedJob);
+      assert.equal(rehydratedJob.userId, '   usr_spaced   ');
+      assert.equal(rehydratedJob.correlationId, '   corr_spaced   ');
+      assert.equal((rehydratedJob.actor as HumanActor).humanId, '   human_spaced   ');
+      assert.equal((rehydratedJob.actor as HumanActor).role, '   operator_spaced   ');
+      assert.equal(rehydratedJob.progress?.unit, '');
+      assert.equal(rehydratedJob.progress?.message, '');
+      assert.equal(rehydratedJob.terminalReason, '');
+    });
+
+    it('H-02: rehydrateJob garante consistência interna sob interleaving concorrente via snapshot REPEATABLE READ', async () => {
+      const jobId = makeJobId('job_h02');
+
+      // 1. Criar job em revision 1 (queued)
+      await store.createJob({
+        jobId,
+        createdAt: T0,
+        actor: ACTOR_SYSTEM,
+      });
+
+      // 2. Conexão A abre transação REPEATABLE READ READ ONLY (como feito internamente por withReadSnapshot)
+      const clientA = await pool.connect();
+      try {
+        await clientA.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+
+        // Primeira leitura: observa o head em revision 1
+        const headResA = await clientA.query(
+          `SELECT "job_id", "status", "revision", "created_at", "updated_at", "started_at", "finished_at", "state_payload"
+           FROM "nex_job_heads" WHERE "job_id" = $1`,
+          [jobId],
+        );
+        assert.equal(headResA.rows[0].revision, 1);
+        assert.equal(headResA.rows[0].status, 'queued');
+
+        // 3. Enquanto clientA mantém a transação aberta, outra conexão (Conexão B / store) comita revision 2
+        await store.applyJobEvent(
+          {
+            type: 'JobStarted',
+            jobId,
+            startedAt: T1,
+          },
+          1,
+        );
+
+        // Confirmar que no banco agora o head está em revision 2
+        const currentDbHead = await pool.query(
+          `SELECT "revision" FROM "nex_job_heads" WHERE "job_id" = $1`,
+          [jobId],
+        );
+        assert.equal(currentDbHead.rows[0].revision, 2);
+
+        // 4. Conexão A executa sua segunda leitura: SELECT de nex_job_events
+        const eventsResA = await clientA.query(
+          `SELECT "job_id", "revision", "record_kind", "event_type", "occurred_at", "payload", "append_sequence"
+           FROM "nex_job_events" WHERE "job_id" = $1 ORDER BY "revision" ASC`,
+          [jobId],
+        );
+
+        // PROVA DE ISOLAMENTO H-02:
+        // Como clientA está sob REPEATABLE READ READ ONLY, seu snapshot NÃO vê a revision 2 inserida pela Conexão B!
+        // Enxerga EXATAMENTE 1 evento (revision 1), perfeitamente consistente com o head lido na query 1!
+        assert.equal(eventsResA.rows.length, 1);
+        assert.equal(eventsResA.rows[0].revision, 1);
+
+        // Replay e equivalência funcionam de forma consistente
+        const replayed = pureCreateJob(mapStoredRecordToCreateJobParams(mapRowToStoredRecord(eventsResA.rows[0])));
+        const headState = mapRowToJobState(headResA.rows[0]);
+        assertJobStatesEquivalent(replayed, headState);
+
+        await clientA.query('COMMIT');
+      } catch (err) {
+        try {
+          await clientA.query('ROLLBACK');
+        } catch {
+          // ignore
+        }
+        throw err;
+      } finally {
+        clientA.release();
+      }
+
+      // Agora uma nova chamada de rehydrateJob após o commit enxerga revision 2 consistentemente
+      const rehydratedRev2 = await store.rehydrateJob(jobId);
+      assert.ok(rehydratedRev2);
+      assert.equal(rehydratedRev2.revision, 2);
+      assert.equal(rehydratedRev2.status, 'running');
+    });
+
+    it('H-03: CHECK da migration suporta transições válidas a partir de queued (paused, failed, cancelled)', async () => {
+      // 1. queued -> paused (started_at IS NULL, finished_at IS NULL)
+      const jobPausedId = makeJobId('job_h03_paused');
+      await store.createJob({ jobId: jobPausedId, createdAt: T0, actor: ACTOR_SYSTEM });
+      const pausedState = await store.applyJobEvent(
+        { type: 'JobPaused', jobId: jobPausedId, pausedAt: T1 },
+        1,
+      );
+      assert.equal(pausedState.status, 'paused');
+      assert.equal(pausedState.startedAt, undefined);
+      assert.equal(pausedState.finishedAt, undefined);
+      const rehydratedPaused = await store.rehydrateJob(jobPausedId);
+      assert.ok(rehydratedPaused);
+      assert.equal(rehydratedPaused.status, 'paused');
+
+      // 2. queued -> failed (started_at IS NULL, finished_at IS NOT NULL)
+      const jobFailedId = makeJobId('job_h03_failed');
+      await store.createJob({ jobId: jobFailedId, createdAt: T0, actor: ACTOR_SYSTEM });
+      const failedState = await store.applyJobEvent(
+        { type: 'JobFailed', jobId: jobFailedId, finishedAt: T1, reasonCode: 'validation_error' },
+        1,
+      );
+      assert.equal(failedState.status, 'failed');
+      assert.equal(failedState.startedAt, undefined);
+      assert.equal(failedState.finishedAt, T1);
+      const rehydratedFailed = await store.rehydrateJob(jobFailedId);
+      assert.ok(rehydratedFailed);
+      assert.equal(rehydratedFailed.status, 'failed');
+
+      // 3. queued -> cancelled (started_at IS NULL, finished_at IS NOT NULL)
+      const jobCancelledId = makeJobId('job_h03_cancelled');
+      await store.createJob({ jobId: jobCancelledId, createdAt: T0, actor: ACTOR_SYSTEM });
+      const cancelledState = await store.applyJobEvent(
+        { type: 'JobCancelled', jobId: jobCancelledId, finishedAt: T1 },
+        1,
+      );
+      assert.equal(cancelledState.status, 'cancelled');
+      assert.equal(cancelledState.startedAt, undefined);
+      assert.equal(cancelledState.finishedAt, T1);
+      const rehydratedCancelled = await store.rehydrateJob(jobCancelledId);
+      assert.ok(rehydratedCancelled);
+      assert.equal(rehydratedCancelled.status, 'cancelled');
+    });
+
+    it('M-03: Restart estrito desvinculado recupera JobState sem memória in-process', async () => {
+      const jobId = makeJobId('job_m03');
+
+      // Usar a store atual para criar e iniciar o job
+      await store.createJob({
+        jobId,
+        createdAt: T0,
+        userId: 'usr_m03',
+        actor: ACTOR_HUMAN,
+        correlationId: 'corr_m03',
+      });
+
+      await store.applyJobEvent(
+        {
+          type: 'JobStarted',
+          jobId,
+          startedAt: T1,
+        },
+        1,
+      );
+
+      // Instanciar pool completamente novo e isolado sem compartilhar nenhuma referência
+      const isolatedPool = new Pool({ connectionString: databaseUrl, max: 1 });
+      const isolatedStore = createPostgresJobStore(isolatedPool);
+
+      try {
+        const recovered = await isolatedStore.getJob(jobId);
+        assert.ok(recovered);
+        assert.equal(recovered.jobId, jobId);
+        assert.equal(recovered.revision, 2);
+        assert.equal(recovered.status, 'running');
+        assert.equal(recovered.userId, 'usr_m03');
+        assert.equal(recovered.correlationId, 'corr_m03');
+
+        const rehydrated = await isolatedStore.rehydrateJob(jobId);
+        assert.ok(rehydrated);
+        assert.equal(rehydrated.revision, 2);
+        assert.equal(rehydrated.status, 'running');
+      } finally {
+        await isolatedPool.end();
+      }
     });
   });
 });

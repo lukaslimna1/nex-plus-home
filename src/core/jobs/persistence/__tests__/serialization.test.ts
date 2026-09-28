@@ -26,9 +26,13 @@ import type {
 } from '../../contracts';
 import { createJob } from '../../lifecycle';
 import {
+  assertNonEmptyString,
+  assertString,
   serializeCreateJobParams,
+  serializeCreationParamsFromJobState,
   serializeJobEvent,
   serializeJobState,
+  extractEventOccurredAt,
   mapRowToJobState,
   mapRowToStoredRecord,
   mapStoredRecordToCreateJobParams,
@@ -288,6 +292,241 @@ describe('0.86C-2B · Serialização, Allowlist e Trust Boundary', () => {
         () => assertJobStatesEquivalent(stateA, stateB),
         (err: any) => err instanceof JobRehydrationDivergenceError && err.detail.includes('attemptLineage mismatch'),
       );
+    });
+  });
+
+  // ==========================================================================
+  // 4. FIDELIDADE SEMÂNTICA DE STRINGS (H-01) & REVISION 1 DO CANÔNICO
+  // ==========================================================================
+  describe('H-01 · Fidelidade Semântica & Preservação Exata de Strings', () => {
+    it('assertNonEmptyString valida string não-vazia mas preserva whitespace original sem trim', () => {
+      const spacedString = '   user_with_spaces   ';
+      const result = assertNonEmptyString(spacedString, 'test_table', 'userId', JOB_ID);
+      assert.equal(result, spacedString); // Deve preservar os espaços exatamente!
+    });
+
+    it('assertString aceita string vazia sem transformar nem rejeitar', () => {
+      const emptyString = '';
+      const result = assertString(emptyString, 'test_table', 'unit', JOB_ID);
+      assert.equal(result, '');
+    });
+
+    it('serializeCreateJobParams e serializeCreationParamsFromJobState preservam whitespace original', () => {
+      const params: CreateJobParams = {
+        jobId: JOB_ID,
+        createdAt: T0,
+        userId: '   usr_spaced   ',
+        correlationId: '   corr_spaced   ',
+        actor: { kind: 'human', humanId: '   human_spaced   ' },
+      };
+
+      const fromParams = serializeCreateJobParams(params);
+      assert.equal(fromParams.userId, '   usr_spaced   ');
+      assert.equal(fromParams.correlationId, '   corr_spaced   ');
+
+      const initialJob = createJob(params);
+      const fromCanonicalJob = serializeCreationParamsFromJobState(initialJob);
+
+      assert.equal(fromCanonicalJob.jobId, JOB_ID);
+      assert.equal(fromCanonicalJob.createdAt, T0);
+      assert.equal(fromCanonicalJob.userId, '   usr_spaced   ');
+      assert.equal(fromCanonicalJob.correlationId, '   corr_spaced   ');
+      assert.equal((fromCanonicalJob as any).revision, undefined);
+      assert.equal((fromCanonicalJob as any).status, undefined);
+    });
+
+    it('mapRowToJobState aceita string vazia em campos opcionais (terminalReason)', () => {
+      const initialJob = createJob({
+        jobId: JOB_ID,
+        createdAt: T0,
+        actor: { kind: 'system', component: 'orchestrator' },
+      });
+
+      const serializedHead = {
+        ...serializeJobState(initialJob),
+        status: 'cancelled',
+        finishedAt: T1,
+        terminalReason: '', // string vazia permitida pelo Core
+      };
+
+      const row = {
+        job_id: JOB_ID,
+        status: 'cancelled',
+        revision: 1,
+        created_at: T0,
+        updated_at: T0,
+        started_at: null,
+        finished_at: T1,
+        state_payload: serializedHead,
+      };
+
+      const mapped = mapRowToJobState(row);
+      assert.equal(mapped.terminalReason, '');
+    });
+
+    it('mapStoredRecordToJobEvent aceita string vazia em terminalReason para eventos terminais', () => {
+      const row = {
+        job_id: JOB_ID,
+        revision: 2,
+        record_kind: 'transition',
+        event_type: 'JobSucceeded',
+        occurred_at: T1,
+        payload: {
+          type: 'JobSucceeded',
+          jobId: JOB_ID,
+          finishedAt: T1,
+          terminalReason: '', // string vazia
+        },
+        append_sequence: '2',
+      };
+
+      const record = mapRowToStoredRecord(row);
+      const event = mapStoredRecordToJobEvent(record);
+      assert.equal(event.type, 'JobSucceeded');
+      assert.equal((event as JobSucceededEvent).terminalReason, '');
+    });
+  });
+
+  // ==========================================================================
+  // 5. TIMESTAMPS DETERMINÍSTICOS & VALIDAÇÕES DEFENSIVAS (M-01, M-04, M-05, M-06, M-07)
+  // ==========================================================================
+  describe('M-01, M-04, M-05, M-06, M-07 · Validações Defensivas Rigorosas', () => {
+    it('M-01: extractEventOccurredAt para JobProgressUpdated retorna progress.updatedAt determinístico', () => {
+      const progressEvent: JobProgressUpdatedEvent = {
+        type: 'JobProgressUpdated',
+        jobId: JOB_ID,
+        progress: {
+          completed: 10,
+          updatedAt: T1,
+        },
+      };
+
+      const occurredAt = extractEventOccurredAt(progressEvent);
+      assert.equal(occurredAt, T1);
+    });
+
+    it('M-04: mapRowToJobState falha se timestamp escalar da coluna divergir do payload', () => {
+      const initialJob = createJob({
+        jobId: JOB_ID,
+        createdAt: T0,
+        actor: { kind: 'system', component: 'orchestrator' },
+      });
+
+      const serializedHead = serializeJobState(initialJob);
+
+      // Coluna updated_at diverge do payload updatedAt
+      const divergedRow = {
+        job_id: JOB_ID,
+        status: 'queued',
+        revision: 1,
+        created_at: T0,
+        updated_at: T1, // Divergente de T0 no payload
+        started_at: null,
+        finished_at: null,
+        state_payload: serializedHead,
+      };
+
+      assert.throws(
+        () => mapRowToJobState(divergedRow),
+        (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes('Mismatch between column updated_at'),
+      );
+    });
+
+    it('M-05: mapRowToJobState falha se JobState contiver invariantes de status impossíveis', () => {
+      const basePayload = {
+        jobId: JOB_ID,
+        revision: 1,
+        actor: { kind: 'system', component: 'orchestrator' },
+        createdAt: T0,
+        updatedAt: T0,
+        attemptLineage: [],
+      };
+
+      // queued com startedAt presente (impossível no Core)
+      const invalidQueuedRow = {
+        job_id: JOB_ID,
+        status: 'queued',
+        revision: 1,
+        created_at: T0,
+        updated_at: T0,
+        started_at: T0,
+        finished_at: null,
+        state_payload: {
+          ...basePayload,
+          status: 'queued',
+          startedAt: T0,
+        },
+      };
+
+      assert.throws(
+        () => mapRowToJobState(invalidQueuedRow),
+        (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes('Invalid JobState invariants for queued status'),
+      );
+    });
+
+    it('M-06: mapRowToStoredRecord falha se occurred_at divergir do timestamp do evento no payload', () => {
+      const divergedEventRow = {
+        job_id: JOB_ID,
+        revision: 2,
+        record_kind: 'transition',
+        event_type: 'JobStarted',
+        occurred_at: T1, // T1
+        payload: {
+          type: 'JobStarted',
+          jobId: JOB_ID,
+          startedAt: T0, // T0 !== T1!
+        },
+        append_sequence: '2',
+      };
+
+      assert.throws(
+        () => mapRowToStoredRecord(divergedEventRow),
+        (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes('Mismatch between row occurred_at'),
+      );
+    });
+
+    it('M-07: mapRowToStoredRecord rejeita append_sequence inválido ou não-positivo', () => {
+      const invalidSeqRows = ['0', '-1', 'abc', '1.5', ''];
+
+      for (const invalidSeq of invalidSeqRows) {
+        const row = {
+          job_id: JOB_ID,
+          revision: 1,
+          record_kind: 'created',
+          event_type: null,
+          occurred_at: T0,
+          payload: {
+            jobId: JOB_ID,
+            createdAt: T0,
+            actor: { kind: 'system', component: 'orchestrator' },
+          },
+          append_sequence: invalidSeq,
+        };
+
+        assert.throws(
+          () => mapRowToStoredRecord(row),
+          (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes('append_sequence'),
+          `Deveria falhar para append_sequence='${invalidSeq}'`,
+        );
+      }
+
+      // Válido: '1', '100'
+      const validRow = {
+        job_id: JOB_ID,
+        revision: 1,
+        record_kind: 'created',
+        event_type: null,
+        occurred_at: T0,
+        payload: {
+          jobId: JOB_ID,
+          createdAt: T0,
+          actor: { kind: 'system', component: 'orchestrator' },
+        },
+        append_sequence: '42',
+      };
+
+      const record = mapRowToStoredRecord(validRow);
+      assert.equal(record.appendSequence, '42');
     });
   });
 });

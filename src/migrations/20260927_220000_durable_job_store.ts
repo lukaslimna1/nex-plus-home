@@ -15,9 +15,10 @@ export async function up({ db }: MigrateUpArgs): Promise<void> {
       "state_payload" jsonb NOT NULL,
       CONSTRAINT "nex_job_heads_lifecycle_timestamps_chk" CHECK (
         ("status" = 'queued' AND "started_at" IS NULL AND "finished_at" IS NULL) OR
-        ("status" IN ('running', 'waiting', 'paused') AND "started_at" IS NOT NULL AND "finished_at" IS NULL) OR
-        ("status" IN ('succeeded', 'failed', 'cancelled') AND "started_at" IS NOT NULL AND "finished_at" IS NOT NULL) OR
-        ("status" = 'cancelled' AND "started_at" IS NULL AND "finished_at" IS NOT NULL)
+        ("status" IN ('running', 'waiting') AND "started_at" IS NOT NULL AND "finished_at" IS NULL) OR
+        ("status" = 'paused' AND "finished_at" IS NULL) OR
+        ("status" = 'succeeded' AND "started_at" IS NOT NULL AND "finished_at" IS NOT NULL) OR
+        ("status" IN ('failed', 'cancelled') AND "finished_at" IS NOT NULL)
       )
     );
 
