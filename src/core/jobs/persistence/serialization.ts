@@ -456,10 +456,7 @@ export function mapPayloadToActor(raw: unknown, table: string, jobId?: string): 
       const maxVersion = assertNonEmptyString(obj.maxVersion, table, 'actor.maxVersion', jobId);
       const res: Record<string, unknown> = { kind: 'max', maxVersion };
       if (obj.sessionRef !== undefined) {
-        if (!isValidSessionRef(obj.sessionRef)) {
-          throw new CorruptedJobStorageError(table, `Invalid sessionRef in max actor.`, jobId);
-        }
-        res.sessionRef = obj.sessionRef;
+        res.sessionRef = assertNonEmptyString(obj.sessionRef, table, 'actor.sessionRef', jobId);
       }
       validateActor(res as any);
       return deepCloneAndFreeze(res) as unknown as Actor;

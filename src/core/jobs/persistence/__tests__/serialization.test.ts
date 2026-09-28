@@ -33,6 +33,7 @@ import {
   serializeJobEvent,
   serializeJobState,
   extractEventOccurredAt,
+  mapPayloadToActor,
   mapRowToJobState,
   mapRowToStoredRecord,
   mapStoredRecordToCreateJobParams,
@@ -779,6 +780,117 @@ describe('0.86C-2B · Serialização, Allowlist e Trust Boundary', () => {
 
       const record = mapRowToStoredRecord(validRow);
       assert.equal(record.appendSequence, '42');
+    });
+  });
+
+  // ==========================================================================
+  // R-04 · SEMÂNTICA DE MaxActor.sessionRef vs JobState.sessionRef TOP-LEVEL
+  // ==========================================================================
+  describe('R-04 · MaxActor.sessionRef Opaco vs JobState.sessionRef Auth Hex-64', () => {
+    it('mapPayloadToActor aceita e preserva exatamente sessionRef opaco de MaxActor', () => {
+      const payload = {
+        kind: 'max',
+        maxVersion: 'max-v1',
+        sessionRef: 'max-session-opaque',
+      };
+
+      const actor = mapPayloadToActor(payload, 'nex_job_heads', JOB_ID);
+      assert.equal(actor.kind, 'max');
+      if (actor.kind === 'max') {
+        assert.equal(actor.maxVersion, 'max-v1');
+        assert.equal(actor.sessionRef, 'max-session-opaque');
+      }
+    });
+
+    it('mapPayloadToActor preserva whitespace significativo em MaxActor.sessionRef', () => {
+      const opaqueWithWhitespace = '  max-session-opaque  ';
+      const payload = {
+        kind: 'max',
+        maxVersion: 'max-v1',
+        sessionRef: opaqueWithWhitespace,
+      };
+
+      const actor = mapPayloadToActor(payload, 'nex_job_heads', JOB_ID);
+      assert.equal(actor.kind, 'max');
+      if (actor.kind === 'max') {
+        assert.equal(actor.sessionRef, opaqueWithWhitespace);
+      }
+    });
+
+    it('mapPayloadToActor rejeita MaxActor.sessionRef com whitespace-only', () => {
+      const payload = {
+        kind: 'max',
+        maxVersion: 'max-v1',
+        sessionRef: '   ',
+      };
+
+      assert.throws(
+        () => mapPayloadToActor(payload, 'nex_job_heads', JOB_ID),
+        (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes("Field 'actor.sessionRef' must be a non-empty string"),
+      );
+    });
+
+    it('Não-regressão: CreateJobParams.sessionRef top-level continua rejeitando string opaca e exigindo SessionRef hex-64', () => {
+      // 1. O Core rejeita "max-session-opaque" como sessionRef top-level
+      assert.throws(
+        () =>
+          createJob({
+            jobId: JOB_ID,
+            createdAt: T0,
+            actor: { kind: 'system', component: 'orchestrator' },
+            sessionRef: 'max-session-opaque' as any,
+          }),
+        (err: any) => err?.code === 'JOB_INVALID_PAYLOAD' && err.message.includes("Field 'sessionRef' must be a valid SessionRef"),
+      );
+
+      // 2. O Core rejeita whitespace-only
+      assert.throws(
+        () =>
+          createJob({
+            jobId: JOB_ID,
+            createdAt: T0,
+            actor: { kind: 'system', component: 'orchestrator' },
+            sessionRef: '   ' as any,
+          }),
+        (err: any) => err?.code === 'JOB_INVALID_PAYLOAD',
+      );
+
+      // 3. Hex-64 válido passa normalmente
+      const validHex64 = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' as any;
+      const job = createJob({
+        jobId: JOB_ID,
+        createdAt: T0,
+        actor: { kind: 'system', component: 'orchestrator' },
+        sessionRef: validHex64,
+      });
+      assert.equal(job.sessionRef, validHex64);
+    });
+
+    it('Não-regressão: mapRowToJobState rejeita row com sessionRef top-level que não seja hex-64', () => {
+      const invalidRow = {
+        job_id: JOB_ID,
+        status: 'queued',
+        revision: 1,
+        created_at: T0,
+        updated_at: T0,
+        started_at: null,
+        finished_at: null,
+        state_payload: {
+          jobId: JOB_ID,
+          status: 'queued',
+          revision: 1,
+          createdAt: T0,
+          updatedAt: T0,
+          actor: { kind: 'system', component: 'orchestrator' },
+          attemptLineage: [],
+          sessionRef: 'max-session-opaque', // Inválido para top-level
+        },
+      };
+
+      assert.throws(
+        () => mapRowToJobState(invalidRow),
+        (err: any) => err instanceof CorruptedJobStorageError && err.detail.includes('Invalid sessionRef in Job payload'),
+      );
     });
   });
 });

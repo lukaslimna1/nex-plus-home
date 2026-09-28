@@ -55,7 +55,7 @@ import type {
 import { createJob as pureCreateJob, reduceJob as pureReduceJob } from '../../lifecycle';
 import { JobLifecycleError } from '../../invariants';
 import type { AttemptId } from '../../../execution/contracts';
-import type { HumanActor, SystemActor } from '../../../observations/contracts';
+import type { HumanActor, SystemActor, MaxActor } from '../../../observations/contracts';
 import type { SessionRef } from '../../../../auth/session-ref.types';
 import type { DurableJobStore } from '../contracts';
 import {
@@ -1531,6 +1531,86 @@ describe('0.86C-2B · Persistência PostgreSQL de Durable Job Store L0', { skip:
         assert.equal(rehydrated.status, 'running');
       } finally {
         await isolatedPool.end();
+      }
+    });
+
+    it('R-04: Persiste e reidrata Job com MaxActor contendo sessionRef opaca preservada', async () => {
+      const jobId = makeJobId('job_r04_max');
+      const maxActor: MaxActor = {
+        kind: 'max',
+        maxVersion: 'max-v1',
+        sessionRef: 'max-session-opaque',
+      };
+
+      // Criar sem JobState.sessionRef top-level (não confundir os dois)
+      const created = await store.createJob({
+        jobId,
+        createdAt: T0,
+        actor: maxActor,
+      });
+
+      assert.equal(created.actor.kind, 'max');
+      if (created.actor.kind === 'max') {
+        assert.equal(created.actor.sessionRef, 'max-session-opaque');
+      }
+      assert.equal(created.sessionRef, undefined);
+
+      const fetched = await store.getJob(jobId);
+      assert.ok(fetched);
+      assert.equal(fetched.actor.kind, 'max');
+      if (fetched.actor.kind === 'max') {
+        assert.equal(fetched.actor.sessionRef, 'max-session-opaque');
+      }
+      assert.equal(fetched.sessionRef, undefined);
+
+      const rehydrated = await store.rehydrateJob(jobId);
+      assert.ok(rehydrated);
+      assert.equal(rehydrated.actor.kind, 'max');
+      if (rehydrated.actor.kind === 'max') {
+        assert.equal(rehydrated.actor.sessionRef, 'max-session-opaque');
+      }
+      assert.equal(rehydrated.sessionRef, undefined);
+
+      assertJobStatesEquivalent(rehydrated, fetched);
+      assert.deepEqual(stripUndefined(rehydrated), stripUndefined(fetched));
+    });
+
+    it('R-04: Não-regressão - CreateJobParams.sessionRef top-level continua estrito e exige SessionRef auth hex-64', async () => {
+      const jobIdInvalid = makeJobId('job_r04_inv');
+      const maxActor: MaxActor = {
+        kind: 'max',
+        maxVersion: 'max-v1',
+        sessionRef: 'max-session-opaque',
+      };
+
+      // Top-level sessionRef com string opaca (não hex-64) DEVE ser rejeitado pelo Core
+      await assert.rejects(
+        async () => {
+          await store.createJob({
+            jobId: jobIdInvalid,
+            createdAt: T0,
+            actor: maxActor,
+            sessionRef: 'max-session-opaque' as any,
+          });
+        },
+        (err: any) => {
+          assert.equal(err.name, 'JobLifecycleError');
+          assert.match(err.message, /sessionRef/);
+          return true;
+        },
+      );
+
+      // Top-level sessionRef com hex-64 válido passa normalmente
+      const jobIdValid = makeJobId('job_r04_valid');
+      const createdValid = await store.createJob({
+        jobId: jobIdValid,
+        createdAt: T0,
+        actor: maxActor,
+        sessionRef: SESSION_REF,
+      });
+      assert.equal(createdValid.sessionRef, SESSION_REF);
+      if (createdValid.actor.kind === 'max') {
+        assert.equal(createdValid.actor.sessionRef, 'max-session-opaque');
       }
     });
   });
