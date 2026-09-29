@@ -434,6 +434,7 @@ describe('Atomic Enqueue & Worker Bridge Unit Tests (0.86C-3C)', () => {
           new JobWorkerBridge(mockRuntime, mockJobStore, mockClaimStore, {
             workerId: '',
             leaseDurationMs: 30000,
+            heartbeatIntervalMs: 10000,
           }),
         { name: 'JobClaimInvariantsError' },
       );
@@ -443,6 +444,7 @@ describe('Atomic Enqueue & Worker Bridge Unit Tests (0.86C-3C)', () => {
           new JobWorkerBridge(mockRuntime, mockJobStore, mockClaimStore, {
             workerId: 'worker_01',
             leaseDurationMs: 0,
+            heartbeatIntervalMs: 10000,
           }),
         { name: 'JobClaimInvariantsError' },
       );
@@ -460,6 +462,7 @@ describe('Atomic Enqueue & Worker Bridge Unit Tests (0.86C-3C)', () => {
       const bridge = new JobWorkerBridge(mockRuntime, mockJobStore, mockClaimStore, {
         workerId: 'worker_01',
         leaseDurationMs: 30000,
+        heartbeatIntervalMs: 10000,
       });
 
       let callbackCalled = false;
@@ -508,6 +511,7 @@ describe('Atomic Enqueue & Worker Bridge Unit Tests (0.86C-3C)', () => {
       const bridge = new JobWorkerBridge(mockRuntime, mockJobStore, mockClaimStore, {
         workerId: 'worker_01',
         leaseDurationMs: 30000,
+        heartbeatIntervalMs: 10000,
       });
 
       let callbackCalled = false;
@@ -558,6 +562,7 @@ describe('Atomic Enqueue & Worker Bridge Unit Tests (0.86C-3C)', () => {
       const bridge = new JobWorkerBridge(mockRuntime, mockJobStore, mockClaimStore, {
         workerId: 'worker_02',
         leaseDurationMs: 30000,
+        heartbeatIntervalMs: 10000,
       });
 
       let callbackCalled = false;
@@ -618,6 +623,7 @@ describe('Atomic Enqueue & Worker Bridge Unit Tests (0.86C-3C)', () => {
       const bridge = new JobWorkerBridge(mockRuntime, mockJobStore, mockClaimStore, {
         workerId: 'worker_alpha',
         leaseDurationMs: 30000,
+        heartbeatIntervalMs: 10000,
       });
 
       let callbackContextReceived: any = null;
@@ -685,6 +691,7 @@ describe('Atomic Enqueue & Worker Bridge Unit Tests (0.86C-3C)', () => {
       const bridge = new JobWorkerBridge(mockRuntime, mockJobStore, mockClaimStore, {
         workerId: 'worker_alpha',
         leaseDurationMs: 30000,
+        heartbeatIntervalMs: 10000,
       });
 
       const primaryCallbackError = new Error('Explicit domain test error inside callback');
@@ -977,6 +984,7 @@ describe('Atomic Enqueue & Worker Bridge Unit Tests (0.86C-3C)', () => {
       const bridge = new JobWorkerBridge(mockRuntime, mockJobStore, mockClaimStore, {
         workerId: 'worker_alpha',
         leaseDurationMs: 30000,
+        heartbeatIntervalMs: 10000,
       });
 
       const callbackError = new Error('Callback business computation crashed');
@@ -1041,6 +1049,7 @@ describe('Atomic Enqueue & Worker Bridge Unit Tests (0.86C-3C)', () => {
       const bridge = new JobWorkerBridge(mockRuntime, mockJobStore, mockClaimStore, {
         workerId: 'worker_alpha',
         leaseDurationMs: 30000,
+        heartbeatIntervalMs: 10000,
       });
 
       await assert.rejects(
@@ -1156,6 +1165,7 @@ describe('Atomic Enqueue & Worker Bridge Unit Tests (0.86C-3C)', () => {
       const bridge = new JobWorkerBridge(mockRuntime, mockJobStore, mockClaimStore, {
         workerId: 'worker_alpha',
         leaseDurationMs: 30000,
+        heartbeatIntervalMs: 10000,
       });
 
       await assert.rejects(
@@ -1210,6 +1220,7 @@ describe('Atomic Enqueue & Worker Bridge Unit Tests (0.86C-3C)', () => {
       const bridge = new JobWorkerBridge(mockRuntime, mockJobStore, mockClaimStore, {
         workerId: 'worker_alpha',
         leaseDurationMs: 30000,
+        heartbeatIntervalMs: 10000,
       });
 
       await assert.rejects(

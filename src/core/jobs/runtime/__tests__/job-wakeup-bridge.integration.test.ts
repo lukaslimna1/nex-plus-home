@@ -304,6 +304,7 @@ describe('Safe Wake-Up & Worker Bridge — PostgreSQL Integration (0.86C-3C)', {
     const bridge = new JobWorkerBridge(runtime, jobStore, claimStore, {
       workerId: 'worker_c6',
       leaseDurationMs: 30000,
+      heartbeatIntervalMs: 10000,
     });
 
     let callbackContext: any = null;
@@ -346,6 +347,7 @@ describe('Safe Wake-Up & Worker Bridge — PostgreSQL Integration (0.86C-3C)', {
     const bridge = new JobWorkerBridge(runtime, jobStore, claimStore, {
       workerId: 'worker_c7',
       leaseDurationMs: 30000,
+      heartbeatIntervalMs: 10000,
     });
 
     let callbackCalled = false;
@@ -383,10 +385,12 @@ describe('Safe Wake-Up & Worker Bridge — PostgreSQL Integration (0.86C-3C)', {
     const bridgeA = new JobWorkerBridge(runtime, jobStore, claimStore, {
       workerId: 'worker_c8_a',
       leaseDurationMs: 30000,
+      heartbeatIntervalMs: 10000,
     });
     const bridgeB = new JobWorkerBridge(runtime, jobStore, claimStore, {
       workerId: 'worker_c8_b',
       leaseDurationMs: 30000,
+      heartbeatIntervalMs: 10000,
     });
 
     let barrierRelease: () => void = () => {};
@@ -449,10 +453,12 @@ describe('Safe Wake-Up & Worker Bridge — PostgreSQL Integration (0.86C-3C)', {
     const bridgeA = new JobWorkerBridge(runtime, jobStore, claimStore, {
       workerId: 'worker_c9_a',
       leaseDurationMs: 30000,
+      heartbeatIntervalMs: 10000,
     });
     const bridgeB = new JobWorkerBridge(runtime, jobStore, claimStore, {
       workerId: 'worker_c9_b',
       leaseDurationMs: 30000,
+      heartbeatIntervalMs: 10000,
     });
 
     const receivedFences: string[] = [];
@@ -493,6 +499,7 @@ describe('Safe Wake-Up & Worker Bridge — PostgreSQL Integration (0.86C-3C)', {
     const bridge = new JobWorkerBridge(runtime, jobStore, claimStore, {
       workerId: 'worker_c10',
       leaseDurationMs: 30000,
+      heartbeatIntervalMs: 10000,
     });
 
     const primaryError = new Error('Explicit callback failure simulation for C10');
@@ -558,6 +565,7 @@ describe('Safe Wake-Up & Worker Bridge — PostgreSQL Integration (0.86C-3C)', {
     const bridge = new JobWorkerBridge(runtime, jobStore, claimStore, {
       workerId: 'worker_c11_a',
       leaseDurationMs: 30000,
+      heartbeatIntervalMs: 10000,
     });
 
     await assert.rejects(
@@ -634,6 +642,7 @@ describe('Safe Wake-Up & Worker Bridge — PostgreSQL Integration (0.86C-3C)', {
     const bridge = new JobWorkerBridge(runtime, jobStore, claimStore, {
       workerId: 'worker_c12_stale_test',
       leaseDurationMs: 30000,
+      heartbeatIntervalMs: 10000,
     });
 
     const callbackError = new Error('simulated_failure_during_stale_test');
@@ -687,6 +696,7 @@ describe('Safe Wake-Up & Worker Bridge — PostgreSQL Integration (0.86C-3C)', {
     const bridge = new JobWorkerBridge(runtime, jobStore, claimStore, {
       workerId: 'worker_c13',
       leaseDurationMs: 30000,
+      heartbeatIntervalMs: 10000,
     });
 
     const res = await bridge.processNext(async (ctx) => {

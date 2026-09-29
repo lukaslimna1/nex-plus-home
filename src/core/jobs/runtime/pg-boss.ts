@@ -15,6 +15,11 @@ import {
   PG_BOSS_CANONICAL_SCHEMA,
   PG_BOSS_EXPECTED_SCHEMA_VERSION,
   PG_BOSS_DEFAULT_BACKEND,
+  PG_BOSS_WAKEUP_RETRY_LIMIT,
+  PG_BOSS_WAKEUP_RETRY_DELAY_SECONDS,
+  PG_BOSS_WAKEUP_RETRY_BACKOFF,
+  PG_BOSS_WAKEUP_EXPIRE_SECONDS,
+  PG_BOSS_WAKEUP_HEARTBEAT_SECONDS,
   type IPgBossRuntime,
   type JobWakeupPayload,
   type PgBossDeliveryAttemptRef,
@@ -46,7 +51,8 @@ export type PgBossRuntimeErrorCode =
   | 'FETCH_FAILURE'
   | 'SETTLEMENT_FAILURE'
   | 'PROVISIONING_FAILURE'
-  | 'SCHEMA_DRIFT_DETECTED';
+  | 'SCHEMA_DRIFT_DETECTED'
+  | 'SCHEMA_VERSION_MISMATCH';
 
 export interface PgBossRuntimeErrorOptions {
   readonly code: PgBossRuntimeErrorCode;
@@ -98,16 +104,38 @@ export function parseSettlementAffected(rawAffected: unknown, queueName?: string
 }
 
 /**
- * Preserva erro primário e falha secundária de cleanup sem mascaramento (P-M2).
+ * Representação explícita de falha capturada em cleanup no runtime pg-boss, imune a valores falsey (AUD-3A-PM2-01).
+ */
+export interface PgBossCapturedFailure {
+  readonly hasError: boolean;
+  readonly error?: unknown;
+}
+
+/**
+ * Preserva erro primário e falha secundária de cleanup sem mascaramento (P-M2 / AUD-3A-PM2-01).
  * Utiliza AggregateError, cause e o campo cleanupError do PgBossRuntimeError.
+ * Suporta presença explícita de falha via PgBossCapturedFailure ({ hasError, error }) ou erro direto,
+ * preservando estritamente valores falsey (false, 0, '', undefined).
  */
 export function composeRuntimeErrorWithCleanup(
   primaryError: unknown,
-  cleanupError: unknown,
-  defaultCode: PgBossRuntimeErrorCode,
-  contextPrefix: string
+  cleanupArg: PgBossCapturedFailure | unknown,
+  defaultCode: PgBossRuntimeErrorCode = 'START_FAILURE',
+  contextPrefix: string = '[PgBossRuntime]'
 ): PgBossRuntimeError {
-  if (!cleanupError) {
+  let hasCleanupError = false;
+  let cleanupError: unknown = undefined;
+
+  if (cleanupArg !== null && typeof cleanupArg === 'object' && 'hasError' in cleanupArg) {
+    const captured = cleanupArg as PgBossCapturedFailure;
+    hasCleanupError = Boolean(captured.hasError);
+    cleanupError = captured.error;
+  } else if (cleanupArg !== undefined && cleanupArg !== null) {
+    hasCleanupError = true;
+    cleanupError = cleanupArg;
+  }
+
+  if (!hasCleanupError) {
     if (primaryError instanceof PgBossRuntimeError) {
       return primaryError;
     }
@@ -151,6 +179,7 @@ export function composeRuntimeErrorWithCleanup(
 
 export class PgBossRuntime implements IPgBossRuntime {
   readonly #connectionString: string;
+  readonly #bossFactory?: (options: any) => any;
   private _boss: PgBoss | null = null;
   private _isStarted = false;
   private readonly _config: Readonly<PgBossRuntimeConfig>;
@@ -164,6 +193,7 @@ export class PgBossRuntime implements IPgBossRuntime {
     }
 
     this.#connectionString = options.connectionString;
+    this.#bossFactory = options.bossFactory;
 
     // Configuração estritamente congelada conforme decisões arquiteturais do 0.86C-3A
     // connectionString mantida em campo privado nativo (#connectionString · F-3A-04-R1),
@@ -194,31 +224,54 @@ export class PgBossRuntime implements IPgBossRuntime {
       return;
     }
 
-    const candidateBoss = new PgBoss({
+    const bossOptions = {
       connectionString: this.#connectionString,
       schema: this._config.schema,
       backend: this._config.backend,
       migrate: false,
       useListenNotify: false,
-    });
+    };
+
+    const candidateBoss = this.#bossFactory
+      ? this.#bossFactory(bossOptions)
+      : new PgBoss(bossOptions);
 
     try {
-      this._boss = candidateBoss;
       await candidateBoss.start();
+
+      const version = await candidateBoss.schemaVersion();
+      if (version !== PG_BOSS_EXPECTED_SCHEMA_VERSION) {
+        throw new PgBossRuntimeError({
+          code: 'SCHEMA_VERSION_MISMATCH',
+          message: `[PgBossRuntime] Schema version mismatch: expected version ${PG_BOSS_EXPECTED_SCHEMA_VERSION}, received: ${version}`,
+          schemaVersion: version,
+        });
+      }
+
+      const driftReport = await candidateBoss.detectSchemaDrift();
+      if (!driftReport.ok) {
+        throw new PgBossRuntimeError({
+          code: 'SCHEMA_DRIFT_DETECTED',
+          message: `[PgBossRuntime] Schema drift detected in schema '${this._config.schema}'.`,
+          schemaVersion: version,
+        });
+      }
+
+      this._boss = candidateBoss;
       this._isStarted = true;
     } catch (err) {
       this._isStarted = false;
       this._boss = null;
-      let cleanupError: unknown = null;
+      let cleanupFailure: PgBossCapturedFailure = { hasError: false };
       try {
         await candidateBoss.stop({ graceful: false });
       } catch (cErr) {
-        cleanupError = cErr;
+        cleanupFailure = { hasError: true, error: cErr };
       }
 
       throw composeRuntimeErrorWithCleanup(
         err,
-        cleanupError,
+        cleanupFailure,
         'START_FAILURE',
         '[PgBossRuntime] Failed to start pg-boss runtime (migrate: false)'
       );
@@ -290,7 +343,13 @@ export class PgBossRuntime implements IPgBossRuntime {
     }
 
     try {
-      const messageId = await this._boss.send(queueName, payload);
+      const messageId = await this._boss.send(queueName, payload, {
+        retryLimit: PG_BOSS_WAKEUP_RETRY_LIMIT,
+        retryDelay: PG_BOSS_WAKEUP_RETRY_DELAY_SECONDS,
+        retryBackoff: PG_BOSS_WAKEUP_RETRY_BACKOFF,
+        expireInSeconds: PG_BOSS_WAKEUP_EXPIRE_SECONDS,
+        heartbeatSeconds: PG_BOSS_WAKEUP_HEARTBEAT_SECONDS,
+      });
       return { messageId };
     } catch (err) {
       throw new PgBossRuntimeError({
@@ -327,7 +386,14 @@ export class PgBossRuntime implements IPgBossRuntime {
     }
 
     try {
-      const messageId = await this._boss.send(queueName, payload, { db });
+      const messageId = await this._boss.send(queueName, payload, {
+        db,
+        retryLimit: PG_BOSS_WAKEUP_RETRY_LIMIT,
+        retryDelay: PG_BOSS_WAKEUP_RETRY_DELAY_SECONDS,
+        retryBackoff: PG_BOSS_WAKEUP_RETRY_BACKOFF,
+        expireInSeconds: PG_BOSS_WAKEUP_EXPIRE_SECONDS,
+        heartbeatSeconds: PG_BOSS_WAKEUP_HEARTBEAT_SECONDS,
+      });
       return { messageId };
     } catch (err) {
       throw new PgBossRuntimeError({
@@ -378,6 +444,46 @@ export class PgBossRuntime implements IPgBossRuntime {
       throw new PgBossRuntimeError({
         code: 'FETCH_FAILURE',
         message: `[PgBossRuntime] Failed to fetch wake-up from queue '${queueName}': ${err instanceof Error ? err.message : String(err)}`,
+        cause: err,
+      });
+    }
+  }
+
+  /**
+   * Executa touch (heartbeat) técnico da mensagem na fila com attempt fencing ({ id, retryCount }) (0.86C-3D).
+   * NUNCA touch por plain id. Reutiliza estritamente parseSettlementAffected.
+   * Retorna settled: affected === 1, affected: 0 ou 1.
+   */
+  async touchWakeup(queueName: string, target: PgBossDeliveryAttemptRef): Promise<PgBossSettlementResult> {
+    assertDeliveryAttemptRef(target);
+
+    if (!this._boss || !this._isStarted) {
+      throw new PgBossRuntimeError({
+        code: 'RUNTIME_NOT_STARTED',
+        message: '[PgBossRuntime] Cannot touch wake-up: pg-boss runtime is not started.',
+      });
+    }
+
+    try {
+      const response = await this._boss.touch(queueName, {
+        id: target.id,
+        retryCount: target.retryCount,
+      });
+
+      const rawAffected = (response as { affected?: unknown } | null | undefined)?.affected;
+      const affected = parseSettlementAffected(rawAffected, queueName);
+
+      return Object.freeze({
+        settled: affected === 1,
+        affected,
+      });
+    } catch (err) {
+      if (err instanceof PgBossRuntimeError) {
+        throw err;
+      }
+      throw new PgBossRuntimeError({
+        code: 'SETTLEMENT_FAILURE',
+        message: `[PgBossRuntime] Failed to touch wake-up on queue '${queueName}': ${err instanceof Error ? err.message : String(err)}`,
         cause: err,
       });
     }
@@ -557,16 +663,16 @@ export async function provisionPgBossSchema(
       driftOk: driftReport.ok,
     });
   } catch (err) {
-    let cleanupError: unknown = null;
+    let cleanupFailure: PgBossCapturedFailure = { hasError: false };
     try {
       await provisioningBoss.stop({ graceful: false });
     } catch (cErr) {
-      cleanupError = cErr;
+      cleanupFailure = { hasError: true, error: cErr };
     }
 
     throw composeRuntimeErrorWithCleanup(
       err,
-      cleanupError,
+      cleanupFailure,
       'PROVISIONING_FAILURE',
       '[PgBoss Provisioning] Controlled provisioning failed'
     );

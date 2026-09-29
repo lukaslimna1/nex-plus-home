@@ -11,3 +11,4 @@ export * from './invariants';
 export * from './pg-boss';
 export * from './coordinator';
 export * from './worker-bridge';
+export * from './worker-heartbeat';

@@ -1,14 +1,16 @@
 /**
  * NEX+ · Single-Delivery Worker Bridge
- * Ponte entre Notificação Técnica (pg-boss) e Execução Canônica (JobStore + Claims) — Escopo 0.86 (Bloco 0.86C · Checkpoint 0.86C-3C)
+ * Ponte entre Notificação Técnica (pg-boss) e Execução Canônica (JobStore + Claims) — Escopo 0.86 (Bloco 0.86C · Checkpoints 0.86C-3C & 0.86C-3D)
  *
  * Princípios Fundamentais:
  * 1. Single-delivery unitário: processNext() processa no máximo UMA mensagem sem timers ou loops contínuos.
- * 2. Ordem estrita e invariável: fetch → rehydrate → claim → callback → release → complete.
- * 3. Fila subordinada: se Job não existe, liquida attempt técnico e marca 'orphaned' sem chamar callback.
- * 4. Fencing token: se claim held, liquida delivery técnica e marca 'held' sem chamar callback.
+ * 2. Ordem estrita e invariável: fetch → rehydrate → claim → heartbeat start → callback → heartbeat stop → release → complete.
+ * 3. Fila subordinada: se Job não existe, liquida attempt técnico e marca 'orphaned' sem chamar callback nem keepalive.
+ * 4. Fencing token: se claim held, liquida delivery técnica e marca 'held' sem chamar callback nem keepalive.
  * 5. Callback orchestration-only: curto, idempotente, sem side effects materiais nem criação de Attempt NEX.
- * 6. Preservação estruturada de erros primários e falhas secundárias de cleanup (sem engolir exceções).
+ * 6. Dual Keepalive: renova claim canônico (NEX) antes de touch técnico (pg-boss) enquanto o callback está em voo.
+ * 7. Authority Loss: se perder claim canônico ou attempt técnico, aborta cooperativamente o signal e impede success settlement.
+ * 8. Preservação estruturada de erros primários e falhas secundárias de cleanup (sem engolir exceções).
  */
 
 import type { JobState } from '../contracts';
@@ -17,9 +19,21 @@ import type { JobClaimStore, JobClaimSnapshot } from '../claims/contracts';
 import { assertWorkerId, assertLeaseDurationMs } from '../claims/invariants';
 import {
   PG_BOSS_DEFAULT_WAKEUP_QUEUE,
+  PG_BOSS_WAKEUP_HEARTBEAT_SECONDS,
   type IPgBossRuntime,
   type PgBossDeliveryAttemptRef,
 } from './contracts';
+import {
+  WorkerHeartbeatController,
+  WorkerBridgeAuthorityLostError,
+  type WorkerBridgeAuthorityLostReason,
+} from './worker-heartbeat';
+
+export {
+  WorkerHeartbeatController,
+  WorkerBridgeAuthorityLostError,
+  type WorkerBridgeAuthorityLostReason,
+};
 
 export type WorkerBridgeOutcome =
   | 'idle'
@@ -39,6 +53,7 @@ export interface WorkerBridgeProcessResult {
 export interface WorkerBridgeCallbackContext {
   readonly job: Readonly<JobState>;
   readonly claim: Readonly<JobClaimSnapshot>;
+  readonly signal: AbortSignal;
 }
 
 export type JobWakeupCallback = (context: WorkerBridgeCallbackContext) => Promise<void>;
@@ -46,7 +61,56 @@ export type JobWakeupCallback = (context: WorkerBridgeCallbackContext) => Promis
 export interface WorkerBridgeOptions {
   readonly workerId: string;
   readonly leaseDurationMs: number;
+  readonly heartbeatIntervalMs: number;
   readonly queueName?: string;
+}
+
+/**
+ * Erro de invariante do Worker Bridge (0.86C-3D).
+ */
+export class WorkerBridgeInvariantsError extends Error {
+  constructor(message: string) {
+    super(`[WorkerBridge] Invariant violation: ${message}`);
+    this.name = 'WorkerBridgeInvariantsError';
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * Validação defensiva fail-closed do intervalo de heartbeat (0.86C-3D):
+ * 1. Deve ser inteiro, finito e > 0;
+ * 2. heartbeatIntervalMs <= floor(leaseDurationMs / 2) (margem operacional para renovar antes da expiração da lease);
+ * 3. heartbeatIntervalMs <= 30000 ms (metade do PG_BOSS_WAKEUP_HEARTBEAT_SECONDS = 60s).
+ */
+export function assertHeartbeatIntervalMs(
+  heartbeatIntervalMs: unknown,
+  leaseDurationMs: number,
+): asserts heartbeatIntervalMs is number {
+  if (
+    typeof heartbeatIntervalMs !== 'number' ||
+    !Number.isFinite(heartbeatIntervalMs) ||
+    !Number.isInteger(heartbeatIntervalMs) ||
+    !Number.isSafeInteger(heartbeatIntervalMs) ||
+    heartbeatIntervalMs <= 0
+  ) {
+    throw new WorkerBridgeInvariantsError(
+      `heartbeatIntervalMs must be a positive finite integer > 0, received: ${String(heartbeatIntervalMs)}`,
+    );
+  }
+
+  const maxAllowedByLease = Math.floor(leaseDurationMs / 2);
+  if (heartbeatIntervalMs > maxAllowedByLease) {
+    throw new WorkerBridgeInvariantsError(
+      `heartbeatIntervalMs (${heartbeatIntervalMs}) must be <= floor(leaseDurationMs / 2) (${maxAllowedByLease}).`,
+    );
+  }
+
+  const maxAllowedByPgBoss = Math.floor((PG_BOSS_WAKEUP_HEARTBEAT_SECONDS * 1000) / 2); // 30000 ms
+  if (heartbeatIntervalMs > maxAllowedByPgBoss) {
+    throw new WorkerBridgeInvariantsError(
+      `heartbeatIntervalMs (${heartbeatIntervalMs}) must be <= ${maxAllowedByPgBoss} ms (half of PG_BOSS_WAKEUP_HEARTBEAT_SECONDS).`,
+    );
+  }
 }
 
 /**
@@ -85,11 +149,13 @@ export interface WorkerBridgeErrorOptions {
   readonly releaseError?: unknown;
   readonly hasTechnicalSettlementError?: boolean;
   readonly technicalSettlementError?: unknown;
+  readonly hasCallbackError?: boolean;
+  readonly callbackError?: unknown;
 }
 
 /**
  * Erro composto do WorkerBridge para preservar falha primária juntamente com
- * falhas secundárias de release e settlement técnico (P-M2 pattern / F-3C-02 / F-3C-03).
+ * falhas secundárias de release, settlement técnico ou callback (P-M2 pattern / F-3C-02 / F-3C-03 / 0.86C-3D).
  */
 export class WorkerBridgeError extends Error {
   readonly primaryError: unknown;
@@ -97,9 +163,14 @@ export class WorkerBridgeError extends Error {
   readonly releaseError?: unknown;
   readonly hasTechnicalSettlementError: boolean;
   readonly technicalSettlementError?: unknown;
+  readonly hasCallbackError: boolean;
+  readonly callbackError?: unknown;
 
   constructor(message: string, options: WorkerBridgeErrorOptions) {
     const causes: unknown[] = [options.primaryError];
+    const hasCallback =
+      options.hasCallbackError ??
+      ('callbackError' in options && options.callbackError !== undefined);
     const hasRelease =
       options.hasReleaseError ??
       ('releaseError' in options && options.releaseError !== undefined);
@@ -107,6 +178,7 @@ export class WorkerBridgeError extends Error {
       options.hasTechnicalSettlementError ??
       ('technicalSettlementError' in options && options.technicalSettlementError !== undefined);
 
+    if (hasCallback) causes.push(options.callbackError);
     if (hasRelease) causes.push(options.releaseError);
     if (hasTech) causes.push(options.technicalSettlementError);
 
@@ -122,6 +194,8 @@ export class WorkerBridgeError extends Error {
     this.releaseError = options.releaseError;
     this.hasTechnicalSettlementError = hasTech;
     this.technicalSettlementError = options.technicalSettlementError;
+    this.hasCallbackError = hasCallback;
+    this.callbackError = options.callbackError;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
@@ -205,8 +279,42 @@ export function composeBridgeReleaseError(
   );
 }
 
+export function composeBridgeAuthorityLossError(
+  authorityError: WorkerBridgeAuthorityLostError,
+  options?: {
+    hasCallbackError?: boolean;
+    callbackError?: unknown;
+    hasReleaseError?: boolean;
+    releaseError?: unknown;
+    hasTechnicalSettlementError?: boolean;
+    technicalSettlementError?: unknown;
+  },
+): Error {
+  const hasCallback = options?.hasCallbackError ?? false;
+  const hasRelease = options?.hasReleaseError ?? false;
+  const hasTech = options?.hasTechnicalSettlementError ?? false;
+
+  const cbMsg = hasCallback ? ` (callback error: ${formatErrorDetail(options?.callbackError)})` : '';
+  const relMsg = hasRelease ? ` (release error: ${formatErrorDetail(options?.releaseError)})` : '';
+  const techMsg = hasTech ? ` (failWakeup error: ${formatErrorDetail(options?.technicalSettlementError)})` : '';
+
+  return new WorkerBridgeError(
+    `[WorkerBridge] Authority lost: ${formatErrorDetail(authorityError)}${cbMsg}${relMsg}${techMsg}`,
+    {
+      primaryError: authorityError,
+      hasCallbackError: hasCallback,
+      callbackError: options?.callbackError,
+      hasReleaseError: hasRelease,
+      releaseError: options?.releaseError,
+      hasTechnicalSettlementError: hasTech,
+      technicalSettlementError: options?.technicalSettlementError,
+    },
+  );
+}
+
 export class JobWorkerBridge {
   private readonly queueName: string;
+  private readonly heartbeatIntervalMs: number;
 
   constructor(
     private readonly runtime: IPgBossRuntime,
@@ -216,12 +324,14 @@ export class JobWorkerBridge {
   ) {
     assertWorkerId(options.workerId);
     assertLeaseDurationMs(options.leaseDurationMs);
+    assertHeartbeatIntervalMs(options.heartbeatIntervalMs, options.leaseDurationMs);
     this.queueName = options.queueName ?? PG_BOSS_DEFAULT_WAKEUP_QUEUE;
+    this.heartbeatIntervalMs = options.heartbeatIntervalMs;
   }
 
   /**
-   * Processa no máximo UMA delivery de wake-up da fila.
-   * Não executa loop, timer ou scheduler.
+   * Processa no máximo UMA delivery de wake-up da fila (0.86C-3C & 0.86C-3D).
+   * Não executa loop, daemon ou scheduler contínuo.
    */
   async processNext(callback: JobWakeupCallback): Promise<WorkerBridgeProcessResult> {
     // 1. Fetch de no máximo uma mensagem
@@ -240,7 +350,7 @@ export class JobWorkerBridge {
     // 2. Reidratação do Job canônico a partir do DurableJobStore
     const job = await this.jobStore.rehydrateJob(jobId);
 
-    // 3. Caso o Job não exista (wake-up órfão)
+    // 3. Caso o Job não exista (wake-up órfão) — nunca inicia keepalive
     if (!job) {
       const settlement = await this.runtime.completeWakeup(this.queueName, target);
       if (!settlement.settled) {
@@ -266,7 +376,7 @@ export class JobWorkerBridge {
       leaseDurationMs: this.options.leaseDurationMs,
     });
 
-    // 5. Caso o claim esteja mantido por outro worker ativo (held)
+    // 5. Caso o claim esteja mantido por outro worker ativo (held) — nunca inicia keepalive
     if (!claimResult.acquired) {
       const settlement = await this.runtime.completeWakeup(this.queueName, target);
       if (!settlement.settled) {
@@ -285,17 +395,149 @@ export class JobWorkerBridge {
       });
     }
 
-    // 6. Claim adquirido com sucesso: executar callback do consumidor
+    // 6. Claim adquirido com sucesso: preparar AbortController e keepalive
     const claim = claimResult.claim;
+    const abortController = new AbortController();
+
+    const heartbeat = new WorkerHeartbeatController({
+      jobId,
+      workerId: this.options.workerId,
+      fencingToken: claim.fencingToken,
+      deliveryId: message.id,
+      retryCount: message.retryCount,
+      leaseDurationMs: this.options.leaseDurationMs,
+      heartbeatIntervalMs: this.heartbeatIntervalMs,
+      queueName: this.queueName,
+      claimStore: this.claimStore,
+      runtime: this.runtime,
+      abortController,
+    });
+
+    // Inicia keepalive após aquisição de claim (0.86C-3D)
+    heartbeat.start();
+
+    let callbackError: unknown = undefined;
+    let hasCallbackError = false;
 
     try {
       await callback({
         job: Object.freeze(job),
         claim: Object.freeze(claim),
+        signal: abortController.signal,
       });
-    } catch (callbackErr) {
-      // Falha do callback:
-      // A. Tentar liberar o claim canônico com a referência exata
+    } catch (cbErr) {
+      hasCallbackError = true;
+      callbackError = cbErr;
+    }
+
+    // 7. Parada obrigatória do keepalive ANTES de qualquer release ou settlement (0.86C-3D):
+    // Impede novos ticks e aguarda qualquer tick que já esteja in-flight
+    const authorityError = await heartbeat.stop();
+
+    // 8. CENÁRIO A: PERDA DE AUTORIDADE DURANTE A EXECUÇÃO (0.86C-3D)
+    if (authorityError) {
+      if (authorityError.reason === 'canonical_claim_stale') {
+        // Claim canônico perdido (stale):
+        // NÃO tentar release (o claim já não é nosso / expirou / foi re-adquirido)
+        // NÃO complete como sucesso
+        // Tentar failWakeup fenced se aplicável
+        let technicalSettlementError: unknown = undefined;
+        let hasTechnicalSettlementError = false;
+        try {
+          const settlement = await this.runtime.failWakeup(this.queueName, target);
+          if (!settlement.settled) {
+            hasTechnicalSettlementError = true;
+            technicalSettlementError = new WorkerBridgeTechnicalStaleError({
+              deliveryId: message.id,
+              retryCount: message.retryCount,
+              queueName: this.queueName,
+            });
+          }
+        } catch (fErr) {
+          hasTechnicalSettlementError = true;
+          technicalSettlementError = fErr;
+        }
+
+        throw composeBridgeAuthorityLossError(authorityError, {
+          hasCallbackError,
+          callbackError,
+          hasReleaseError: false,
+          hasTechnicalSettlementError,
+          technicalSettlementError,
+        });
+      }
+
+      if (authorityError.reason === 'technical_attempt_stale') {
+        // Attempt técnica do pg-boss ficou stale (affected=0 no touch):
+        // Liberar claim canônico com fence exata se ainda válido
+        // NÃO complete
+        // NÃO fail attempt nova (tentativa técnica já está stale/avançou)
+        let releaseError: unknown = undefined;
+        let hasReleaseError = false;
+        try {
+          await this.claimStore.releaseClaim({
+            jobId,
+            workerId: this.options.workerId,
+            fencingToken: claim.fencingToken,
+          });
+        } catch (rErr) {
+          hasReleaseError = true;
+          releaseError = rErr;
+        }
+
+        throw composeBridgeAuthorityLossError(authorityError, {
+          hasCallbackError,
+          callbackError,
+          hasReleaseError,
+          releaseError,
+          hasTechnicalSettlementError: false,
+        });
+      }
+
+      // technical_heartbeat_failure (erro operacional no touch):
+      // Preservar erro, liberar claim canônico se ainda válido, tentar failWakeup fenced
+      let releaseError: unknown = undefined;
+      let hasReleaseError = false;
+      try {
+        await this.claimStore.releaseClaim({
+          jobId,
+          workerId: this.options.workerId,
+          fencingToken: claim.fencingToken,
+        });
+      } catch (rErr) {
+        hasReleaseError = true;
+        releaseError = rErr;
+      }
+
+      let technicalSettlementError: unknown = undefined;
+      let hasTechnicalSettlementError = false;
+      try {
+        const settlement = await this.runtime.failWakeup(this.queueName, target);
+        if (!settlement.settled) {
+          hasTechnicalSettlementError = true;
+          technicalSettlementError = new WorkerBridgeTechnicalStaleError({
+            deliveryId: message.id,
+            retryCount: message.retryCount,
+            queueName: this.queueName,
+          });
+        }
+      } catch (fErr) {
+        hasTechnicalSettlementError = true;
+        technicalSettlementError = fErr;
+      }
+
+      throw composeBridgeAuthorityLossError(authorityError, {
+        hasCallbackError,
+        callbackError,
+        hasReleaseError,
+        releaseError,
+        hasTechnicalSettlementError,
+        technicalSettlementError,
+      });
+    }
+
+    // 9. CENÁRIO B: AUTORIDADE MANTIDA, MAS CALLBACK LANÇOU ERRO
+    if (hasCallbackError) {
       let releaseFailure: BridgeCapturedFailure = { hasError: false };
       try {
         await this.claimStore.releaseClaim({
@@ -307,7 +549,6 @@ export class JobWorkerBridge {
         releaseFailure = { hasError: true, error: err };
       }
 
-      // B. Executar failWakeup fenced da tentativa técnica atual
       let settlementFailure: BridgeCapturedFailure = { hasError: false };
       try {
         const settlement = await this.runtime.failWakeup(this.queueName, target);
@@ -325,11 +566,11 @@ export class JobWorkerBridge {
         settlementFailure = { hasError: true, error: err };
       }
 
-      // C. Propagar erro preservando falhas secundárias
-      throw composeBridgeCallbackError(callbackErr, releaseFailure, settlementFailure);
+      throw composeBridgeCallbackError(callbackError, releaseFailure, settlementFailure);
     }
 
-    // 7. Sucesso do callback: liberar o claim canônico
+    // 10. CENÁRIO C: AUTORIDADE MANTIDA E CALLBACK COM SUCESSO
+    // Release do claim canônico
     try {
       await this.claimStore.releaseClaim({
         jobId,
@@ -337,8 +578,6 @@ export class JobWorkerBridge {
         fencingToken: claim.fencingToken,
       });
     } catch (releaseErr) {
-      // Se release falhar (expirou / fence stale), o worker não tem mais autoridade
-      // Executa failWakeup técnico fenced se possível e propaga o erro
       let settlementFailure: BridgeCapturedFailure = { hasError: false };
       try {
         const settlement = await this.runtime.failWakeup(this.queueName, target);
@@ -358,7 +597,7 @@ export class JobWorkerBridge {
       throw composeBridgeReleaseError(releaseErr, settlementFailure);
     }
 
-    // 8. Se release passou: completar a delivery técnica fenced no pg-boss
+    // Liquidação com completeWakeup fenced no provider
     const settlement = await this.runtime.completeWakeup(this.queueName, target);
     if (!settlement.settled) {
       return Object.freeze({

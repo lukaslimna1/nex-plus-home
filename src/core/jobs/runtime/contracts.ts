@@ -21,6 +21,13 @@ export const PG_BOSS_EXPECTED_SCHEMA_VERSION = 43 as const;
 export const PG_BOSS_DEFAULT_WAKEUP_QUEUE = 'nex_job_wakeup' as const;
 export const PG_BOSS_DEFAULT_BACKEND = 'postgres' as const;
 
+// Constantes congeladas da policy técnica do wake-up pg-boss (0.86C-3D)
+export const PG_BOSS_WAKEUP_RETRY_LIMIT = 2 as const;
+export const PG_BOSS_WAKEUP_RETRY_DELAY_SECONDS = 0 as const;
+export const PG_BOSS_WAKEUP_RETRY_BACKOFF = false as const;
+export const PG_BOSS_WAKEUP_EXPIRE_SECONDS = 900 as const;
+export const PG_BOSS_WAKEUP_HEARTBEAT_SECONDS = 60 as const;
+
 // ============================================================================
 // 2. PAYLOAD CANÔNICO DE WAKE-UP
 // ============================================================================
@@ -40,6 +47,7 @@ export interface JobWakeupPayload {
 
 export interface PgBossRuntimeOptions {
   readonly connectionString: string;
+  readonly bossFactory?: (options: any) => any;
 }
 
 export interface PgBossRuntimeConfig {
@@ -111,6 +119,7 @@ export interface IPgBossRuntime {
     db: PgBossTransactionDb,
   ): Promise<PgBossSendResult>;
   fetchWakeup(queueName: string, batchSize?: number): Promise<readonly PgBossWakeupMessage[]>;
+  touchWakeup(queueName: string, target: PgBossDeliveryAttemptRef): Promise<PgBossSettlementResult>;
   completeWakeup(queueName: string, target: PgBossDeliveryAttemptRef): Promise<PgBossSettlementResult>;
   failWakeup(queueName: string, target: PgBossDeliveryAttemptRef): Promise<PgBossSettlementResult>;
   getSchemaVersion(): Promise<number | null>;
