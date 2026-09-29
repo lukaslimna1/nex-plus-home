@@ -28,6 +28,12 @@ export interface JobStoredRecord {
   readonly appendSequence: string;
 }
 
+export interface PgQueryConfig {
+  text: string;
+  values?: unknown[];
+  queryMode?: 'extended';
+}
+
 export interface PgQueryResult<T = any> {
   rows: T[];
   rowCount: number | null;
@@ -35,10 +41,12 @@ export interface PgQueryResult<T = any> {
 
 export interface PgExecutor {
   query<T = any>(sql: string, params?: unknown[]): Promise<PgQueryResult<T>>;
+  query<T = any>(config: PgQueryConfig): Promise<PgQueryResult<T>>;
 }
 
 export interface PgTransactionalClient {
   query<T = any>(sql: string, params?: unknown[]): Promise<PgQueryResult<T>>;
+  query<T = any>(config: PgQueryConfig): Promise<PgQueryResult<T>>;
   release(): void;
 }
 

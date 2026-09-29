@@ -34,7 +34,6 @@ import {
 import {
   createJobAndWakeup,
   applyJobEventAndWakeup,
-  adaptTransactionalClientToPgBossDb,
 } from '../coordinator';
 import {
   JobWorkerBridge,
@@ -311,27 +310,6 @@ describe('Atomic Enqueue & Worker Bridge Unit Tests (0.86C-3C)', () => {
   // 3. COORDINATOR ATÔMICO UNIT TESTS
   // ==========================================================================
   describe('Coordinator Atômico · createJobAndWakeup & applyJobEventAndWakeup', () => {
-    it('adaptTransactionalClientToPgBossDb delega query para executeSql corretamente', async () => {
-      let queriedSql = '';
-      let queriedParams: unknown[] | undefined;
-
-      const mockClient = {
-        async query(sql: string, params?: unknown[]) {
-          queriedSql = sql;
-          queriedParams = params;
-          return { rows: [{ val: 42 }], rowCount: 1 };
-        },
-        release() {},
-      } as any;
-
-      const txDb = adaptTransactionalClientToPgBossDb(mockClient);
-      const res = await txDb.executeSql('SELECT $1::int as val', [42]);
-
-      assert.equal(queriedSql, 'SELECT $1::int as val');
-      assert.deepEqual(queriedParams, [42]);
-      assert.deepEqual(res.rows, [{ val: 42 }]);
-      assert.equal(res.rowCount, 1);
-    });
 
     it('createJobAndWakeup lança SEND_FAILURE e provoca rollback se messageId for null', async () => {
       const sampleJob = createSampleJobState();
@@ -838,6 +816,10 @@ describe('Atomic Enqueue & Worker Bridge Unit Tests (0.86C-3C)', () => {
         'ABORT',
         'abort',
         'SET TRANSACTION ISOLATION LEVEL SERIALIZABLE',
+        "PREPARE TRANSACTION 'nex_test'",
+        "prepare transaction 'nex_test'",
+        "/* comment */ PREPARE TRANSACTION 'nex_test'",
+        "-- comment\nPREPARE TRANSACTION 'nex_test'",
         '/* comment */ COMMIT',
         '-- single line comment\nROLLBACK',
       ];
@@ -881,6 +863,71 @@ describe('Atomic Enqueue & Worker Bridge Unit Tests (0.86C-3C)', () => {
       assert.doesNotThrow(() => {
         assertNoTransactionControlSql("INSERT INTO logs (message) VALUES ('rollback initiated')");
       });
+      assert.doesNotThrow(() => {
+        assertNoTransactionControlSql("PREPARE my_plan AS SELECT 1");
+      });
+      assert.doesNotThrow(() => {
+        assertNoTransactionControlSql("SELECT 'a;b'");
+      });
+      assert.doesNotThrow(() => {
+        assertNoTransactionControlSql("SELECT 1;");
+      });
+    });
+
+    it('delega ao client forçando queryMode: extended tanto sem parâmetros quanto com parâmetros', async () => {
+      const recordedConfigs: unknown[] = [];
+      const fakeClient = {
+        async query(config: any) {
+          recordedConfigs.push(config);
+          return { rows: [{ val: 1 }], rowCount: 1 };
+        },
+        release() {},
+      };
+      const fakeExecutor = {
+        async connect() {
+          return fakeClient;
+        },
+      };
+
+      const store = new PostgresJobStore(fakeExecutor as any);
+
+      await store.withWriteTransaction(async (scope) => {
+        // Sem parâmetros (values undefined)
+        await scope.transactionDb.executeSql('SELECT 1');
+
+        // Com parâmetros vazios (values = [])
+        await scope.transactionDb.executeSql('SELECT 2', []);
+
+        // Com parâmetros preenchidos
+        await scope.transactionDb.executeSql('SELECT $1::int', [42]);
+      });
+
+      assert.equal(recordedConfigs.length, 5);
+
+      // 1. Início gerido pelo JobStore
+      assert.equal(recordedConfigs[0], 'BEGIN');
+
+      // 2. Chamadas da façade transactionDb sempre forçadas para queryMode: extended
+      assert.deepEqual(recordedConfigs[1], {
+        text: 'SELECT 1',
+        values: [],
+        queryMode: 'extended',
+      });
+
+      assert.deepEqual(recordedConfigs[2], {
+        text: 'SELECT 2',
+        values: [],
+        queryMode: 'extended',
+      });
+
+      assert.deepEqual(recordedConfigs[3], {
+        text: 'SELECT $1::int',
+        values: [42],
+        queryMode: 'extended',
+      });
+
+      // 3. Término bem-sucedido gerido pelo JobStore
+      assert.equal(recordedConfigs[4], 'COMMIT');
     });
   });
 

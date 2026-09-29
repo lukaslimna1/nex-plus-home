@@ -135,6 +135,12 @@ export function assertNoTransactionControlSql(sql: string): void {
       `[PostgresJobStore] Transaction control statement 'SET TRANSACTION' is prohibited in transactionDb façade. Transaction boundary is owned exclusively by JobStore.`,
     );
   }
+
+  if (firstToken === 'PREPARE' && secondToken === 'TRANSACTION') {
+    throw new Error(
+      `[PostgresJobStore] Transaction control statement 'PREPARE TRANSACTION' is prohibited in transactionDb façade. Transaction boundary is owned exclusively by JobStore.`,
+    );
+  }
 }
 
 export class PostgresJobStore implements DurableJobStore {
@@ -203,7 +209,11 @@ export class PostgresJobStore implements DurableJobStore {
       const transactionDb: PostgresTransactionDb = {
         async executeSql(text: string, values?: unknown[]) {
           assertNoTransactionControlSql(text);
-          const result = await client.query(text, values);
+          const result = await client.query({
+            text,
+            values: values ?? [],
+            queryMode: 'extended',
+          });
           return {
             rows: result.rows,
             rowCount: result.rowCount,

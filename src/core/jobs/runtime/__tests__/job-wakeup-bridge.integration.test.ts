@@ -31,7 +31,6 @@ import {
 import {
   createJobAndWakeup,
   applyJobEventAndWakeup,
-  adaptTransactionalClientToPgBossDb,
 } from '../coordinator';
 import {
   JobWorkerBridge,
@@ -706,5 +705,85 @@ describe('Safe Wake-Up & Worker Bridge — PostgreSQL Integration (0.86C-3C)', {
     assert.equal(headAfter.updated_at.toISOString(), headBefore.updated_at.toISOString());
     assert.deepEqual(headAfter.state_payload, headBefore.state_payload);
     assert.equal(eventsAfter.length, eventsBefore.length);
+  });
+
+  // ==========================================================================
+  // C14. MULTI-STATEMENT COMMIT BYPASS REJECTED (F-3C-01-R1)
+  // ==========================================================================
+  it('C14: tentativa de multi-statement com COMMIT via transactionDb é rejeitada pelo extended protocol e desfaz escrita anterior via rollback', async () => {
+    const jobId = 'job_c14_multistatement_commit_bypass';
+    const params: CreateJobParams = {
+      jobId,
+      createdAt: T0,
+      actor: { kind: 'system', component: 'orchestrator' },
+    };
+
+    await assert.rejects(
+      async () => {
+        await jobStore.withWriteTransaction(async (scope) => {
+          // 1. Escrita anterior legítima na transação
+          await scope.createJob(params);
+
+          // 2. Tentativa de bypass multi-statement com COMMIT posterior
+          await scope.transactionDb.executeSql('SELECT 1; COMMIT');
+        });
+      },
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        // O extended query protocol do PostgreSQL rejeita múltiplos comandos
+        assert.ok(
+          err.message.includes('não é possível inserir múltiplos comandos') ||
+          err.message.includes('cannot insert multiple commands') ||
+          (err as any).code === '42601',
+          `Esperado erro de múltiplos comandos do PostgreSQL (42601). Recebido: ${err.message}`,
+        );
+        return true;
+      },
+    );
+
+    // Prova que a transação NÃO foi commitada prematuramente e sofreu rollback integral
+    const headRes = await pool.query('SELECT 1 FROM nex_job_heads WHERE job_id = $1', [jobId]);
+    assert.equal(headRes.rows.length, 0, 'nex_job_heads deve estar vazio após rollback');
+
+    const eventRes = await pool.query('SELECT 1 FROM nex_job_events WHERE job_id = $1', [jobId]);
+    assert.equal(eventRes.rows.length, 0, 'nex_job_events deve estar vazio após rollback');
+  });
+
+  // ==========================================================================
+  // C15. MULTI-STATEMENT ROLLBACK BYPASS REJECTED (F-3C-01-R1)
+  // ==========================================================================
+  it('C15: tentativa de multi-statement com ROLLBACK via transactionDb é rejeitada e JobStore continua único owner de rollback', async () => {
+    const jobId = 'job_c15_multistatement_rollback_bypass';
+    const params: CreateJobParams = {
+      jobId,
+      createdAt: T0,
+      actor: { kind: 'system', component: 'orchestrator' },
+    };
+
+    await assert.rejects(
+      async () => {
+        await jobStore.withWriteTransaction(async (scope) => {
+          await scope.createJob(params);
+          await scope.transactionDb.executeSql('SELECT 1; ROLLBACK');
+        });
+      },
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(
+          err.message.includes('não é possível inserir múltiplos comandos') ||
+          err.message.includes('cannot insert multiple commands') ||
+          (err as any).code === '42601',
+          `Esperado erro de múltiplos comandos do PostgreSQL (42601). Recebido: ${err.message}`,
+        );
+        return true;
+      },
+    );
+
+    // Prova que nenhuma escrita persistiu e o JobStore controlou o rollback
+    const headRes = await pool.query('SELECT 1 FROM nex_job_heads WHERE job_id = $1', [jobId]);
+    assert.equal(headRes.rows.length, 0);
+
+    const eventRes = await pool.query('SELECT 1 FROM nex_job_events WHERE job_id = $1', [jobId]);
+    assert.equal(eventRes.rows.length, 0);
   });
 });

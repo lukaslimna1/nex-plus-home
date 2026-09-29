@@ -11,7 +11,6 @@
 
 import type { JobState, JobEvent, CreateJobParams } from '../contracts';
 import type { PostgresJobStore } from '../persistence/postgres';
-import type { PgTransactionalClient } from '../persistence/contracts';
 import {
   PG_BOSS_DEFAULT_WAKEUP_QUEUE,
   type IPgBossRuntime,
@@ -29,24 +28,6 @@ export interface AtomicJobWakeupResult {
 
 export interface AtomicEnqueueOptions {
   readonly queueName?: string;
-}
-
-/**
- * Adapta com fidelidade um PgTransactionalClient da persistência PostgreSQL
- * para a interface PgBossTransactionDb exigida pelo runtime pg-boss.
- */
-export function adaptTransactionalClientToPgBossDb(
-  client: PgTransactionalClient,
-): PgBossTransactionDb {
-  return {
-    async executeSql(text: string, values?: unknown[]) {
-      const result = await client.query(text, values);
-      return {
-        rows: result.rows,
-        rowCount: result.rowCount,
-      };
-    },
-  };
 }
 
 /**
