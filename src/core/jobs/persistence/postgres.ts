@@ -41,13 +41,100 @@ import {
 } from './serialization';
 
 /**
+ * Façade de banco de dados estritamente delimitada ao escopo transacional (0.86C-3C / F-3C-01).
+ * Não expõe handles de conexão, release, end nem operações de controle transacional.
+ */
+export interface PostgresTransactionDb {
+  executeSql(
+    text: string,
+    values?: unknown[],
+  ): Promise<{ rows: any[]; rowCount: number | null }>;
+}
+
+/**
  * Escopo transacional seguro exposto pelo PostgresJobStore (0.86C-3C).
  * Permite coordenar escrita no JobStore e enfileiramento na MESMA transação PostgreSQL.
+ * O PostgresJobStore é o ÚNICO owner de BEGIN, COMMIT, ROLLBACK e release da conexão.
  */
 export interface PostgresJobStoreWriteTransactionScope {
   createJob(params: CreateJobParams): Promise<JobState>;
   applyJobEvent(event: JobEvent, expectedRevision: number): Promise<JobState>;
-  readonly client: PgTransactionalClient;
+  readonly transactionDb: PostgresTransactionDb;
+}
+
+/**
+ * Validação fail-closed que proíbe comandos de controle transacional na transactionDb façade (F-3C-01).
+ * Garante que o consumidor do seam não execute COMMIT, ROLLBACK, BEGIN, SAVEPOINT, etc.,
+ * preservando a autoridade transacional exclusiva do PostgresJobStore.
+ */
+export function assertNoTransactionControlSql(sql: string): void {
+  if (typeof sql !== 'string') {
+    throw new Error('[PostgresJobStore] SQL command must be a string.');
+  }
+
+  // Remove espaços em branco e comentários SQL no início (-- e /* ... */)
+  let cleaned = sql.trim();
+  while (cleaned.startsWith('--') || cleaned.startsWith('/*')) {
+    if (cleaned.startsWith('--')) {
+      const newlineIdx = cleaned.indexOf('\n');
+      if (newlineIdx === -1) {
+        cleaned = '';
+        break;
+      }
+      cleaned = cleaned.slice(newlineIdx + 1).trim();
+    } else if (cleaned.startsWith('/*')) {
+      const closeIdx = cleaned.indexOf('*/');
+      if (closeIdx === -1) {
+        throw new Error('[PostgresJobStore] Malformed SQL: unclosed comment block.');
+      }
+      cleaned = cleaned.slice(closeIdx + 2).trim();
+    }
+  }
+
+  if (cleaned.length === 0) {
+    return;
+  }
+
+  const match = cleaned.match(/^([A-Za-z_]+)(?:\s+([A-Za-z_]+))?/);
+  if (!match) {
+    return;
+  }
+
+  const firstToken = match[1].toUpperCase();
+  const secondToken = match[2] ? match[2].toUpperCase() : '';
+
+  const forbiddenFirstTokens = new Set([
+    'BEGIN',
+    'COMMIT',
+    'ROLLBACK',
+    'END',
+    'ABORT',
+    'SAVEPOINT',
+  ]);
+
+  if (forbiddenFirstTokens.has(firstToken)) {
+    throw new Error(
+      `[PostgresJobStore] Transaction control statement '${firstToken}' is prohibited in transactionDb façade. Transaction boundary is owned exclusively by JobStore.`,
+    );
+  }
+
+  if (firstToken === 'START') {
+    throw new Error(
+      `[PostgresJobStore] Transaction control statement 'START${secondToken ? ' ' + secondToken : ''}' is prohibited in transactionDb façade. Transaction boundary is owned exclusively by JobStore.`,
+    );
+  }
+
+  if (firstToken === 'RELEASE') {
+    throw new Error(
+      `[PostgresJobStore] Transaction control statement 'RELEASE${secondToken ? ' ' + secondToken : ''}' is prohibited in transactionDb façade. Transaction boundary is owned exclusively by JobStore.`,
+    );
+  }
+
+  if (firstToken === 'SET' && secondToken === 'TRANSACTION') {
+    throw new Error(
+      `[PostgresJobStore] Transaction control statement 'SET TRANSACTION' is prohibited in transactionDb façade. Transaction boundary is owned exclusively by JobStore.`,
+    );
+  }
 }
 
 export class PostgresJobStore implements DurableJobStore {
@@ -113,11 +200,22 @@ export class PostgresJobStore implements DurableJobStore {
     operation: (scope: PostgresJobStoreWriteTransactionScope) => Promise<T>,
   ): Promise<T> {
     return await this.withTransaction(async (client) => {
+      const transactionDb: PostgresTransactionDb = {
+        async executeSql(text: string, values?: unknown[]) {
+          assertNoTransactionControlSql(text);
+          const result = await client.query(text, values);
+          return {
+            rows: result.rows,
+            rowCount: result.rowCount,
+          };
+        },
+      };
+
       const scope: PostgresJobStoreWriteTransactionScope = {
         createJob: (params) => this.executeCreateJob(client, params),
         applyJobEvent: (event, expectedRevision) =>
           this.executeApplyJobEvent(client, event, expectedRevision),
-        client,
+        transactionDb,
       };
       return await operation(scope);
     });

@@ -8,7 +8,11 @@ import assert from 'node:assert/strict';
 
 import type { JobState, JobEvent, CreateJobParams } from '../../contracts';
 import type { DurableJobStore } from '../../persistence/contracts';
-import type { PostgresJobStore, PostgresJobStoreWriteTransactionScope } from '../../persistence/postgres';
+import {
+  PostgresJobStore,
+  assertNoTransactionControlSql,
+  type PostgresJobStoreWriteTransactionScope,
+} from '../../persistence/postgres';
 import type {
   JobClaimStore,
   JobClaimSnapshot,
@@ -35,6 +39,7 @@ import {
 import {
   JobWorkerBridge,
   WorkerBridgeError,
+  WorkerBridgeTechnicalStaleError,
   composeBridgeCallbackError,
   composeBridgeReleaseError,
 } from '../worker-bridge';
@@ -340,11 +345,10 @@ describe('Atomic Enqueue & Worker Bridge Unit Tests (0.86C-3C)', () => {
         async applyJobEvent() {
           return sampleJob;
         },
-        client: {
-          async query() {
+        transactionDb: {
+          async executeSql() {
             return { rows: [], rowCount: 0 };
           },
-          release() {},
         },
       };
 
@@ -395,11 +399,10 @@ describe('Atomic Enqueue & Worker Bridge Unit Tests (0.86C-3C)', () => {
           applyEventCalled = true;
           return sampleJob;
         },
-        client: {
-          async query() {
+        transactionDb: {
+          async executeSql() {
             return { rows: [], rowCount: 0 };
           },
-          release() {},
         },
       };
 
@@ -753,6 +756,429 @@ describe('Atomic Enqueue & Worker Bridge Unit Tests (0.86C-3C)', () => {
       assert.ok(composed.message.includes('Claim was stolen'));
       assert.ok(composed.message.includes('Queue connection reset'));
       assert.ok(composed.cause instanceof AggregateError);
+    });
+  });
+
+  // ==========================================================================
+  // 5. TRANSACTION BOUNDARY & FAÇADE TESTS (F-3C-01)
+  // ==========================================================================
+  describe('PostgresJobStoreWriteTransactionScope & transactionDb façade (F-3C-01)', () => {
+    it('scope entregue ao callback não possui release, client, connect ou end', async () => {
+      const fakeClient = {
+        async query() {
+          return { rows: [], rowCount: 0 };
+        },
+        release() {},
+      };
+      const fakeExecutor = {
+        async connect() {
+          return fakeClient;
+        },
+      };
+
+      const store = new PostgresJobStore(fakeExecutor as any);
+
+      await store.withWriteTransaction(async (scope) => {
+        // 1. Prova que client NÃO é exposto
+        assert.equal((scope as unknown as Record<string, unknown>).client, undefined);
+
+        // 2. Prova que release NÃO existe no scope
+        assert.equal((scope as unknown as Record<string, unknown>).release, undefined);
+
+        // 3. Prova que connect NÃO existe no scope
+        assert.equal((scope as unknown as Record<string, unknown>).connect, undefined);
+
+        // 4. Prova que end NÃO existe no scope
+        assert.equal((scope as unknown as Record<string, unknown>).end, undefined);
+
+        // 5. Prova que transactionDb existe e expõe somente executeSql
+        assert.ok(scope.transactionDb);
+        assert.equal(typeof scope.transactionDb.executeSql, 'function');
+        assert.equal((scope.transactionDb as unknown as Record<string, unknown>).release, undefined);
+        assert.equal((scope.transactionDb as unknown as Record<string, unknown>).end, undefined);
+        assert.equal((scope.transactionDb as unknown as Record<string, unknown>).client, undefined);
+      });
+    });
+
+    it('rejeita comandos de controle transacional (COMMIT, ROLLBACK, BEGIN, START, SAVEPOINT, RELEASE, SET TRANSACTION) antes de chamar o PG client', async () => {
+      let clientQueryCalls = 0;
+      const fakeClient = {
+        async query() {
+          clientQueryCalls++;
+          return { rows: [], rowCount: 0 };
+        },
+        release() {},
+      };
+      const fakeExecutor = {
+        async connect() {
+          return fakeClient;
+        },
+      };
+
+      const store = new PostgresJobStore(fakeExecutor as any);
+
+      const forbiddenCommands = [
+        'COMMIT',
+        'commit',
+        '  COMMIT  ',
+        'COMMIT;',
+        'ROLLBACK',
+        'rollback',
+        'ROLLBACK WORK',
+        'ROLLBACK TO SAVEPOINT sp1',
+        'BEGIN',
+        'begin',
+        'START TRANSACTION',
+        'start transaction read write',
+        'SAVEPOINT sp1',
+        'RELEASE SAVEPOINT sp1',
+        'RELEASE sp1',
+        'END',
+        'end',
+        'ABORT',
+        'abort',
+        'SET TRANSACTION ISOLATION LEVEL SERIALIZABLE',
+        '/* comment */ COMMIT',
+        '-- single line comment\nROLLBACK',
+      ];
+
+      await store.withWriteTransaction(async (scope) => {
+        const baselineQueries = clientQueryCalls;
+
+        for (const cmd of forbiddenCommands) {
+          await assert.rejects(
+            async () => {
+              await scope.transactionDb.executeSql(cmd);
+            },
+            (err: unknown) => {
+              assert.ok(err instanceof Error);
+              assert.ok(
+                err.message.includes('prohibited in transactionDb façade'),
+                `Esperado erro proibindo controle transacional para: ${cmd}. Recebido: ${err.message}`,
+              );
+              return true;
+            },
+          );
+        }
+
+        // Prova que NENHUM desses comandos chegou ao client.query!
+        assert.equal(clientQueryCalls, baselineQueries);
+
+        // Prova que comandos SQL normais passam normalmente
+        const validRes = await scope.transactionDb.executeSql('SELECT 1');
+        assert.ok(validRes);
+        assert.equal(clientQueryCalls, baselineQueries + 1);
+      });
+    });
+
+    it('assertNoTransactionControlSql não bloqueia queries legítimas contendo palavras-chave em strings ou colunas', () => {
+      assert.doesNotThrow(() => {
+        assertNoTransactionControlSql("SELECT * FROM jobs WHERE status = 'COMMIT'");
+      });
+      assert.doesNotThrow(() => {
+        assertNoTransactionControlSql("UPDATE jobs SET commit_hash = 'abcdef' WHERE id = 1");
+      });
+      assert.doesNotThrow(() => {
+        assertNoTransactionControlSql("INSERT INTO logs (message) VALUES ('rollback initiated')");
+      });
+    });
+  });
+
+  // ==========================================================================
+  // 6. TECHNICAL STALE ON FAILURE PATHS (F-3C-02)
+  // ==========================================================================
+  describe('WorkerBridge Technical Stale on Failure Paths (F-3C-02)', () => {
+    it('quando callback falha e failWakeup retorna affected=0 (stale): preserva erro primário do callback e anexa WorkerBridgeTechnicalStaleError', async () => {
+      const sampleJob = createSampleJobState();
+      const sampleClaim = createSampleClaimSnapshot();
+
+      const mockRuntime = {
+        async fetchWakeup(): Promise<readonly PgBossWakeupMessage[]> {
+          return [
+            {
+              id: 'deliv_stale_callback_fail',
+              name: PG_BOSS_DEFAULT_WAKEUP_QUEUE,
+              data: { jobId: 'job_01J8NEXPLUS001' },
+              retryCount: 2,
+            },
+          ];
+        },
+        async failWakeup(): Promise<PgBossSettlementResult> {
+          return { settled: false, affected: 0 };
+        },
+      } as unknown as IPgBossRuntime;
+
+      const mockJobStore = {
+        async rehydrateJob(): Promise<JobState | undefined> {
+          return sampleJob;
+        },
+      } as unknown as DurableJobStore;
+
+      const mockClaimStore = {
+        async acquireClaim(): Promise<AcquireJobClaimResult> {
+          return { acquired: true, claim: sampleClaim };
+        },
+        async releaseClaim() {
+          return {
+            ...sampleClaim,
+            status: 'released' as const,
+            releasedAt: '2026-09-28T22:00:05Z',
+          };
+        },
+      } as unknown as JobClaimStore;
+
+      const bridge = new JobWorkerBridge(mockRuntime, mockJobStore, mockClaimStore, {
+        workerId: 'worker_alpha',
+        leaseDurationMs: 30000,
+      });
+
+      const callbackError = new Error('Callback business computation crashed');
+
+      await assert.rejects(
+        async () => {
+          await bridge.processNext(async () => {
+            throw callbackError;
+          });
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof WorkerBridgeError);
+          assert.equal(err.primaryError, callbackError);
+          assert.equal(err.hasReleaseError, false);
+          assert.equal(err.hasTechnicalSettlementError, true);
+          assert.ok(err.technicalSettlementError instanceof WorkerBridgeTechnicalStaleError);
+          assert.equal(err.technicalSettlementError.deliveryId, 'deliv_stale_callback_fail');
+          assert.equal(err.technicalSettlementError.retryCount, 2);
+          assert.equal(err.technicalSettlementError.queueName, PG_BOSS_DEFAULT_WAKEUP_QUEUE);
+          assert.ok(err.message.includes('Technical attempt is stale'));
+          return true;
+        },
+      );
+    });
+
+    it('quando callback tem sucesso mas release falha e failWakeup retorna affected=0 (stale): preserva erro primário do release e anexa WorkerBridgeTechnicalStaleError', async () => {
+      const sampleJob = createSampleJobState();
+      const sampleClaim = createSampleClaimSnapshot();
+
+      const mockRuntime = {
+        async fetchWakeup(): Promise<readonly PgBossWakeupMessage[]> {
+          return [
+            {
+              id: 'deliv_stale_release_fail',
+              name: PG_BOSS_DEFAULT_WAKEUP_QUEUE,
+              data: { jobId: 'job_01J8NEXPLUS001' },
+              retryCount: 0,
+            },
+          ];
+        },
+        async failWakeup(): Promise<PgBossSettlementResult> {
+          return { settled: false, affected: 0 };
+        },
+      } as unknown as IPgBossRuntime;
+
+      const mockJobStore = {
+        async rehydrateJob(): Promise<JobState | undefined> {
+          return sampleJob;
+        },
+      } as unknown as DurableJobStore;
+
+      const releaseError = new Error('Claim fence mismatch on release');
+      const mockClaimStore = {
+        async acquireClaim(): Promise<AcquireJobClaimResult> {
+          return { acquired: true, claim: sampleClaim };
+        },
+        async releaseClaim() {
+          throw releaseError;
+        },
+      } as unknown as JobClaimStore;
+
+      const bridge = new JobWorkerBridge(mockRuntime, mockJobStore, mockClaimStore, {
+        workerId: 'worker_alpha',
+        leaseDurationMs: 30000,
+      });
+
+      await assert.rejects(
+        async () => {
+          await bridge.processNext(async () => {
+            // callback succeeds
+          });
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof WorkerBridgeError);
+          assert.equal(err.primaryError, releaseError);
+          assert.equal(err.hasReleaseError, false);
+          assert.equal(err.hasTechnicalSettlementError, true);
+          assert.ok(err.technicalSettlementError instanceof WorkerBridgeTechnicalStaleError);
+          assert.equal(err.technicalSettlementError.deliveryId, 'deliv_stale_release_fail');
+          assert.equal(err.technicalSettlementError.retryCount, 0);
+          return true;
+        },
+      );
+    });
+  });
+
+  // ==========================================================================
+  // 7. FALSEY ERRORS & EXPLICIT PRESENCE (F-3C-03)
+  // ==========================================================================
+  describe('WorkerBridge Falsey Errors & Explicit Presence (F-3C-03)', () => {
+    it('composeBridgeCallbackError preserva erro secundário quando lançado como false', () => {
+      const primary = new Error('Primary error');
+      const composed = composeBridgeCallbackError(
+        primary,
+        { hasError: true, error: false },
+        { hasError: false },
+      );
+
+      assert.ok(composed instanceof WorkerBridgeError);
+      assert.equal(composed.primaryError, primary);
+      assert.equal(composed.hasReleaseError, true);
+      assert.equal(composed.releaseError, false);
+      assert.equal(composed.hasTechnicalSettlementError, false);
+      assert.ok(composed.message.includes('(release error: false)'));
+    });
+
+    it('composeBridgeCallbackError preserva erro secundário quando lançado como undefined', () => {
+      const primary = new Error('Primary error');
+      const composed = composeBridgeCallbackError(
+        primary,
+        { hasError: false },
+        { hasError: true, error: undefined },
+      );
+
+      assert.ok(composed instanceof WorkerBridgeError);
+      assert.equal(composed.primaryError, primary);
+      assert.equal(composed.hasReleaseError, false);
+      assert.equal(composed.hasTechnicalSettlementError, true);
+      assert.equal(composed.technicalSettlementError, undefined);
+      assert.ok(composed.message.includes('(failWakeup error: undefined)'));
+    });
+
+    it('composeBridgeCallbackError preserva erro secundário quando lançado como 0 ou string vazia', () => {
+      const primary = new Error('Primary error');
+      const composed = composeBridgeCallbackError(
+        primary,
+        { hasError: true, error: 0 },
+        { hasError: true, error: '' },
+      );
+
+      assert.ok(composed instanceof WorkerBridgeError);
+      assert.equal(composed.hasReleaseError, true);
+      assert.equal(composed.releaseError, 0);
+      assert.equal(composed.hasTechnicalSettlementError, true);
+      assert.equal(composed.technicalSettlementError, '');
+    });
+
+    it('WorkerBridge captura e preserva quando o callback lança valor falsey (ex: throw false)', async () => {
+      const sampleJob = createSampleJobState();
+      const sampleClaim = createSampleClaimSnapshot();
+
+      const mockRuntime = {
+        async fetchWakeup(): Promise<readonly PgBossWakeupMessage[]> {
+          return [
+            {
+              id: 'deliv_falsey_callback',
+              name: PG_BOSS_DEFAULT_WAKEUP_QUEUE,
+              data: { jobId: 'job_01J8NEXPLUS001' },
+              retryCount: 0,
+            },
+          ];
+        },
+        async failWakeup(): Promise<PgBossSettlementResult> {
+          return { settled: true, affected: 1 };
+        },
+      } as unknown as IPgBossRuntime;
+
+      const mockJobStore = {
+        async rehydrateJob(): Promise<JobState | undefined> {
+          return sampleJob;
+        },
+      } as unknown as DurableJobStore;
+
+      const mockClaimStore = {
+        async acquireClaim(): Promise<AcquireJobClaimResult> {
+          return { acquired: true, claim: sampleClaim };
+        },
+        async releaseClaim() {
+          return {
+            ...sampleClaim,
+            status: 'released' as const,
+            releasedAt: '2026-09-28T22:00:05Z',
+          };
+        },
+      } as unknown as JobClaimStore;
+
+      const bridge = new JobWorkerBridge(mockRuntime, mockJobStore, mockClaimStore, {
+        workerId: 'worker_alpha',
+        leaseDurationMs: 30000,
+      });
+
+      await assert.rejects(
+        async () => {
+          await bridge.processNext(async () => {
+            throw false;
+          });
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof Error);
+          assert.equal(err.message, 'false');
+          return true;
+        },
+      );
+    });
+
+    it('WorkerBridge captura e preserva valor falsey lançado no release quando callback falha', async () => {
+      const sampleJob = createSampleJobState();
+      const sampleClaim = createSampleClaimSnapshot();
+
+      const mockRuntime = {
+        async fetchWakeup(): Promise<readonly PgBossWakeupMessage[]> {
+          return [
+            {
+              id: 'deliv_falsey_both',
+              name: PG_BOSS_DEFAULT_WAKEUP_QUEUE,
+              data: { jobId: 'job_01J8NEXPLUS001' },
+              retryCount: 0,
+            },
+          ];
+        },
+        async failWakeup(): Promise<PgBossSettlementResult> {
+          return { settled: true, affected: 1 };
+        },
+      } as unknown as IPgBossRuntime;
+
+      const mockJobStore = {
+        async rehydrateJob(): Promise<JobState | undefined> {
+          return sampleJob;
+        },
+      } as unknown as DurableJobStore;
+
+      const mockClaimStore = {
+        async acquireClaim(): Promise<AcquireJobClaimResult> {
+          return { acquired: true, claim: sampleClaim };
+        },
+        async releaseClaim() {
+          throw false;
+        },
+      } as unknown as JobClaimStore;
+
+      const bridge = new JobWorkerBridge(mockRuntime, mockJobStore, mockClaimStore, {
+        workerId: 'worker_alpha',
+        leaseDurationMs: 30000,
+      });
+
+      await assert.rejects(
+        async () => {
+          await bridge.processNext(async () => {
+            throw new Error('primary_callback_fail');
+          });
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof WorkerBridgeError);
+          assert.equal(err.hasReleaseError, true);
+          assert.equal(err.releaseError, false);
+          assert.equal(err.hasTechnicalSettlementError, false);
+          return true;
+        },
+      );
     });
   });
 });

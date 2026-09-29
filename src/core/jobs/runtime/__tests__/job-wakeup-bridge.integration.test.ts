@@ -33,7 +33,11 @@ import {
   applyJobEventAndWakeup,
   adaptTransactionalClientToPgBossDb,
 } from '../coordinator';
-import { JobWorkerBridge } from '../worker-bridge';
+import {
+  JobWorkerBridge,
+  WorkerBridgeError,
+  WorkerBridgeTechnicalStaleError,
+} from '../worker-bridge';
 import { PostgresJobStore } from '../../persistence/postgres';
 import { PostgresJobClaimStore } from '../../claims/postgres';
 import type { CreateJobParams, JobEvent, JobStartedEvent } from '../../contracts';
@@ -176,12 +180,11 @@ describe('Safe Wake-Up & Worker Bridge — PostgreSQL Integration (0.86C-3C)', {
           const job = await scope.createJob(params);
           assert.equal(job.jobId, jobId);
 
-          // 2. Envia mensagem para a fila na mesma transação
-          const txDb = adaptTransactionalClientToPgBossDb(scope.client);
+          // 2. Envia mensagem para a fila na mesma transação usando a façade transactionDb
           const sendRes = await runtime.sendWakeupInTransaction(
             PG_BOSS_DEFAULT_WAKEUP_QUEUE,
             { jobId },
-            txDb,
+            scope.transactionDb,
           );
           generatedMessageId = sendRes.messageId;
           assert.ok(generatedMessageId);
@@ -603,6 +606,14 @@ describe('Safe Wake-Up & Worker Bridge — PostgreSQL Integration (0.86C-3C)', {
     assert.equal(staleResult.settled, false);
     assert.equal(staleResult.affected, 0);
 
+    // Tentativa antiga de failWakeup com retryCount = 0 também retorna affected=0
+    const staleFailResult = await runtime.failWakeup(PG_BOSS_DEFAULT_WAKEUP_QUEUE, {
+      id: sendRes.messageId!,
+      retryCount: 0,
+    });
+    assert.equal(staleFailResult.settled, false);
+    assert.equal(staleFailResult.affected, 0);
+
     // Tentativa com retryCount correto = 1
     const freshResult = await runtime.completeWakeup(PG_BOSS_DEFAULT_WAKEUP_QUEUE, {
       id: sendRes.messageId!,
@@ -611,6 +622,52 @@ describe('Safe Wake-Up & Worker Bridge — PostgreSQL Integration (0.86C-3C)', {
 
     assert.equal(freshResult.settled, true);
     assert.equal(freshResult.affected, 1);
+
+    // Prova ponta-a-ponta via JobWorkerBridge:
+    // Callback falha, mas a attempt técnica ficou stale antes do settlement de falha
+    const bridgeJobId = 'job_c12_bridge_technical_stale';
+    await createJobAndWakeup(jobStore, runtime, {
+      jobId: bridgeJobId,
+      createdAt: T0,
+      actor: { kind: 'system', component: 'orchestrator' },
+    });
+
+    const bridge = new JobWorkerBridge(runtime, jobStore, claimStore, {
+      workerId: 'worker_c12_stale_test',
+      leaseDurationMs: 30000,
+    });
+
+    const callbackError = new Error('simulated_failure_during_stale_test');
+
+    await assert.rejects(
+      async () => {
+        await bridge.processNext(async () => {
+          // Simula que durante o callback o pg-boss avançou o retry_count da mensagem
+          await pool.query(
+            "UPDATE pgboss.job SET retry_count = 5, state = 'active' WHERE data->>'jobId' = $1",
+            [bridgeJobId],
+          );
+          throw callbackError;
+        });
+      },
+      (err: unknown) => {
+        assert.ok(err instanceof WorkerBridgeError);
+        assert.equal(err.primaryError, callbackError);
+        assert.equal(err.hasReleaseError, false);
+        assert.equal(err.hasTechnicalSettlementError, true);
+        assert.ok(err.technicalSettlementError instanceof WorkerBridgeTechnicalStaleError);
+        assert.equal(err.technicalSettlementError.retryCount, 0);
+        return true;
+      },
+    );
+
+    // Confirma que a tentativa mais nova (retry_count = 5) permaneceu intacta
+    const finalJobRes = await pool.query(
+      "SELECT retry_count, state FROM pgboss.job WHERE data->>'jobId' = $1",
+      [bridgeJobId],
+    );
+    assert.equal(finalJobRes.rows[0].retry_count, 5);
+    assert.equal(finalJobRes.rows[0].state, 'active');
   });
 
   // ==========================================================================

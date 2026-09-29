@@ -65,14 +65,11 @@ export async function createJobAndWakeup(
     // 1. Criação do Job na revision 1
     const job = await scope.createJob(params);
 
-    // 2. Adaptação do client transacional para o pg-boss
-    const txDb = adaptTransactionalClientToPgBossDb(scope.client);
-
-    // 3. Emissão de wake-up usando o mesmo client transacional
+    // 2. Emissão de wake-up usando a façade restrita transactionDb (mesma transação PostgreSQL)
     const sendResult = await runtime.sendWakeupInTransaction(
       queueName,
       { jobId: job.jobId },
-      txDb,
+      scope.transactionDb,
     );
 
     // 4. Validação estrita de messageId material (fail-closed se nulo)
@@ -107,14 +104,11 @@ export async function applyJobEventAndWakeup(
     // 1. Aplicação da transição de estado e inserção do novo evento histórico
     const job = await scope.applyJobEvent(event, expectedRevision);
 
-    // 2. Adaptação do client transacional para o pg-boss
-    const txDb = adaptTransactionalClientToPgBossDb(scope.client);
-
-    // 3. Emissão de wake-up usando o mesmo client transacional
+    // 2. Emissão de wake-up usando a façade restrita transactionDb (mesma transação PostgreSQL)
     const sendResult = await runtime.sendWakeupInTransaction(
       queueName,
       { jobId: job.jobId },
-      txDb,
+      scope.transactionDb,
     );
 
     // 4. Validação estrita de messageId material (fail-closed se nulo)

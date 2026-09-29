@@ -50,25 +50,65 @@ export interface WorkerBridgeOptions {
 }
 
 /**
+ * Erro estruturado indicando que a tentativa técnica do wake-up no pg-boss
+ * ficou stale (affected=0 / settled=false) e a liquidação de falha não foi aplicada (F-3C-02).
+ * Não expõe secrets nem payloads arbitrários.
+ */
+export class WorkerBridgeTechnicalStaleError extends Error {
+  readonly deliveryId: string;
+  readonly retryCount: number;
+  readonly queueName: string;
+
+  constructor(options: { deliveryId: string; retryCount: number; queueName: string }) {
+    super(
+      `[WorkerBridge] Technical attempt is stale on queue '${options.queueName}' (deliveryId: '${options.deliveryId}', retryCount: ${options.retryCount}). Failure settlement was not applied.`,
+    );
+    this.name = 'WorkerBridgeTechnicalStaleError';
+    this.deliveryId = options.deliveryId;
+    this.retryCount = options.retryCount;
+    this.queueName = options.queueName;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * Representação explícita de falha capturada, imune a valores falsey (F-3C-03).
+ */
+export interface BridgeCapturedFailure {
+  readonly hasError: boolean;
+  readonly error?: unknown;
+}
+
+export interface WorkerBridgeErrorOptions {
+  readonly primaryError: unknown;
+  readonly hasReleaseError?: boolean;
+  readonly releaseError?: unknown;
+  readonly hasTechnicalSettlementError?: boolean;
+  readonly technicalSettlementError?: unknown;
+}
+
+/**
  * Erro composto do WorkerBridge para preservar falha primária juntamente com
- * falhas secundárias de release e settlement técnico (P-M2 pattern).
+ * falhas secundárias de release e settlement técnico (P-M2 pattern / F-3C-02 / F-3C-03).
  */
 export class WorkerBridgeError extends Error {
   readonly primaryError: unknown;
+  readonly hasReleaseError: boolean;
   readonly releaseError?: unknown;
+  readonly hasTechnicalSettlementError: boolean;
   readonly technicalSettlementError?: unknown;
 
-  constructor(
-    message: string,
-    options: {
-      primaryError: unknown;
-      releaseError?: unknown;
-      technicalSettlementError?: unknown;
-    },
-  ) {
+  constructor(message: string, options: WorkerBridgeErrorOptions) {
     const causes: unknown[] = [options.primaryError];
-    if (options.releaseError) causes.push(options.releaseError);
-    if (options.technicalSettlementError) causes.push(options.technicalSettlementError);
+    const hasRelease =
+      options.hasReleaseError ??
+      ('releaseError' in options && options.releaseError !== undefined);
+    const hasTech =
+      options.hasTechnicalSettlementError ??
+      ('technicalSettlementError' in options && options.technicalSettlementError !== undefined);
+
+    if (hasRelease) causes.push(options.releaseError);
+    if (hasTech) causes.push(options.technicalSettlementError);
 
     const cause =
       typeof AggregateError !== 'undefined' && causes.length > 1
@@ -78,57 +118,89 @@ export class WorkerBridgeError extends Error {
     super(message, { cause });
     this.name = 'WorkerBridgeError';
     this.primaryError = options.primaryError;
+    this.hasReleaseError = hasRelease;
     this.releaseError = options.releaseError;
+    this.hasTechnicalSettlementError = hasTech;
     this.technicalSettlementError = options.technicalSettlementError;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
 
+function formatErrorDetail(val: unknown): string {
+  if (val instanceof Error) return val.message;
+  return String(val);
+}
+
 export function composeBridgeCallbackError(
   callbackError: unknown,
-  releaseError?: unknown,
-  failError?: unknown,
+  releaseArg?: BridgeCapturedFailure | unknown,
+  failArg?: BridgeCapturedFailure | unknown,
 ): Error {
-  if (!releaseError && !failError) {
+  const releaseFailure: BridgeCapturedFailure =
+    releaseArg && typeof releaseArg === 'object' && 'hasError' in releaseArg
+      ? (releaseArg as BridgeCapturedFailure)
+      : releaseArg !== undefined
+        ? { hasError: true, error: releaseArg }
+        : { hasError: false };
+
+  const failFailure: BridgeCapturedFailure =
+    failArg && typeof failArg === 'object' && 'hasError' in failArg
+      ? (failArg as BridgeCapturedFailure)
+      : failArg !== undefined
+        ? { hasError: true, error: failArg }
+        : { hasError: false };
+
+  if (!releaseFailure.hasError && !failFailure.hasError) {
     if (callbackError instanceof Error) return callbackError;
     return new Error(String(callbackError));
   }
 
-  const primaryMsg = callbackError instanceof Error ? callbackError.message : String(callbackError);
-  const releaseMsg = releaseError
-    ? ` (release error: ${releaseError instanceof Error ? releaseError.message : String(releaseError)})`
+  const primaryMsg = formatErrorDetail(callbackError);
+  const releaseMsg = releaseFailure.hasError
+    ? ` (release error: ${formatErrorDetail(releaseFailure.error)})`
     : '';
-  const failMsg = failError
-    ? ` (failWakeup error: ${failError instanceof Error ? failError.message : String(failError)})`
+  const failMsg = failFailure.hasError
+    ? ` (failWakeup error: ${formatErrorDetail(failFailure.error)})`
     : '';
 
   return new WorkerBridgeError(
     `[WorkerBridge] Callback failure: ${primaryMsg}${releaseMsg}${failMsg}`,
     {
       primaryError: callbackError,
-      releaseError,
-      technicalSettlementError: failError,
+      hasReleaseError: releaseFailure.hasError,
+      releaseError: releaseFailure.error,
+      hasTechnicalSettlementError: failFailure.hasError,
+      technicalSettlementError: failFailure.error,
     },
   );
 }
 
 export function composeBridgeReleaseError(
   releaseError: unknown,
-  failError?: unknown,
+  failArg?: BridgeCapturedFailure | unknown,
 ): Error {
-  if (!failError) {
+  const failFailure: BridgeCapturedFailure =
+    failArg && typeof failArg === 'object' && 'hasError' in failArg
+      ? (failArg as BridgeCapturedFailure)
+      : failArg !== undefined
+        ? { hasError: true, error: failArg }
+        : { hasError: false };
+
+  if (!failFailure.hasError) {
     if (releaseError instanceof Error) return releaseError;
     return new Error(String(releaseError));
   }
 
-  const releaseMsg = releaseError instanceof Error ? releaseError.message : String(releaseError);
-  const failMsg = ` (failWakeup error: ${failError instanceof Error ? failError.message : String(failError)})`;
+  const releaseMsg = formatErrorDetail(releaseError);
+  const failMsg = ` (failWakeup error: ${formatErrorDetail(failFailure.error)})`;
 
   return new WorkerBridgeError(
     `[WorkerBridge] Canonical release failed: ${releaseMsg}${failMsg}`,
     {
       primaryError: releaseError,
-      technicalSettlementError: failError,
+      hasReleaseError: false,
+      hasTechnicalSettlementError: true,
+      technicalSettlementError: failFailure.error,
     },
   );
 }
@@ -224,7 +296,7 @@ export class JobWorkerBridge {
     } catch (callbackErr) {
       // Falha do callback:
       // A. Tentar liberar o claim canônico com a referência exata
-      let releaseErr: unknown;
+      let releaseFailure: BridgeCapturedFailure = { hasError: false };
       try {
         await this.claimStore.releaseClaim({
           jobId,
@@ -232,19 +304,29 @@ export class JobWorkerBridge {
           fencingToken: claim.fencingToken,
         });
       } catch (err) {
-        releaseErr = err;
+        releaseFailure = { hasError: true, error: err };
       }
 
       // B. Executar failWakeup fenced da tentativa técnica atual
-      let failErr: unknown;
+      let settlementFailure: BridgeCapturedFailure = { hasError: false };
       try {
-        await this.runtime.failWakeup(this.queueName, target);
+        const settlement = await this.runtime.failWakeup(this.queueName, target);
+        if (!settlement.settled) {
+          settlementFailure = {
+            hasError: true,
+            error: new WorkerBridgeTechnicalStaleError({
+              deliveryId: message.id,
+              retryCount: message.retryCount,
+              queueName: this.queueName,
+            }),
+          };
+        }
       } catch (err) {
-        failErr = err;
+        settlementFailure = { hasError: true, error: err };
       }
 
       // C. Propagar erro preservando falhas secundárias
-      throw composeBridgeCallbackError(callbackErr, releaseErr, failErr);
+      throw composeBridgeCallbackError(callbackErr, releaseFailure, settlementFailure);
     }
 
     // 7. Sucesso do callback: liberar o claim canônico
@@ -257,13 +339,23 @@ export class JobWorkerBridge {
     } catch (releaseErr) {
       // Se release falhar (expirou / fence stale), o worker não tem mais autoridade
       // Executa failWakeup técnico fenced se possível e propaga o erro
-      let failErr: unknown;
+      let settlementFailure: BridgeCapturedFailure = { hasError: false };
       try {
-        await this.runtime.failWakeup(this.queueName, target);
+        const settlement = await this.runtime.failWakeup(this.queueName, target);
+        if (!settlement.settled) {
+          settlementFailure = {
+            hasError: true,
+            error: new WorkerBridgeTechnicalStaleError({
+              deliveryId: message.id,
+              retryCount: message.retryCount,
+              queueName: this.queueName,
+            }),
+          };
+        }
       } catch (err) {
-        failErr = err;
+        settlementFailure = { hasError: true, error: err };
       }
-      throw composeBridgeReleaseError(releaseErr, failErr);
+      throw composeBridgeReleaseError(releaseErr, settlementFailure);
     }
 
     // 8. Se release passou: completar a delivery técnica fenced no pg-boss
