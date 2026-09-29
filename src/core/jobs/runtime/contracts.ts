@@ -85,6 +85,15 @@ export interface PgBossProvisioningResult {
   readonly driftOk: boolean;
 }
 
+/**
+ * Contrato mínimo infra para conexão/transação existente compartilhada com o pg-boss (0.86C-3C).
+ * Permite que pg-boss participe da mesma transação do JobStore sem expor connection string
+ * nem amarrar o core a instâncias concretas do driver pg.
+ */
+export interface PgBossTransactionDb {
+  executeSql(text: string, values?: unknown[]): Promise<{ rows: any[]; rowCount: number | null }>;
+}
+
 // ============================================================================
 // 5. INTERFACE DO RUNTIME BOUNDARY (ISOLAMENTO DO CORE)
 // ============================================================================
@@ -96,8 +105,14 @@ export interface IPgBossRuntime {
   stop(options?: { graceful?: boolean; timeout?: number }): Promise<void>;
   createQueue(queueName: string): Promise<void>;
   sendWakeup(queueName: string, payload: JobWakeupPayload): Promise<PgBossSendResult>;
+  sendWakeupInTransaction(
+    queueName: string,
+    payload: JobWakeupPayload,
+    db: PgBossTransactionDb,
+  ): Promise<PgBossSendResult>;
   fetchWakeup(queueName: string, batchSize?: number): Promise<readonly PgBossWakeupMessage[]>;
   completeWakeup(queueName: string, target: PgBossDeliveryAttemptRef): Promise<PgBossSettlementResult>;
+  failWakeup(queueName: string, target: PgBossDeliveryAttemptRef): Promise<PgBossSettlementResult>;
   getSchemaVersion(): Promise<number | null>;
   detectDrift(): Promise<{ ok: boolean }>;
 }

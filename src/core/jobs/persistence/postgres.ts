@@ -40,6 +40,16 @@ import {
   assertJobStatesEquivalent,
 } from './serialization';
 
+/**
+ * Escopo transacional seguro exposto pelo PostgresJobStore (0.86C-3C).
+ * Permite coordenar escrita no JobStore e enfileiramento na MESMA transação PostgreSQL.
+ */
+export interface PostgresJobStoreWriteTransactionScope {
+  createJob(params: CreateJobParams): Promise<JobState>;
+  applyJobEvent(event: JobEvent, expectedRevision: number): Promise<JobState>;
+  readonly client: PgTransactionalClient;
+}
+
 export class PostgresJobStore implements DurableJobStore {
   constructor(private readonly executor: PgTransactionalExecutor) {}
 
@@ -94,11 +104,33 @@ export class PostgresJobStore implements DurableJobStore {
     }
   }
 
+  /**
+   * Seam transacional seguro do PostgresJobStore (0.86C-3C).
+   * Permite que coordenadores atômicos participem da MESMA transação PostgreSQL
+   * sem duplicar a autoridade de escrita e sem transferir o transaction ownership.
+   */
+  async withWriteTransaction<T>(
+    operation: (scope: PostgresJobStoreWriteTransactionScope) => Promise<T>,
+  ): Promise<T> {
+    return await this.withTransaction(async (client) => {
+      const scope: PostgresJobStoreWriteTransactionScope = {
+        createJob: (params) => this.executeCreateJob(client, params),
+        applyJobEvent: (event, expectedRevision) =>
+          this.executeApplyJobEvent(client, event, expectedRevision),
+        client,
+      };
+      return await operation(scope);
+    });
+  }
+
   // ==========================================================================
   // 1. CRIAÇÃO DURÁVEL (REVISION 1)
   // ==========================================================================
 
-  async createJob(params: CreateJobParams): Promise<JobState> {
+  private async executeCreateJob(
+    tx: PgTransactionalClient,
+    params: CreateJobParams,
+  ): Promise<JobState> {
     // 1. Valida e inicializa via reducer puro do Core (JobState sanitizado, revision 1, queued)
     const initialJob = createJob(params);
 
@@ -106,67 +138,69 @@ export class PostgresJobStore implements DurableJobStore {
     const creationRecordPayload = serializeCreationParamsFromJobState(initialJob);
     const serializedHead = serializeJobState(initialJob);
 
-    return await this.withTransaction(async (tx) => {
-      // Pre-check de unicidade do Job
-      const existingHead = await tx.query(
-        `SELECT "job_id" FROM "nex_job_heads" WHERE "job_id" = $1`,
-        [initialJob.jobId],
+    // Pre-check de unicidade do Job
+    const existingHead = await tx.query(
+      `SELECT "job_id" FROM "nex_job_heads" WHERE "job_id" = $1`,
+      [initialJob.jobId],
+    );
+    if (existingHead.rows.length > 0) {
+      throw new DuplicateJobIdError(initialJob.jobId);
+    }
+
+    try {
+      // Grava a projeção operacional em nex_job_heads primeiro (satisfaz FK de nex_job_events)
+      await tx.query(
+        `INSERT INTO "nex_job_heads" (
+          "job_id",
+          "status",
+          "revision",
+          "created_at",
+          "updated_at",
+          "started_at",
+          "finished_at",
+          "state_payload"
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          initialJob.jobId,
+          initialJob.status,
+          initialJob.revision,
+          initialJob.createdAt,
+          initialJob.updatedAt,
+          initialJob.startedAt ?? null,
+          initialJob.finishedAt ?? null,
+          JSON.stringify(serializedHead),
+        ],
       );
-      if (existingHead.rows.length > 0) {
+
+      // Grava o registro físico de criação em nex_job_events (record_kind = 'created', revision = 1)
+      await tx.query(
+        `INSERT INTO "nex_job_events" (
+          "job_id",
+          "revision",
+          "record_kind",
+          "event_type",
+          "occurred_at",
+          "payload"
+        ) VALUES ($1, $2, 'created', NULL, $3, $4)`,
+        [
+          initialJob.jobId,
+          initialJob.revision,
+          initialJob.createdAt,
+          JSON.stringify(creationRecordPayload),
+        ],
+      );
+    } catch (err: unknown) {
+      if ((err as { code?: string })?.code === '23505') {
         throw new DuplicateJobIdError(initialJob.jobId);
       }
+      throw err;
+    }
 
-      try {
-        // Grava a projeção operacional em nex_job_heads primeiro (satisfaz FK de nex_job_events)
-        await tx.query(
-          `INSERT INTO "nex_job_heads" (
-            "job_id",
-            "status",
-            "revision",
-            "created_at",
-            "updated_at",
-            "started_at",
-            "finished_at",
-            "state_payload"
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-          [
-            initialJob.jobId,
-            initialJob.status,
-            initialJob.revision,
-            initialJob.createdAt,
-            initialJob.updatedAt,
-            initialJob.startedAt ?? null,
-            initialJob.finishedAt ?? null,
-            JSON.stringify(serializedHead),
-          ],
-        );
+    return initialJob;
+  }
 
-        // Grava o registro físico de criação em nex_job_events (record_kind = 'created', revision = 1)
-        await tx.query(
-          `INSERT INTO "nex_job_events" (
-            "job_id",
-            "revision",
-            "record_kind",
-            "event_type",
-            "occurred_at",
-            "payload"
-          ) VALUES ($1, $2, 'created', NULL, $3, $4)`,
-          [
-            initialJob.jobId,
-            initialJob.revision,
-            initialJob.createdAt,
-            JSON.stringify(creationRecordPayload),
-          ],
-        );
-      } catch (err: unknown) {
-        if ((err as { code?: string })?.code === '23505') {
-          throw new DuplicateJobIdError(initialJob.jobId);
-        }
-        throw err;
-      }
-
-      return initialJob;
-    });
+  async createJob(params: CreateJobParams): Promise<JobState> {
+    return await this.withTransaction((client) => this.executeCreateJob(client, params));
   }
 
   // ==========================================================================
@@ -200,93 +234,101 @@ export class PostgresJobStore implements DurableJobStore {
   // 3. TRANSIÇÃO CONCORRENTE (REVISION 2+)
   // ==========================================================================
 
+  private async executeApplyJobEvent(
+    tx: PgTransactionalClient,
+    event: JobEvent,
+    expectedRevision: number,
+  ): Promise<JobState> {
+    // 1. Bloqueia o head do Job exclusivamente (SELECT ... FOR UPDATE)
+    const headRes = await tx.query(
+      `SELECT
+        "job_id",
+        "status",
+        "revision",
+        "created_at",
+        "updated_at",
+        "started_at",
+        "finished_at",
+        "state_payload"
+      FROM "nex_job_heads"
+      WHERE "job_id" = $1
+      FOR UPDATE`,
+      [event.jobId],
+    );
+
+    if (headRes.rows.length === 0) {
+      throw new JobNotFoundError(event.jobId);
+    }
+
+    // 2. Desserializa defensivamente o estado atual
+    const currentState = mapRowToJobState(headRes.rows[0]);
+
+    // 3. Verifica optimistic concurrency (expectedRevision estrito)
+    if (currentState.revision !== expectedRevision) {
+      throw new JobRevisionConflictError(
+        event.jobId,
+        expectedRevision,
+        currentState.revision,
+      );
+    }
+
+    // 4. Delega a transição para a autoridade semântica pura do Core
+    // Se for transição inválida, reduceJob lança JobLifecycleError (rollback total)
+    const nextState = reduceJob(currentState, event);
+
+    // 5. Serializa o evento com allowlist estrita
+    const serializedEvent = serializeJobEvent(event);
+    const serializedNextHead = serializeJobState(nextState);
+    const occurredAt = extractEventOccurredAt(event);
+
+    // 6. Insere exatamente uma nova linha histórica append-only
+    await tx.query(
+      `INSERT INTO "nex_job_events" (
+        "job_id",
+        "revision",
+        "record_kind",
+        "event_type",
+        "occurred_at",
+        "payload"
+      ) VALUES ($1, $2, 'transition', $3, $4, $5)`,
+      [
+        event.jobId,
+        nextState.revision,
+        event.type,
+        occurredAt,
+        JSON.stringify(serializedEvent),
+      ],
+    );
+
+    // 7. Atualiza o head mutável com a nova revisão e projeção
+    await tx.query(
+      `UPDATE "nex_job_heads"
+      SET
+        "status" = $1,
+        "revision" = $2,
+        "updated_at" = $3,
+        "started_at" = $4,
+        "finished_at" = $5,
+        "state_payload" = $6
+      WHERE "job_id" = $7`,
+      [
+        nextState.status,
+        nextState.revision,
+        nextState.updatedAt,
+        nextState.startedAt ?? null,
+        nextState.finishedAt ?? null,
+        JSON.stringify(serializedNextHead),
+        event.jobId,
+      ],
+    );
+
+    return nextState;
+  }
+
   async applyJobEvent(event: JobEvent, expectedRevision: number): Promise<JobState> {
-    return await this.withTransaction(async (tx) => {
-      // 1. Bloqueia o head do Job exclusivamente (SELECT ... FOR UPDATE)
-      const headRes = await tx.query(
-        `SELECT
-          "job_id",
-          "status",
-          "revision",
-          "created_at",
-          "updated_at",
-          "started_at",
-          "finished_at",
-          "state_payload"
-        FROM "nex_job_heads"
-        WHERE "job_id" = $1
-        FOR UPDATE`,
-        [event.jobId],
-      );
-
-      if (headRes.rows.length === 0) {
-        throw new JobNotFoundError(event.jobId);
-      }
-
-      // 2. Desserializa defensivamente o estado atual
-      const currentState = mapRowToJobState(headRes.rows[0]);
-
-      // 3. Verifica optimistic concurrency (expectedRevision estrito)
-      if (currentState.revision !== expectedRevision) {
-        throw new JobRevisionConflictError(
-          event.jobId,
-          expectedRevision,
-          currentState.revision,
-        );
-      }
-
-      // 4. Delega a transição para a autoridade semântica pura do Core
-      // Se for transição inválida, reduceJob lança JobLifecycleError (rollback total)
-      const nextState = reduceJob(currentState, event);
-
-      // 5. Serializa o evento com allowlist estrita
-      const serializedEvent = serializeJobEvent(event);
-      const serializedNextHead = serializeJobState(nextState);
-      const occurredAt = extractEventOccurredAt(event);
-
-      // 6. Insere exatamente uma nova linha histórica append-only
-      await tx.query(
-        `INSERT INTO "nex_job_events" (
-          "job_id",
-          "revision",
-          "record_kind",
-          "event_type",
-          "occurred_at",
-          "payload"
-        ) VALUES ($1, $2, 'transition', $3, $4, $5)`,
-        [
-          event.jobId,
-          nextState.revision,
-          event.type,
-          occurredAt,
-          JSON.stringify(serializedEvent),
-        ],
-      );
-
-      // 7. Atualiza o head mutável com a nova revisão e projeção
-      await tx.query(
-        `UPDATE "nex_job_heads"
-        SET
-          "status" = $1,
-          "revision" = $2,
-          "updated_at" = $3,
-          "started_at" = $4,
-          "finished_at" = $5,
-          "state_payload" = $6
-        WHERE "job_id" = $7`,
-        [
-          nextState.status,
-          nextState.revision,
-          nextState.updatedAt,
-          nextState.startedAt ?? null,
-          nextState.finishedAt ?? null,
-          JSON.stringify(serializedNextHead),
-          event.jobId,
-        ],
-      );
-
-      return nextState;
-    });
+    return await this.withTransaction((client) =>
+      this.executeApplyJobEvent(client, event, expectedRevision),
+    );
   }
 
   // ==========================================================================

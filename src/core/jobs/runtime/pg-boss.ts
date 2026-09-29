@@ -23,6 +23,7 @@ import {
   type PgBossRuntimeOptions,
   type PgBossSendResult,
   type PgBossSettlementResult,
+  type PgBossTransactionDb,
   type PgBossWakeupMessage,
 } from './contracts';
 import {
@@ -301,6 +302,43 @@ export class PgBossRuntime implements IPgBossRuntime {
   }
 
   /**
+   * Envia payload canônico de wake-up participando da MESMA transação PostgreSQL (0.86C-3C).
+   * O caller detém o ownership da transação. Este método NUNCA executa BEGIN, COMMIT, ROLLBACK ou release.
+   */
+  async sendWakeupInTransaction(
+    queueName: string,
+    payload: JobWakeupPayload,
+    db: PgBossTransactionDb,
+  ): Promise<PgBossSendResult> {
+    assertJobWakeupPayload(payload);
+
+    if (!db || typeof db.executeSql !== 'function') {
+      throw new PgBossRuntimeError({
+        code: 'SEND_FAILURE',
+        message: '[PgBossRuntime] Cannot send wake-up in transaction: valid PgBossTransactionDb is required.',
+      });
+    }
+
+    if (!this._boss || !this._isStarted) {
+      throw new PgBossRuntimeError({
+        code: 'RUNTIME_NOT_STARTED',
+        message: '[PgBossRuntime] Cannot send wake-up in transaction: pg-boss runtime is not started.',
+      });
+    }
+
+    try {
+      const messageId = await this._boss.send(queueName, payload, { db });
+      return { messageId };
+    } catch (err) {
+      throw new PgBossRuntimeError({
+        code: 'SEND_FAILURE',
+        message: `[PgBossRuntime] Failed to send wake-up in transaction to queue '${queueName}': ${err instanceof Error ? err.message : String(err)}`,
+        cause: err,
+      });
+    }
+  }
+
+  /**
    * Recupera mensagens da fila (usado pelo harness de validação técnica).
    */
   async fetchWakeup(queueName: string, batchSize = 1): Promise<readonly PgBossWakeupMessage[]> {
@@ -382,6 +420,46 @@ export class PgBossRuntime implements IPgBossRuntime {
       throw new PgBossRuntimeError({
         code: 'SETTLEMENT_FAILURE',
         message: `[PgBossRuntime] Failed to complete wake-up on queue '${queueName}': ${err instanceof Error ? err.message : String(err)}`,
+        cause: err,
+      });
+    }
+  }
+
+  /**
+   * Registra falha técnica da mensagem na fila com attempt fencing ({ id, retryCount }) (0.86C-3C).
+   * NUNCA liquida por plain id. Reutiliza estritamente parseSettlementAffected.
+   * Não grava dados sensíveis ou payload arbitrário na fila técnica.
+   */
+  async failWakeup(queueName: string, target: PgBossDeliveryAttemptRef): Promise<PgBossSettlementResult> {
+    assertDeliveryAttemptRef(target);
+
+    if (!this._boss || !this._isStarted) {
+      throw new PgBossRuntimeError({
+        code: 'RUNTIME_NOT_STARTED',
+        message: '[PgBossRuntime] Cannot fail wake-up: pg-boss runtime is not started.',
+      });
+    }
+
+    try {
+      const response = await this._boss.fail(queueName, {
+        id: target.id,
+        retryCount: target.retryCount,
+      });
+
+      const rawAffected = (response as { affected?: unknown } | null | undefined)?.affected;
+      const affected = parseSettlementAffected(rawAffected, queueName);
+
+      return Object.freeze({
+        settled: affected === 1,
+        affected,
+      });
+    } catch (err) {
+      if (err instanceof PgBossRuntimeError) {
+        throw err;
+      }
+      throw new PgBossRuntimeError({
+        code: 'SETTLEMENT_FAILURE',
+        message: `[PgBossRuntime] Failed to fail wake-up on queue '${queueName}': ${err instanceof Error ? err.message : String(err)}`,
         cause: err,
       });
     }
