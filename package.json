@@ -28,6 +28,7 @@
     "test:db:job-claims:isolated": "powershell.exe -NoLogo -NoProfile -File ./scripts/run-job-claims-isolated.ps1",
     "test:db:job-wakeup-bridge:isolated": "powershell.exe -NoLogo -NoProfile -File ./scripts/run-job-wakeup-bridge-isolated.ps1",
     "test:db:job-runtime-recovery:isolated": "powershell.exe -NoLogo -NoProfile -File ./scripts/run-job-runtime-recovery-isolated.ps1",
+    "test:db:job-checkpoints:isolated": "powershell.exe -NoLogo -NoProfile -File ./scripts/run-job-checkpoints-isolated.ps1",
     "test:context:server-boundary:positive": "node --conditions=react-server --import tsx --experimental-test-module-mocks --test src/core/context/__tests__/server-boundary.positive.test.ts"
   },
   "dependencies": {

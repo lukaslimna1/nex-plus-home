@@ -10,6 +10,7 @@ import * as migration_20260925_110223_stack_payload_3902_auth_security from './2
 import * as migration_20260925_200000_durable_execution_ledger from './20260925_200000_durable_execution_ledger';
 import * as migration_20260927_220000_durable_job_store from './20260927_220000_durable_job_store';
 import * as migration_20260928_230000_canonical_job_claims from './20260928_230000_canonical_job_claims';
+import * as migration_20260929_230000_canonical_job_checkpoints from './20260929_230000_canonical_job_checkpoints';
 
 export const migrations = [
   {
@@ -71,5 +72,10 @@ export const migrations = [
     up: migration_20260928_230000_canonical_job_claims.up,
     down: migration_20260928_230000_canonical_job_claims.down,
     name: '20260928_230000_canonical_job_claims',
+  },
+  {
+    up: migration_20260929_230000_canonical_job_checkpoints.up,
+    down: migration_20260929_230000_canonical_job_checkpoints.down,
+    name: '20260929_230000_canonical_job_checkpoints',
   },
 ];
